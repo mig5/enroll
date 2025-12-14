@@ -1,0 +1,10 @@
+*.swp
+*.pyc
+__pycache__
+.pytest_cache
+dist
+.coverage
+*.db
+*.pdf
+*.csv
+*.html

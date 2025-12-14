@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "enroll"
+version = "0.0.1"
+description = "Enroll a server's running state retrospectively into Ansible"
+authors = ["Miguel Jacq <mig@mig5.net>"]
+license = "GPL-3.0-or-later"
+readme = "README.md"
+packages = [{ include = "enroll" }]
+repository = "https://git.mig5.net/mig5/enroll"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+[tool.poetry.scripts]
+enroll = "enroll.cli:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
