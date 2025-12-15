@@ -29,6 +29,7 @@ for dist in ${DISTS[@]}; do
   mkdir -p dist/${release}
 
   docker build -f Dockerfile.debbuild -t enroll-deb:${release} \
+    --no-cache \
     --progress=plain \
     --build-arg BASE_IMAGE=${dist} .
 
