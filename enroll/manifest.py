@@ -35,7 +35,7 @@ def _write_role_scaffold(role_dir: str) -> None:
 
 
 def _write_playbook(path: str, roles: List[str]) -> None:
-    pb_lines = ["---", "- hosts: all", "  become: true", "  roles:"]
+    pb_lines = ["---", "- name: Apply all roles on host", "  hosts: all", "  become: true", "  roles:"]
     for r in roles:
         pb_lines.append(f"    - {r}")
     with open(path, "w", encoding="utf-8") as f:
@@ -314,7 +314,7 @@ Unowned /etc config files not attributed to packages or services.
             f.write(defaults)
 
         handlers = """---
-- name: systemd daemon-reload
+- name: Run systemd daemon-reload
   ansible.builtin.systemd:
     daemon_reload: true
 
@@ -444,7 +444,7 @@ Generated from `{unit}`.
             f.write(defaults)
 
         handlers = """---
-- name: systemd daemon-reload
+- name: Run systemd daemon-reload
   ansible.builtin.systemd:
     daemon_reload: true
 """

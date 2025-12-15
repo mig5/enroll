@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Set
@@ -130,8 +131,19 @@ def _safe_name(s: str) -> str:
     return "".join(out).replace("-", "_")
 
 
+def _role_id(raw: str) -> str:
+    # normalize separators first
+    s = re.sub(r"[^A-Za-z0-9]+", "_", raw)
+    # split CamelCase -> snake_case
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
+    s = s.lower()
+    s = re.sub(r"_+", "_", s).strip("_")
+    if not re.match(r"^[a-z_]", s):
+        s = "r_" + s
+    return s
+
 def _role_name_from_unit(unit: str) -> str:
-    base = unit.removesuffix(".service")
+    base = _role_id(unit.removesuffix(".service"))
     return _safe_name(base)
 
 
