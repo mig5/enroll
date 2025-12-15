@@ -392,7 +392,7 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
         )
 
     # -------------------------
-    # Manual package roles
+    # Manually installed package roles
     # -------------------------
     manual_pkgs = list_manual_packages()
     # Avoid duplicate roles: if a manual package is already managed by any service role, skip its pkg_<name> role.

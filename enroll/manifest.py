@@ -149,7 +149,7 @@ users_accounts:
             lines.append(f"    group: {u.get('primary_group')}")
             lines.append("    mode: '0700'")
 
-        # Copy harvested SSH public material (authorized_keys + *.pub)
+        # Copy harvested SSH public material (authorized_keys)
         for mf in managed_files:
             dest = mf["path"]
             src = mf["src_rel"]
@@ -225,7 +225,7 @@ Generated non-system user accounts and SSH public material.
 
         manifested_users_roles.append(role)
 
-        # -------------------------
+    # -------------------------
     # etc_custom role (unowned /etc not already attributed)
     # -------------------------
     if etc_custom_snapshot and etc_custom_snapshot.get("managed_files"):
@@ -439,7 +439,7 @@ Generated from `{unit}`.
         manifested_service_roles.append(role)
 
     # -------------------------
-    # Manual package roles
+    # Manually installed package roles
     # -------------------------
     for pr in package_roles:
         role = pr["role_name"]
@@ -490,7 +490,7 @@ Generated from `{unit}`.
         task_parts: List[str] = []
         task_parts.append(
             f"""---
-- name: Install manual package {pkg}
+- name: Install package {pkg}
   ansible.builtin.apt:
     name: "{{{{ {var_prefix}_packages }}}}"
     state: present
@@ -525,7 +525,7 @@ Generated from `{unit}`.
         notes = pr.get("notes", [])
         readme = f"""# {role}
 
-Generated for manual package `{pkg}`.
+Generated for package `{pkg}`.
 
 ## Managed files
 {os.linesep.join("- " + mf["path"] + " (" + mf["reason"] + ")" for mf in managed_files) or "- (none)"}
@@ -536,7 +536,7 @@ Generated for manual package `{pkg}`.
 ## Notes
 {os.linesep.join("- " + n for n in notes) or "- (none)"}
 
-> Note: package roles do not attempt to restart or enable services automatically.
+> Note: package roles (those not discovered via a systemd service) do not attempt to restart or enable services automatically.
 """
         with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
             f.write(readme)
@@ -546,8 +546,8 @@ Generated for manual package `{pkg}`.
     # Playbooks
     _write_playbook(
         os.path.join(out_dir, "playbook.yml"),
-        manifested_users_roles
+        manifested_pkg_roles
+        + manifested_service_roles
         + manifested_etc_custom_roles
-        + manifested_pkg_roles
-        + manifested_service_roles,
+        + manifested_users_roles,
     )
