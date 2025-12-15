@@ -382,7 +382,7 @@ Unowned /etc config files not attributed to packages or services.
             f"""
 - name: Probe whether systemd unit exists and is manageable
   ansible.builtin.systemd:
-    name: "{{ unit_name }}"
+    name: "{{{{ unit_name }}}}"
   check_mode: true
   register: _unit_probe
   failed_when: false
@@ -390,13 +390,13 @@ Unowned /etc config files not attributed to packages or services.
 
 - name: Ensure unit is enabled (preserve running state)
   ansible.builtin.systemd:
-    name: "{{ unit_name }}"
+    name: "{{{{ unit_name }}}}"
     enabled: true
   when: _unit_probe is succeeded
 
 - name: Start unit if it was active at harvest time
   ansible.builtin.systemd:
-    name: "{{ unit_name }}"
+    name: "{{{{ unit_name }}}}"
     state: started
   when:
     - _unit_probe is succeeded
