@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE=debian:bookworm
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# If Ubuntu, ensure Universe is enabled.
+RUN set -eux; \
+    . /etc/os-release; \
+    if [ "${ID:-}" = "ubuntu" ]; then \
+      apt-get update; \
+      apt-get install -y --no-install-recommends software-properties-common ca-certificates; \
+      add-apt-repository -y universe; \
+    fi
+
+# Build deps
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      devscripts \
+      debhelper \
+      dh-python \
+      pybuild-plugin-pyproject \
+      python3-all \
+      python3-poetry-core \
+      rsync \
+      ca-certificates \
+    ; \
+    rm -rf /var/lib/apt/lists/*
+
+# Build runner script
+RUN set -eux; \
+  cat > /usr/local/bin/build-deb <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+SRC="${SRC:-/src}"
+WORKROOT="${WORKROOT:-/work}"
+WORK="${WORKROOT}/src"
+OUT="${OUT:-/out}"
+
+mkdir -p "$WORK" "$OUT"
+
+rsync -a --delete \
+  --exclude '.git' \
+  --exclude '.venv' \
+  --exclude 'dist' \
+  --exclude 'build' \
+  --exclude '__pycache__' \
+  --exclude '.pytest_cache' \
+  --exclude '.mypy_cache' \
+  "${SRC}/" "${WORK}/"
+
+cd "${WORK}"
+if [ -n "${SUITE:-}" ]; then
+  export DEBEMAIL="mig@mig5.net"
+  export DEBFULLNAME="Miguel Jacq"
+
+  dch --distribution "$SUITE" --local "~${SUITE}" "CI build for $SUITE"
+fi
+dpkg-buildpackage -us -uc -b
+
+shopt -s nullglob
+cp -v "${WORKROOT}"/*.deb \
+      "${WORKROOT}"/*.changes \
+      "${WORKROOT}"/*.buildinfo \
+      "${WORKROOT}"/*.dsc \
+      "${WORKROOT}"/*.tar.* \
+      "${OUT}/" || true
+
+echo "Artifacts copied to ${OUT}"
+EOF
+RUN chmod +x /usr/local/bin/build-deb
+
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/build-deb"]

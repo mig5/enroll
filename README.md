@@ -18,6 +18,16 @@ It aims to be **optimistic and noninteractive**:
 
 ## Install
 
+### Ubuntu/Debian apt repository
+
+```bash
+sudo mkdir -p /usr/share/keyrings
+curl -fsSL https://mig5.net/static/mig5.asc | sudo gpg --dearmor -o /usr/share/keyrings/mig5.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/mig5.gpg] https://apt.mig5.net $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/mig5.list
+sudo apt update
+sudo apt install enroll
+```
+
 ### AppImage
 
 Download the AppImage file from the Releases page (verify with GPG if you wish, my fingerprint is [here](https://mig5.net/static/mig5.asc),
@@ -28,7 +38,7 @@ chmod +x Enroll.AppImage
 ./Enroll.AppImage
 ```
 
-### Pip
+### Pip/PipX
 
 ```bash
 pip install enroll

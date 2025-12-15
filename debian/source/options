@@ -1,0 +1,6 @@
+tar-ignore = ".git"
+tar-ignore = ".venv"
+tar-ignore = "__pycache__"
+tar-ignore = ".pytest_cache"
+tar-ignore = "dist"
+tar-ignore = "build"
