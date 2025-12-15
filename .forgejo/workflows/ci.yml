@@ -15,7 +15,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ansible ansible-lint python3-venv pipx
+            ansible ansible-lint python3-venv pipx systemctl
 
       - name: Install Poetry
         run: |
