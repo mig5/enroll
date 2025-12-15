@@ -21,4 +21,4 @@ builtin cd "${ANSIBLE_DIR}"
 ansible-lint "${ANSIBLE_DIR}" 
 
 # Run
-sudo ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+ansible-playbook playbook.yml -i "localhost," -c local --check --diff
