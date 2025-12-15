@@ -400,7 +400,7 @@ Unowned /etc config files not attributed to packages or services.
     state: started
   when:
     - _unit_probe is succeeded
-    - {{ var_prefix }}_start | bool
+    - {var_prefix}_start | bool
 """
         )
 
