@@ -38,8 +38,6 @@ for dist in ${DISTS[@]}; do
     -v "$PWD/dist/${release}":/out \
     enroll-deb:${release}
 
-  # rename the file
   debfile=$(ls -1 dist/${release}/*.deb)
-
   reprepro -b /home/user/git/repo includedeb "${release}" "${debfile}"
 done
