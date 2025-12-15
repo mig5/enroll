@@ -25,6 +25,4 @@ output = "Enroll.AppImage"
 [tool.poetry.dev-dependencies]
 pytest = "^8"
 pytest-cov = "^5"
-ansible = "^9"
-ansible-lint = "^24"
 pyproject-appimage = "^4.2"
