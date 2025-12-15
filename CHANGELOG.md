@@ -1,3 +1,8 @@
+# 0.0.3
+
+ * various bug fixes
+ * Add debian packaging
+
 # 0.0.2
 
  * Merge pkg_ and roles created based on file/service detection
