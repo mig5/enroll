@@ -35,7 +35,13 @@ def _write_role_scaffold(role_dir: str) -> None:
 
 
 def _write_playbook(path: str, roles: List[str]) -> None:
-    pb_lines = ["---", "- name: Apply all roles on host", "  hosts: all", "  become: true", "  roles:"]
+    pb_lines = [
+        "---",
+        "- name: Apply all roles on host",
+        "  hosts: all",
+        "  become: true",
+        "  roles:",
+    ]
     for r in roles:
         pb_lines.append(f"    - {r}")
     with open(path, "w", encoding="utf-8") as f:
@@ -528,5 +534,8 @@ Generated for manual package `{pkg}`.
     # Playbooks
     _write_playbook(
         os.path.join(out_dir, "playbook.yml"),
-        manifested_users_roles + manifested_etc_custom_roles + manifested_pkg_roles + manifested_service_roles,
+        manifested_users_roles
+        + manifested_etc_custom_roles
+        + manifested_pkg_roles
+        + manifested_service_roles,
     )

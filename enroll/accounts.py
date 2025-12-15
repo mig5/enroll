@@ -146,7 +146,7 @@ def collect_non_system_users() -> List[UserRecord]:
                 gid=gid,
                 gecos=gecos,
                 home=home,
-                shell=shell, # nosec
+                shell=shell,  # nosec
                 primary_group=primary_group,
                 supplementary_groups=supp,
                 ssh_files=ssh_files,

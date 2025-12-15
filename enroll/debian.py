@@ -3,19 +3,19 @@ from __future__ import annotations
 import glob
 import hashlib
 import os
-import subprocess # nosec
+import subprocess  # nosec
 from typing import Dict, List, Optional, Set, Tuple
 
 
 def _run(cmd: list[str]) -> str:
-    p = subprocess.run(cmd, check=False, text=True, capture_output=True) # nosec
+    p = subprocess.run(cmd, check=False, text=True, capture_output=True)  # nosec
     if p.returncode != 0:
         raise RuntimeError(f"Command failed: {cmd}\n{p.stderr}")
     return p.stdout
 
 
 def dpkg_owner(path: str) -> Optional[str]:
-    p = subprocess.run(["dpkg", "-S", path], text=True, capture_output=True) #nosec
+    p = subprocess.run(["dpkg", "-S", path], text=True, capture_output=True)  # nosec
     if p.returncode != 0:
         return None
     left = p.stdout.split(":", 1)[0].strip()
@@ -25,7 +25,9 @@ def dpkg_owner(path: str) -> Optional[str]:
 
 def list_manual_packages() -> List[str]:
     """Return packages marked as manually installed (apt-mark showmanual)."""
-    p = subprocess.run(["apt-mark", "showmanual"], text=True, capture_output=True) #nosec
+    p = subprocess.run(
+        ["apt-mark", "showmanual"], text=True, capture_output=True
+    )  # nosec
     if p.returncode != 0:
         return []
     pkgs: List[str] = []
@@ -154,7 +156,7 @@ def read_pkg_md5sums(pkg: str) -> Dict[str, str]:
 
 
 def file_md5(path: str) -> str:
-    h = hashlib.md5() # nosec
+    h = hashlib.md5()  # nosec
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)

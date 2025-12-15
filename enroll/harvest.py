@@ -142,6 +142,7 @@ def _role_id(raw: str) -> str:
         s = "r_" + s
     return s
 
+
 def _role_name_from_unit(unit: str) -> str:
     base = _role_id(unit.removesuffix(".service"))
     return _safe_name(base)

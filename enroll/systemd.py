@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-import subprocess # nosec
+import subprocess  # nosec
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -27,7 +27,7 @@ class UnitQueryError(RuntimeError):
 
 
 def _run(cmd: list[str]) -> str:
-    p = subprocess.run(cmd, check=False, text=True, capture_output=True) # nosec
+    p = subprocess.run(cmd, check=False, text=True, capture_output=True)  # nosec
     if p.returncode != 0:
         raise RuntimeError(f"Command failed: {cmd}\n{p.stderr}")
     return p.stdout
@@ -81,7 +81,7 @@ def get_unit_info(unit: str) -> UnitInfo:
             "-p",
             "ConditionResult",
             "--no-page",
-        ], # nosec
+        ],  # nosec
         check=False,
         text=True,
         capture_output=True,
