@@ -33,7 +33,7 @@ SENSITIVE_CONTENT_PATTERNS = [
 
 
 @dataclass
-class SecretPolicy:
+class IgnorePolicy:
     deny_globs: list[str] = None
     max_file_bytes: int = 256_000
     sample_bytes: int = 64_000

@@ -1,3 +1,8 @@
+# 0.0.4
+
+ * Fix dash package detection issue
+ * Reorder which roles install first
+
 # 0.0.3
 
  * various bug fixes

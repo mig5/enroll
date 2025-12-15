@@ -6,6 +6,8 @@ import os
 import subprocess  # nosec
 from typing import Dict, List, Optional, Set, Tuple
 
+_DIVERSION_PREFIX = "diversion by "
+
 
 def _run(cmd: list[str]) -> str:
     p = subprocess.run(cmd, check=False, text=True, capture_output=True)  # nosec
@@ -18,9 +20,32 @@ def dpkg_owner(path: str) -> Optional[str]:
     p = subprocess.run(["dpkg", "-S", path], text=True, capture_output=True)  # nosec
     if p.returncode != 0:
         return None
-    left = p.stdout.split(":", 1)[0].strip()
-    pkg = left.split(":", 1)[0].strip()
-    return pkg or None
+
+    for raw in (p.stdout or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+
+        # dpkg diversion chatter; not an ownership line
+        if line.startswith(_DIVERSION_PREFIX):
+            continue
+
+        # Expected: "<pkg>[, <pkg2>...][:<arch>]: <path>"
+        if ":" not in line:
+            continue
+
+        left, _ = line.split(":", 1)
+
+        # If multiple pkgs listed, pick the first (common case is just one)
+        left = left.split(",", 1)[0].strip()
+
+        # Strip any ":arch" suffix from left side
+        pkg = left.split(":", 1)[0].strip()
+
+        if pkg and not pkg.startswith(_DIVERSION_PREFIX):
+            return pkg
+
+    return None
 
 
 def list_manual_packages() -> List[str]:

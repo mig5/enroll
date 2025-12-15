@@ -18,7 +18,7 @@ from .debian import (
     read_pkg_md5sums,
     stat_triplet,
 )
-from .secrets import SecretPolicy
+from .ignore import IgnorePolicy
 from .accounts import collect_non_system_users
 
 
@@ -233,8 +233,8 @@ def _topdirs_for_package(pkg: str, pkg_to_etc_paths: Dict[str, List[str]]) -> Se
     return topdirs
 
 
-def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
-    policy = policy or SecretPolicy()
+def harvest(bundle_dir: str, policy: Optional[IgnorePolicy] = None) -> str:
+    policy = policy or IgnorePolicy()
     os.makedirs(bundle_dir, exist_ok=True)
 
     if hasattr(os, "geteuid") and os.geteuid() != 0:
@@ -487,9 +487,7 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
             )
 
         if not pkg_to_etc_paths.get(pkg, []) and not managed:
-            notes.append(
-                "No /etc files detected for this package."
-            )
+            notes.append("No /etc files detected for this package.")
 
         pkg_snaps.append(
             PackageSnapshot(
