@@ -50,12 +50,14 @@ def manifest(bundle_dir: str, out_dir: str) -> None:
     services: List[Dict[str, Any]] = state.get("services", [])
     package_roles: List[Dict[str, Any]] = state.get("package_roles", [])
     users_snapshot: Dict[str, Any] = state.get("users", {})
+    etc_custom_snapshot: Dict[str, Any] = state.get("etc_custom", {})
 
     os.makedirs(out_dir, exist_ok=True)
     roles_root = os.path.join(out_dir, "roles")
     os.makedirs(roles_root, exist_ok=True)
 
     manifested_users_roles: List[str] = []
+    manifested_etc_custom_roles: List[str] = []
     manifested_service_roles: List[str] = []
     manifested_pkg_roles: List[str] = []
 
@@ -86,11 +88,17 @@ def manifest(bundle_dir: str, out_dir: str) -> None:
         # defaults: store users list (handy for later), but tasks are explicit for readability
         defaults = """---
 users_accounts:
-""" + ("\n".join([f"  - name: {u.get('name')}" for u in users]) + "\n")
-        with open(os.path.join(role_dir, "defaults", "main.yml"), "w", encoding="utf-8") as f:
+""" + (
+            "\n".join([f"  - name: {u.get('name')}" for u in users]) + "\n"
+        )
+        with open(
+            os.path.join(role_dir, "defaults", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write(defaults)
 
-        with open(os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write("---\ndependencies: []\n")
 
         # tasks
@@ -112,7 +120,7 @@ users_accounts:
             lines.append(f"    group: {u.get('primary_group')}")
             supp = u.get("supplementary_groups") or []
             if supp:
-                lines.append("    groups: " + ",".join(supp))
+                lines.append("    groups: " + ",".join(sorted(supp)))
                 lines.append("    append: true")
             lines.append(f"    home: {u.get('home')}")
             lines.append("    create_home: true")
@@ -120,9 +128,8 @@ users_accounts:
                 lines.append(f"    shell: {u.get('shell')}")
             if u.get("gecos"):
                 # quote to avoid YAML surprises
-                gec = u.get("gecos").replace('"', '\"')
+                gec = u.get("gecos").replace('"', '"')
                 lines.append(f'    comment: "{gec}"')
-            lines.append("    password_lock: true")
             lines.append("    state: present")
 
             # Ensure ~/.ssh
@@ -163,29 +170,121 @@ users_accounts:
             lines.append(f"    mode: '{mode}'")
 
         tasks = "\n".join(lines).rstrip() + "\n"
-        with open(os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write(tasks)
 
         # handlers (none needed)
-        with open(os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write("---\n")
 
-        readme = """# users
+        readme = (
+            """# users
 
 Generated non-system user accounts and SSH public material.
 
 ## Users
-""" + ("\n".join([f"- {u.get('name')} (uid {u.get('uid')})" for u in users]) or "- (none)") + """\n
+"""
+            + (
+                "\n".join([f"- {u.get('name')} (uid {u.get('uid')})" for u in users])
+                or "- (none)"
+            )
+            + """\n
 ## Included SSH files
-""" + ("\n".join([f"- {mf.get('path')} ({mf.get('reason')})" for mf in managed_files]) or "- (none)") + """\n
+"""
+            + (
+                "\n".join(
+                    [f"- {mf.get('path')} ({mf.get('reason')})" for mf in managed_files]
+                )
+                or "- (none)"
+            )
+            + """\n
 ## Excluded
-""" + ("\n".join([f"- {e.get('path')} ({e.get('reason')})" for e in excluded]) or "- (none)") + """\n
+"""
+            + (
+                "\n".join([f"- {e.get('path')} ({e.get('reason')})" for e in excluded])
+                or "- (none)"
+            )
+            + """\n
 ## Notes
-""" + ("\n".join([f"- {n}" for n in notes]) or "- (none)") + """\n"""
+"""
+            + ("\n".join([f"- {n}" for n in notes]) or "- (none)")
+            + """\n"""
+        )
         with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
             f.write(readme)
 
         manifested_users_roles.append(role)
+
+        # -------------------------
+    # etc_custom role (unowned /etc not already attributed)
+    # -------------------------
+    if etc_custom_snapshot and etc_custom_snapshot.get("managed_files"):
+        role = etc_custom_snapshot.get("role_name", "etc_custom")
+        role_dir = os.path.join(roles_root, role)
+        _write_role_scaffold(role_dir)
+        _copy_artifacts(bundle_dir, role, role_dir)
+
+        managed_files = etc_custom_snapshot.get("managed_files", [])
+        excluded = etc_custom_snapshot.get("excluded", [])
+        notes = etc_custom_snapshot.get("notes", [])
+
+        # tasks: just deploy files (no restarts)
+        lines: List[str] = ["---"]
+        for mf in managed_files:
+            dest = mf["path"]
+            src = mf["src_rel"]
+            lines.append(f"- name: Deploy {dest}")
+            lines.append("  ansible.builtin.copy:")
+            lines.append(f"    src: {src}")
+            lines.append(f"    dest: {dest}")
+            lines.append(f"    owner: {mf.get('owner')}")
+            lines.append(f"    group: {mf.get('group')}")
+            lines.append(f"    mode: '{mf.get('mode')}'")
+
+        tasks = "\n".join(lines).rstrip() + "\n"
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(tasks)
+
+        with open(
+            os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\n")
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\ndependencies: []\n")
+
+        readme = (
+            """# etc_custom
+
+Unowned /etc config files not attributed to packages or services.
+
+## Managed files
+"""
+            + ("\n".join([f"- {mf.get('path')}" for mf in managed_files]) or "- (none)")
+            + """\n
+## Excluded
+"""
+            + (
+                "\n".join([f"- {e.get('path')} ({e.get('reason')})" for e in excluded])
+                or "- (none)"
+            )
+            + """\n
+## Notes
+"""
+            + ("\n".join([f"- {n}" for n in notes]) or "- (none)")
+            + """\n"""
+        )
+        with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write(readme)
+
+        manifested_etc_custom_roles.append(role)
 
     # -------------------------
     # Service roles
@@ -202,11 +301,16 @@ Generated non-system user accounts and SSH public material.
 
         var_prefix = role
 
+        was_active = svc.get("active_state") == "active"
         defaults = f"""---
 {var_prefix}_packages:
 {_yaml_list(pkgs, indent=2)}
+{var_prefix}_active_state_at_harvest: "{svc.get("active_state")}"
+{var_prefix}_start: {"true" if was_active else "false"}
 """
-        with open(os.path.join(role_dir, "defaults", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "defaults", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write(defaults)
 
         handlers = """---
@@ -219,10 +323,14 @@ Generated non-system user accounts and SSH public material.
     name: "{{ unit_name }}"
     state: restarted
 """
-        with open(os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write(handlers)
 
-        systemd_files = [mf for mf in managed_files if mf["path"].startswith("/etc/systemd/system/")]
+        systemd_files = [
+            mf for mf in managed_files if mf["path"].startswith("/etc/systemd/system/")
+        ]
         other_files = [mf for mf in managed_files if mf not in systemd_files]
 
         def copy_task(mf: Dict[str, Any], notify: str | None) -> str:
@@ -237,7 +345,8 @@ Generated non-system user accounts and SSH public material.
 {notify_line}"""
 
         task_parts: List[str] = []
-        task_parts.append(f"""---
+        task_parts.append(
+            f"""---
 - name: Set unit name
   ansible.builtin.set_fact:
     unit_name: "{unit}"
@@ -248,30 +357,44 @@ Generated non-system user accounts and SSH public material.
     state: present
     update_cache: true
   when: {var_prefix}_packages | length > 0
-""")
+"""
+        )
 
         if systemd_files:
             for mf in systemd_files:
                 task_parts.append(copy_task(mf, "[systemd daemon-reload]"))
-            task_parts.append("""- name: Reload systemd to pick up unit changes
+            task_parts.append(
+                """- name: Reload systemd to pick up unit changes
   ansible.builtin.meta: flush_handlers
-""")
+"""
+            )
 
         for mf in other_files:
             task_parts.append(copy_task(mf, "[Restart service]"))
 
-        task_parts.append(f"""- name: Ensure {unit} is enabled and running
+        task_parts.append(
+            f"""- name: Ensure {unit} is enabled (preserve running state)
   ansible.builtin.service:
     name: "{{{{ unit_name }}}}"
     enabled: true
+
+- name: Start {unit} if it was active at harvest time
+  ansible.builtin.service:
+    name: "{{{{ unit_name }}}}"
     state: started
-""")
+  when: {var_prefix}_start | bool
+"""
+        )
 
         tasks = "\n".join(task_parts).rstrip() + "\n"
-        with open(os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write(tasks)
 
-        with open(os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write("---\ndependencies: []\n")
 
         excluded = svc.get("excluded", [])
@@ -315,7 +438,9 @@ Generated from `{unit}`.
 {var_prefix}_packages:
   - {pkg}
 """
-        with open(os.path.join(role_dir, "defaults", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "defaults", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write(defaults)
 
         handlers = """---
@@ -323,10 +448,14 @@ Generated from `{unit}`.
   ansible.builtin.systemd:
     daemon_reload: true
 """
-        with open(os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write(handlers)
 
-        systemd_files = [mf for mf in managed_files if mf["path"].startswith("/etc/systemd/system/")]
+        systemd_files = [
+            mf for mf in managed_files if mf["path"].startswith("/etc/systemd/system/")
+        ]
         other_files = [mf for mf in managed_files if mf not in systemd_files]
 
         def copy_task(mf: Dict[str, Any], notify: str | None) -> str:
@@ -341,29 +470,37 @@ Generated from `{unit}`.
 {notify_line}"""
 
         task_parts: List[str] = []
-        task_parts.append(f"""---
+        task_parts.append(
+            f"""---
 - name: Install manual package {pkg}
   ansible.builtin.apt:
     name: "{{{{ {var_prefix}_packages }}}}"
     state: present
     update_cache: true
-""")
+"""
+        )
 
         if systemd_files:
             for mf in systemd_files:
                 task_parts.append(copy_task(mf, "[systemd daemon-reload]"))
-            task_parts.append("""- name: Reload systemd to pick up unit changes
+            task_parts.append(
+                """- name: Reload systemd to pick up unit changes
   ansible.builtin.meta: flush_handlers
-""")
+"""
+            )
 
         for mf in other_files:
             task_parts.append(copy_task(mf, None))
 
         tasks = "\n".join(task_parts).rstrip() + "\n"
-        with open(os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write(tasks)
 
-        with open(os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
             f.write("---\ndependencies: []\n")
 
         excluded = pr.get("excluded", [])
@@ -389,4 +526,7 @@ Generated for manual package `{pkg}`.
         manifested_pkg_roles.append(role)
 
     # Playbooks
-    _write_playbook(os.path.join(out_dir, "playbook.yml"), manifested_users_roles + manifested_pkg_roles + manifested_service_roles)
+    _write_playbook(
+        os.path.join(out_dir, "playbook.yml"),
+        manifested_users_roles + manifested_etc_custom_roles + manifested_pkg_roles + manifested_service_roles,
+    )

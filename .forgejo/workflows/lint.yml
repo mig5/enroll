@@ -1,0 +1,40 @@
+name: Lint
+
+on:
+  push:
+
+jobs:
+  test:
+    runs-on: docker
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            black pyflakes3 python3-bandit
+
+      - name: Run linters
+        run: |
+          black --diff --check enroll/*
+          black --diff --check tests/*
+          pyflakes3 enroll/*
+          pyflakes3 tests/*
+          bandit -r enroll/
+
+      # Notify if any previous step in this job failed
+      - name: Notify on failure
+        if: ${{ failure() }}
+        env:
+          WEBHOOK_URL: ${{ secrets.NODERED_WEBHOOK_URL }}
+          REPOSITORY: ${{ forgejo.repository }}
+          RUN_NUMBER: ${{ forgejo.run_number }}
+          SERVER_URL: ${{ forgejo.server_url }}
+        run: |
+          curl -X POST \
+               -H "Content-Type: application/json" \
+               -d "{\"repository\":\"$REPOSITORY\",\"run_number\":\"$RUN_NUMBER\",\"status\":\"failure\",\"url\":\"$SERVER_URL/$REPOSITORY/actions/runs/$RUN_NUMBER\"}" \
+               "$WEBHOOK_URL"

@@ -3,19 +3,19 @@ from __future__ import annotations
 import glob
 import hashlib
 import os
-import subprocess
+import subprocess # nosec
 from typing import Dict, List, Optional, Set, Tuple
 
 
 def _run(cmd: list[str]) -> str:
-    p = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    p = subprocess.run(cmd, check=False, text=True, capture_output=True) # nosec
     if p.returncode != 0:
         raise RuntimeError(f"Command failed: {cmd}\n{p.stderr}")
     return p.stdout
 
 
 def dpkg_owner(path: str) -> Optional[str]:
-    p = subprocess.run(["dpkg", "-S", path], text=True, capture_output=True)
+    p = subprocess.run(["dpkg", "-S", path], text=True, capture_output=True) #nosec
     if p.returncode != 0:
         return None
     left = p.stdout.split(":", 1)[0].strip()
@@ -23,10 +23,9 @@ def dpkg_owner(path: str) -> Optional[str]:
     return pkg or None
 
 
-
 def list_manual_packages() -> List[str]:
     """Return packages marked as manually installed (apt-mark showmanual)."""
-    p = subprocess.run(["apt-mark", "showmanual"], text=True, capture_output=True)
+    p = subprocess.run(["apt-mark", "showmanual"], text=True, capture_output=True) #nosec
     if p.returncode != 0:
         return []
     pkgs: List[str] = []
@@ -36,6 +35,7 @@ def list_manual_packages() -> List[str]:
             continue
         pkgs.append(line)
     return sorted(set(pkgs))
+
 
 def build_dpkg_etc_index(
     info_dir: str = "/var/lib/dpkg/info",
@@ -83,7 +83,9 @@ def build_dpkg_etc_index(
     return owned, owner, topdir_to_pkgs, pkg_to_etc
 
 
-def parse_status_conffiles(status_path: str = "/var/lib/dpkg/status") -> Dict[str, Dict[str, str]]:
+def parse_status_conffiles(
+    status_path: str = "/var/lib/dpkg/status",
+) -> Dict[str, Dict[str, str]]:
     """
     pkg -> { "/etc/foo": md5hex, ... } based on dpkg status "Conffiles" field.
     This md5 is the packaged baseline for the conffile.
@@ -152,7 +154,7 @@ def read_pkg_md5sums(pkg: str) -> Dict[str, str]:
 
 
 def file_md5(path: str) -> str:
-    h = hashlib.md5()
+    h = hashlib.md5() # nosec
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
@@ -164,6 +166,7 @@ def stat_triplet(path: str) -> Tuple[str, str, str]:
     mode = oct(st.st_mode & 0o777)[2:].zfill(4)
 
     import pwd, grp
+
     try:
         owner = pwd.getpwuid(st.st_uid).pw_name
     except KeyError:

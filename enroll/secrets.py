@@ -8,6 +8,15 @@ from typing import Optional
 
 
 DEFAULT_DENY_GLOBS = [
+    # Common backup copies created by passwd tools (can contain sensitive data)
+    "/etc/passwd-",
+    "/etc/group-",
+    "/etc/shadow-",
+    "/etc/gshadow-",
+    "/etc/subuid-",
+    "/etc/subgid-",
+    "/etc/*shadow-",
+    "/etc/*gshadow-",
     "/etc/ssl/private/*",
     "/etc/ssh/ssh_host_*",
     "/etc/shadow",
@@ -17,9 +26,9 @@ DEFAULT_DENY_GLOBS = [
 ]
 
 SENSITIVE_CONTENT_PATTERNS = [
-    re.compile(br"-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----"),
-    re.compile(br"(?i)\bpassword\s*="),
-    re.compile(br"(?i)\b(pass|passwd|token|secret|api[_-]?key)\b"),
+    re.compile(rb"-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----"),
+    re.compile(rb"(?i)\bpassword\s*="),
+    re.compile(rb"(?i)\b(pass|passwd|token|secret|api[_-]?key)\b"),
 ]
 
 

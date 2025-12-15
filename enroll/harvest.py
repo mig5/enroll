@@ -18,8 +18,7 @@ from .debian import (
     stat_triplet,
 )
 from .secrets import SecretPolicy
-from .accounts import collect_non_system_users, UserRecord
-
+from .accounts import collect_non_system_users
 
 
 @dataclass
@@ -43,6 +42,10 @@ class ServiceSnapshot:
     unit: str
     role_name: str
     packages: List[str]
+    active_state: Optional[str]
+    sub_state: Optional[str]
+    unit_file_state: Optional[str]
+    condition_result: Optional[str]
     managed_files: List[ManagedFile]
     excluded: List[ExcludedFile]
     notes: List[str]
@@ -66,14 +69,58 @@ class UsersSnapshot:
     notes: List[str]
 
 
+@dataclass
+class EtcCustomSnapshot:
+    role_name: str
+    managed_files: List[ManagedFile]
+    excluded: List[ExcludedFile]
+    notes: List[str]
+
+
 ALLOWED_UNOWNED_EXTS = {
-    ".conf", ".cfg", ".ini", ".cnf", ".yaml", ".yml", ".json", ".toml",
-    ".rules", ".service", ".socket", ".timer", ".target", ".path", ".mount",
-    ".network", ".netdev", ".link",
+    ".conf",
+    ".cfg",
+    ".ini",
+    ".cnf",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".toml",
+    ".rules",
+    ".service",
+    ".socket",
+    ".timer",
+    ".target",
+    ".path",
+    ".mount",
+    ".network",
+    ".netdev",
+    ".link",
     "",  # allow extensionless (common in /etc/default and /etc/init.d)
 }
 
 MAX_UNOWNED_FILES_PER_ROLE = 400
+
+# Directories that are shared across many packages; never attribute unowned files in these trees to a single package.
+SHARED_ETC_TOPDIRS = {
+    "default",
+    "apparmor.d",
+    "network",
+    "init.d",
+    "systemd",
+    "pam.d",
+    "ssh",
+    "ssl",
+    "sudoers.d",
+    "cron.d",
+    "cron.daily",
+    "cron.weekly",
+    "cron.monthly",
+    "cron.hourly",
+    "logrotate.d",
+    "sysctl.d",
+    "modprobe.d",
+}
 
 
 def _safe_name(s: str) -> str:
@@ -89,10 +136,12 @@ def _role_name_from_unit(unit: str) -> str:
 
 
 def _role_name_from_pkg(pkg: str) -> str:
-    return "pkg_" + _safe_name(pkg)
+    return _safe_name(pkg)
 
 
-def _copy_into_bundle(bundle_dir: str, role_name: str, abs_path: str, src_rel: str) -> None:
+def _copy_into_bundle(
+    bundle_dir: str, role_name: str, abs_path: str, src_rel: str
+) -> None:
     dst = os.path.join(bundle_dir, "artifacts", role_name, src_rel)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copy2(abs_path, dst)
@@ -114,7 +163,9 @@ def _hint_names(unit: str, pkgs: Set[str]) -> Set[str]:
     return {h for h in hints if h}
 
 
-def _add_pkgs_from_etc_topdirs(hints: Set[str], topdir_to_pkgs: Dict[str, Set[str]], pkgs: Set[str]) -> None:
+def _add_pkgs_from_etc_topdirs(
+    hints: Set[str], topdir_to_pkgs: Dict[str, Set[str]], pkgs: Set[str]
+) -> None:
     for h in hints:
         for p in topdir_to_pkgs.get(h, set()):
             pkgs.add(p)
@@ -123,16 +174,20 @@ def _add_pkgs_from_etc_topdirs(hints: Set[str], topdir_to_pkgs: Dict[str, Set[st
 def _maybe_add_specific_paths(hints: Set[str]) -> List[str]:
     paths: List[str] = []
     for h in hints:
-        paths.extend([
-            f"/etc/default/{h}",
-            f"/etc/init.d/{h}",
-            f"/etc/sysctl.d/{h}.conf",
-            f"/etc/logrotate.d/{h}",
-        ])
+        paths.extend(
+            [
+                f"/etc/default/{h}",
+                f"/etc/init.d/{h}",
+                f"/etc/sysctl.d/{h}.conf",
+                f"/etc/logrotate.d/{h}",
+            ]
+        )
     return paths
 
 
-def _scan_unowned_under_roots(roots: List[str], owned_etc: Set[str], limit: int = MAX_UNOWNED_FILES_PER_ROLE) -> List[str]:
+def _scan_unowned_under_roots(
+    roots: List[str], owned_etc: Set[str], limit: int = MAX_UNOWNED_FILES_PER_ROLE
+) -> List[str]:
     found: List[str] = []
     for root in roots:
         if not os.path.isdir(root):
@@ -170,7 +225,10 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
     os.makedirs(bundle_dir, exist_ok=True)
 
     if hasattr(os, "geteuid") and os.geteuid() != 0:
-        print("Warning: not running as root; harvest may miss files or metadata.", flush=True)
+        print(
+            "Warning: not running as root; harvest may miss files or metadata.",
+            flush=True,
+        )
 
     owned_etc, etc_owner_map, topdir_to_pkgs, pkg_to_etc_paths = build_dpkg_etc_index()
     conffiles_by_pkg = parse_status_conffiles()
@@ -185,14 +243,20 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
         try:
             ui = get_unit_info(unit)
         except UnitQueryError as e:
-            service_snaps.append(ServiceSnapshot(
-                unit=unit,
-                role_name=role,
-                packages=[],
-                managed_files=[],
-                excluded=[],
-                notes=[str(e)],
-            ))
+            service_snaps.append(
+                ServiceSnapshot(
+                    unit=unit,
+                    role_name=role,
+                    packages=[],
+                    active_state=None,
+                    sub_state=None,
+                    unit_file_state=None,
+                    condition_result=None,
+                    managed_files=[],
+                    excluded=[],
+                    notes=[str(e)],
+                )
+            )
             continue
 
         pkgs: Set[str] = set()
@@ -243,6 +307,7 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
                 if path in conff:
+                    # Only capture conffiles when they differ from the package default.
                     try:
                         current = file_md5(path)
                     except OSError:
@@ -267,7 +332,9 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
             candidates.setdefault(pth, "custom_unowned")
 
         if not pkgs and not candidates:
-            notes.append("No packages or /etc candidates detected (unexpected for enabled service).")
+            notes.append(
+                "No packages or /etc candidates detected (unexpected for enabled service)."
+            )
 
         for path, reason in sorted(candidates.items()):
             deny = policy.deny_reason(path)
@@ -285,31 +352,49 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
             except OSError:
                 excluded.append(ExcludedFile(path=path, reason="unreadable"))
                 continue
-            managed.append(ManagedFile(
-                path=path,
-                src_rel=src_rel,
-                owner=owner,
-                group=group,
-                mode=mode,
-                reason=reason,
-            ))
+            managed.append(
+                ManagedFile(
+                    path=path,
+                    src_rel=src_rel,
+                    owner=owner,
+                    group=group,
+                    mode=mode,
+                    reason=reason,
+                )
+            )
 
-        service_snaps.append(ServiceSnapshot(
-            unit=unit,
-            role_name=role,
-            packages=sorted(pkgs),
-            managed_files=managed,
-            excluded=excluded,
-            notes=notes,
-        ))
+        service_snaps.append(
+            ServiceSnapshot(
+                unit=unit,
+                role_name=role,
+                packages=sorted(pkgs),
+                active_state=ui.active_state,
+                sub_state=ui.sub_state,
+                unit_file_state=ui.unit_file_state,
+                condition_result=ui.condition_result,
+                managed_files=managed,
+                excluded=excluded,
+                notes=notes,
+            )
+        )
 
     # -------------------------
     # Manual package roles
     # -------------------------
     manual_pkgs = list_manual_packages()
+    # Avoid duplicate roles: if a manual package is already managed by any service role, skip its pkg_<name> role.
+    covered_by_services: Set[str] = set()
+    for s in service_snaps:
+        for p in s.packages:
+            covered_by_services.add(p)
+
+    manual_pkgs_skipped: List[str] = []
     pkg_snaps: List[PackageSnapshot] = []
 
     for pkg in manual_pkgs:
+        if pkg in covered_by_services:
+            manual_pkgs_skipped.append(pkg)
+            continue
         role = _role_name_from_pkg(pkg)
         notes: List[str] = []
         excluded: List[ExcludedFile] = []
@@ -343,13 +428,17 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
         topdirs = _topdirs_for_package(pkg, pkg_to_etc_paths)
         roots: List[str] = []
         for td in sorted(topdirs):
+            if td in SHARED_ETC_TOPDIRS:
+                continue
             roots.extend([f"/etc/{td}", f"/etc/{td}.d"])
             roots.extend([f"/etc/default/{td}"])
             roots.extend([f"/etc/init.d/{td}"])
             roots.extend([f"/etc/logrotate.d/{td}"])
             roots.extend([f"/etc/sysctl.d/{td}.conf"])
 
-        for pth in _scan_unowned_under_roots([r for r in roots if os.path.isdir(r)], owned_etc):
+        for pth in _scan_unowned_under_roots(
+            [r for r in roots if os.path.isdir(r)], owned_etc
+        ):
             candidates.setdefault(pth, "custom_unowned")
 
         for r in roots:
@@ -373,25 +462,31 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
             except OSError:
                 excluded.append(ExcludedFile(path=path, reason="unreadable"))
                 continue
-            managed.append(ManagedFile(
-                path=path,
-                src_rel=src_rel,
-                owner=owner,
-                group=group,
-                mode=mode,
-                reason=reason,
-            ))
+            managed.append(
+                ManagedFile(
+                    path=path,
+                    src_rel=src_rel,
+                    owner=owner,
+                    group=group,
+                    mode=mode,
+                    reason=reason,
+                )
+            )
 
         if not pkg_to_etc_paths.get(pkg, []) and not managed:
-            notes.append("No /etc files detected for this package (may be a meta package).")
+            notes.append(
+                "No /etc files detected for this package (may be a meta package)."
+            )
 
-        pkg_snaps.append(PackageSnapshot(
-            package=pkg,
-            role_name=role,
-            managed_files=managed,
-            excluded=excluded,
-            notes=notes,
-        ))
+        pkg_snaps.append(
+            PackageSnapshot(
+                package=pkg,
+                role_name=role,
+                managed_files=managed,
+                excluded=excluded,
+                notes=notes,
+            )
+        )
 
     # -------------------------
     # Users role (non-system users)
@@ -402,7 +497,7 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
     users_list: List[dict] = []
 
     try:
-        us
+        user_records = collect_non_system_users()
     except Exception as e:
         user_records = []
         users_notes.append(f"Failed to enumerate users: {e!r}")
@@ -410,47 +505,51 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
     users_role_name = "users"
 
     for u in user_records:
-        users_list.append({
-            "name": u.name,
-            "uid": u.uid,
-            "gid": u.gid,
-            "gecos": u.gecos,
-            "home": u.home,
-            "shell": u.shell,
-            "primary_group": u.primary_group,
-            "supplementary_groups": u.supplementary_groups,
-        })
+        users_list.append(
+            {
+                "name": u.name,
+                "uid": u.uid,
+                "gid": u.gid,
+                "gecos": u.gecos,
+                "home": u.home,
+                "shell": u.shell,
+                "primary_group": u.primary_group,
+                "supplementary_groups": u.supplementary_groups,
+            }
+        )
 
-        # Copy authorized_keys
+        # Copy only safe SSH public material: authorized_keys + *.pub
         for sf in u.ssh_files:
             deny = policy.deny_reason(sf)
             if deny:
                 users_excluded.append(ExcludedFile(path=sf, reason=deny))
                 continue
-
-            # Force safe modes; still record current owner/group for reference.
             try:
                 owner, group, mode = stat_triplet(sf)
             except OSError:
                 users_excluded.append(ExcludedFile(path=sf, reason="unreadable"))
                 continue
-
             src_rel = sf.lstrip("/")
             try:
                 _copy_into_bundle(bundle_dir, users_role_name, sf, src_rel)
             except OSError:
                 users_excluded.append(ExcludedFile(path=sf, reason="unreadable"))
                 continue
-
-            reason = "authorized_keys" if sf.endswith("/authorized_keys") else "ssh_public_key"
-            users_managed.append(ManagedFile(
-                path=sf,
-                src_rel=src_rel,
-                owner=owner,
-                group=group,
-                mode=mode,
-                reason=reason,
-            ))
+            reason = (
+                "authorized_keys"
+                if sf.endswith("/authorized_keys")
+                else "ssh_public_key"
+            )
+            users_managed.append(
+                ManagedFile(
+                    path=sf,
+                    src_rel=src_rel,
+                    owner=owner,
+                    group=group,
+                    mode=mode,
+                    reason=reason,
+                )
+            )
 
     users_snapshot = UsersSnapshot(
         role_name=users_role_name,
@@ -460,12 +559,91 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
         notes=users_notes,
     )
 
+    # -------------------------
+    # etc_custom role (unowned /etc files not already attributed elsewhere)
+    # -------------------------
+    etc_notes: List[str] = []
+    etc_excluded: List[ExcludedFile] = []
+    etc_managed: List[ManagedFile] = []
+    etc_role_name = "etc_custom"
+
+    # Build a set of files already captured by other roles.
+    already: Set[str] = set()
+    for s in service_snaps:
+        for mf in s.managed_files:
+            already.add(mf.path)
+    for p in pkg_snaps:
+        for mf in p.managed_files:
+            already.add(mf.path)
+    for mf in users_managed:
+        already.add(mf.path)
+
+    # Walk /etc for unowned config-ish files
+    scanned = 0
+    for dirpath, _, filenames in os.walk("/etc"):
+        for fn in filenames:
+            path = os.path.join(dirpath, fn)
+            if path in already:
+                continue
+            if path in owned_etc:
+                continue
+            if not os.path.isfile(path) or os.path.islink(path):
+                continue
+            if not _is_confish(path):
+                continue
+
+            deny = policy.deny_reason(path)
+            if deny:
+                etc_excluded.append(ExcludedFile(path=path, reason=deny))
+                continue
+
+            try:
+                owner, group, mode = stat_triplet(path)
+            except OSError:
+                etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                continue
+
+            src_rel = path.lstrip("/")
+            try:
+                _copy_into_bundle(bundle_dir, etc_role_name, path, src_rel)
+            except OSError:
+                etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                continue
+
+            etc_managed.append(
+                ManagedFile(
+                    path=path,
+                    src_rel=src_rel,
+                    owner=owner,
+                    group=group,
+                    mode=mode,
+                    reason="custom_unowned",
+                )
+            )
+            scanned += 1
+            if scanned >= 2000:
+                etc_notes.append(
+                    "Reached file cap (2000) while scanning /etc for unowned files."
+                )
+                break
+        if scanned >= 2000:
+            break
+
+    etc_custom_snapshot = EtcCustomSnapshot(
+        role_name=etc_role_name,
+        managed_files=etc_managed,
+        excluded=etc_excluded,
+        notes=etc_notes,
+    )
+
     state = {
         "host": {"hostname": os.uname().nodename, "os": "debian"},
         "users": asdict(users_snapshot),
         "services": [asdict(s) for s in service_snaps],
         "manual_packages": manual_pkgs,
+        "manual_packages_skipped": manual_pkgs_skipped,
         "package_roles": [asdict(p) for p in pkg_snaps],
+        "etc_custom": asdict(etc_custom_snapshot),
     }
 
     state_path = os.path.join(bundle_dir, "state.json")

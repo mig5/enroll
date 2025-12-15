@@ -9,6 +9,8 @@ It aims to be **optimistic and noninteractive**:
 - Also captures **service-relevant custom/unowned files** under `/etc/<service>/...` (e.g. drop-in config includes).
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
 - Captures non-system users that exist on the system, and their SSH public keys
+- Captures miscellaneous `/etc` files that it can't attribute to a package, and installs it in an `etc_custom` role
+- Avoids trying to start systemd services that were detected as being Inactive during harvest
 
 ## Install (Poetry)
 
@@ -21,22 +23,22 @@ poetry run enroll --help
 
 On the host (root recommended):
 
-### 1. Generate a bundle of state/information about the host
+### 1. Harvest state/information about the host
 
 ```bash
-sudo poetry run enroll harvest --out /tmp/enroll-bundle
+sudo poetry run enroll harvest --out /tmp/enroll-harvest
 ```
 
-### 2. Generate Ansible manifests (roles/playbook) from that bundle
+### 2. Generate Ansible manifests (roles/playbook) from that harvest
 
 ```bash
-sudo poetry run enroll manifest --bundle /tmp/enroll-bundle --out /tmp/enroll-ansible
+sudo poetry run enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
 ### Alternatively, do both steps in one shot:
 
 ```bash
-sudo poetry run enroll export --bundle /tmp/enroll-bundle --out /tmp/enroll-ansible
+sudo poetry run enroll enroll --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
 Then run:

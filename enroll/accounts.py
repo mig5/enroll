@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 
 @dataclass
@@ -27,7 +27,12 @@ def parse_login_defs(path: str = "/etc/login.defs") -> Dict[str, int]:
                 if not line or line.startswith("#"):
                     continue
                 parts = line.split()
-                if len(parts) >= 2 and parts[0] in {"UID_MIN", "UID_MAX", "SYS_UID_MIN", "SYS_UID_MAX"}:
+                if len(parts) >= 2 and parts[0] in {
+                    "UID_MIN",
+                    "UID_MAX",
+                    "SYS_UID_MIN",
+                    "SYS_UID_MAX",
+                }:
                     try:
                         vals[parts[0]] = int(parts[1])
                     except ValueError:
@@ -37,7 +42,9 @@ def parse_login_defs(path: str = "/etc/login.defs") -> Dict[str, int]:
     return vals
 
 
-def parse_passwd(path: str = "/etc/passwd") -> List[Tuple[str, int, int, str, str, str]]:
+def parse_passwd(
+    path: str = "/etc/passwd",
+) -> List[Tuple[str, int, int, str, str, str]]:
     rows: List[Tuple[str, int, int, str, str, str]] = []
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -60,7 +67,9 @@ def parse_passwd(path: str = "/etc/passwd") -> List[Tuple[str, int, int, str, st
     return rows
 
 
-def parse_group(path: str = "/etc/group") -> Tuple[Dict[int, str], Dict[str, int], Dict[str, Set[str]]]:
+def parse_group(
+    path: str = "/etc/group",
+) -> Tuple[Dict[int, str], Dict[str, int], Dict[str, Set[str]]]:
     gid_to_name: Dict[int, str] = {}
     name_to_gid: Dict[str, int] = {}
     members: Dict[str, Set[str]] = {}
@@ -130,16 +139,18 @@ def collect_non_system_users() -> List[UserRecord]:
 
         ssh_files = find_user_ssh_files(home) if home and home.startswith("/") else []
 
-        users.append(UserRecord(
-            name=name,
-            uid=uid,
-            gid=gid,
-            gecos=gecos,
-            home=home,
-            shell=shell,
-            primary_group=primary_group,
-            supplementary_groups=supp,
-            ssh_files=ssh_files,
-        ))
+        users.append(
+            UserRecord(
+                name=name,
+                uid=uid,
+                gid=gid,
+                gecos=gecos,
+                home=home,
+                shell=shell, # nosec
+                primary_group=primary_group,
+                supplementary_groups=supp,
+                ssh_files=ssh_files,
+            )
+        )
 
     return users

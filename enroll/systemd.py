@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-import subprocess
+import subprocess # nosec
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -12,7 +12,11 @@ class UnitInfo:
     fragment_path: Optional[str]
     dropin_paths: List[str]
     env_files: List[str]
-    exec_paths: List[str]  # binaries from ExecStart "path=" parts
+    exec_paths: List[str]
+    active_state: Optional[str]
+    sub_state: Optional[str]
+    unit_file_state: Optional[str]
+    condition_result: Optional[str]
 
 
 class UnitQueryError(RuntimeError):
@@ -23,14 +27,22 @@ class UnitQueryError(RuntimeError):
 
 
 def _run(cmd: list[str]) -> str:
-    p = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    p = subprocess.run(cmd, check=False, text=True, capture_output=True) # nosec
     if p.returncode != 0:
         raise RuntimeError(f"Command failed: {cmd}\n{p.stderr}")
     return p.stdout
 
 
 def list_enabled_services() -> List[str]:
-    out = _run(["systemctl", "list-unit-files", "--type=service", "--state=enabled", "--no-legend"])
+    out = _run(
+        [
+            "systemctl",
+            "list-unit-files",
+            "--type=service",
+            "--state=enabled",
+            "--no-legend",
+        ]
+    )
     units: List[str] = []
     for line in out.splitlines():
         parts = line.split()
@@ -39,7 +51,7 @@ def list_enabled_services() -> List[str]:
         unit = parts[0].strip()
         if not unit.endswith(".service"):
             continue
-        # Skip template units like "getty@.service" which are enabled but not valid for systemctl show
+        # Skip template units like "getty@.service"
         if unit.endswith("@.service") or "@.service" in unit:
             continue
         units.append(unit)
@@ -49,13 +61,27 @@ def list_enabled_services() -> List[str]:
 def get_unit_info(unit: str) -> UnitInfo:
     p = subprocess.run(
         [
-            "systemctl", "show", unit,
-            "-p", "FragmentPath",
-            "-p", "DropInPaths",
-            "-p", "EnvironmentFiles",
-            "-p", "ExecStart",
+            "systemctl",
+            "show",
+            unit,
+            "-p",
+            "FragmentPath",
+            "-p",
+            "DropInPaths",
+            "-p",
+            "EnvironmentFiles",
+            "-p",
+            "ExecStart",
+            "-p",
+            "ActiveState",
+            "-p",
+            "SubState",
+            "-p",
+            "UnitFileState",
+            "-p",
+            "ConditionResult",
             "--no-page",
-        ],
+        ], # nosec
         check=False,
         text=True,
         capture_output=True,
@@ -70,7 +96,6 @@ def get_unit_info(unit: str) -> UnitInfo:
             kv[k] = v.strip()
 
     fragment = kv.get("FragmentPath") or None
-
     dropins = [pp for pp in (kv.get("DropInPaths", "") or "").split() if pp]
 
     env_files: List[str] = []
@@ -87,4 +112,8 @@ def get_unit_info(unit: str) -> UnitInfo:
         dropin_paths=sorted(set(dropins)),
         env_files=sorted(set(env_files)),
         exec_paths=sorted(set(exec_paths)),
+        active_state=kv.get("ActiveState") or None,
+        sub_state=kv.get("SubState") or None,
+        unit_file_state=kv.get("UnitFileState") or None,
+        condition_result=kv.get("ConditionResult") or None,
     )
