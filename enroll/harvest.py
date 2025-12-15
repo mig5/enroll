@@ -488,7 +488,7 @@ def harvest(bundle_dir: str, policy: Optional[SecretPolicy] = None) -> str:
 
         if not pkg_to_etc_paths.get(pkg, []) and not managed:
             notes.append(
-                "No /etc files detected for this package (may be a meta package)."
+                "No /etc files detected for this package."
             )
 
         pkg_snaps.append(
