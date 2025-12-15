@@ -380,25 +380,27 @@ Unowned /etc config files not attributed to packages or services.
 
         task_parts.append(
             f"""
-- name: Check if unit exists
-  ansible.builtin.command: systemctl cat "{{ unit_name }}"
-  register: _unit_exists
-  changed_when: false
+- name: Probe whether systemd unit exists and is manageable
+  ansible.builtin.systemd:
+    name: "{{ unit_name }}"
+  check_mode: true
+  register: _unit_probe
   failed_when: false
+  changed_when: false
 
-- name: Ensure {unit} is enabled (preserve running state)
-  ansible.builtin.service:
+- name: Ensure {{ unit_name }} is enabled (preserve running state)
+  ansible.builtin.systemd:
     name: "{{ unit_name }}"
     enabled: true
-  when: _unit_exists.rc == 0
+  when: _unit_probe is succeeded
 
-- name: Start {unit} if it was active at harvest time
-  ansible.builtin.service:
-    name: "{{{{ unit_name }}}}"
+- name: Start {{ unit_name }} if it was active at harvest time
+  ansible.builtin.systemd:
+    name: "{{ unit_name }}"
     state: started
   when:
-    - {var_prefix}_start | bool
-    - _unit_exists.rc == 0
+    - _unit_probe is succeeded
+    - {{ var_prefix }}_start | bool
 """
         )
 

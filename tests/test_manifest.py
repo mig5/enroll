@@ -96,7 +96,7 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
 
     # Service role: conditional start must be a clean Ansible expression
     tasks = (out / "roles" / "foo" / "tasks" / "main.yml").read_text(encoding="utf-8")
-    assert "when:\n    - foo_start | bool\n    - _unit_exists.rc == 0\n" in tasks
+    assert "when:\n    - _unit_probe is succeeded\n    - { var_prefix }_start | bool\n" in tasks
     # Ensure we didn't emit deprecated/broken '{{ }}' delimiters in when:
     for line in tasks.splitlines():
         if line.lstrip().startswith("when:"):
