@@ -45,24 +45,24 @@ poetry run enroll --help
 
 ## Usage
 
-On the host (root recommended):
+On the host (root recommended to harvest as much data as possible):
 
 ### 1. Harvest state/information about the host
 
 ```bash
-sudo poetry run enroll harvest --out /tmp/enroll-harvest
+enroll harvest --out /tmp/enroll-harvest
 ```
 
 ### 2. Generate Ansible manifests (roles/playbook) from that harvest
 
 ```bash
-sudo poetry run enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
+enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
 ### Alternatively, do both steps in one shot:
 
 ```bash
-sudo poetry run enroll enroll --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
+enroll enroll --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
 Then run:
