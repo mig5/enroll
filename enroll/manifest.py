@@ -379,16 +379,26 @@ Unowned /etc config files not attributed to packages or services.
             task_parts.append(copy_task(mf, "[Restart service]"))
 
         task_parts.append(
-            f"""- name: Ensure {unit} is enabled (preserve running state)
+            f"""
+- name: Check if unit exists
+  ansible.builtin.command: systemctl cat "{{ unit_name }}"
+  register: _unit_exists
+  changed_when: false
+  failed_when: false
+
+- name: Ensure {unit} is enabled (preserve running state)
   ansible.builtin.service:
-    name: "{{{{ unit_name }}}}"
+    name: "{{ unit_name }}"
     enabled: true
+  when: _unit_exists.rc == 0
 
 - name: Start {unit} if it was active at harvest time
   ansible.builtin.service:
     name: "{{{{ unit_name }}}}"
     state: started
-  when: {var_prefix}_start | bool
+  when:
+    - {var_prefix}_start | bool
+    - _unit_exists.rc == 0
 """
         )
 
