@@ -18,6 +18,14 @@ enroll = "enroll.cli:main"
 pytest = "^9.0.2"
 pytest-cov = "^7.0.0"
 
+
+[tool.poetry.group.dev.dependencies]
+pyproject-appimage = "^4.2"
+
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pyproject-appimage]
+script = "enroll"
+output = "Enroll.AppImage"
