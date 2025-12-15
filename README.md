@@ -30,7 +30,7 @@ sudo apt install enroll
 
 ### AppImage
 
-Download the AppImage file from the Releases page (verify with GPG if you wish, my fingerprint is [here](https://mig5.net/static/mig5.asc),
+Download the AppImage file from the Releases page (verify with GPG if you wish, my fingerprint is [here](https://mig5.net/static/mig5.asc)),
 then make it executable and run it:
 
 ```bash
@@ -75,7 +75,7 @@ enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 enroll enroll --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
-Then run:
+Then run Ansible however way you wish, for example (local execution):
 
 ```bash
 ansible-playbook -i "localhost," -c local /tmp/enroll-ansible/playbook.yml
