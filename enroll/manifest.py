@@ -388,13 +388,13 @@ Unowned /etc config files not attributed to packages or services.
   failed_when: false
   changed_when: false
 
-- name: Ensure {{ unit_name }} is enabled (preserve running state)
+- name: Ensure unit is enabled (preserve running state)
   ansible.builtin.systemd:
     name: "{{ unit_name }}"
     enabled: true
   when: _unit_probe is succeeded
 
-- name: Start {{ unit_name }} if it was active at harvest time
+- name: Start unit if it was active at harvest time
   ansible.builtin.systemd:
     name: "{{ unit_name }}"
     state: started
