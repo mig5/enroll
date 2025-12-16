@@ -132,7 +132,7 @@ def _safe_name(s: str) -> str:
 
 
 def _role_id(raw: str) -> str:
-    # normalize separators first
+    # normalise separators first
     s = re.sub(r"[^A-Za-z0-9]+", "_", raw)
     # split CamelCase -> snake_case
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)

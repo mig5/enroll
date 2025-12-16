@@ -48,8 +48,24 @@ def _yaml_dump_mapping(obj: Dict[str, Any], *, sort_keys: bool = True) -> str:
         for k, v in sorted(obj.items()) if sort_keys else obj.items():
             lines.append(f"{k}: {v!r}")
         return "\n".join(lines).rstrip() + "\n"
+
+    # ansible-lint/yamllint's indentation rules are stricter than YAML itself.
+    # In particular, they expect sequences nested under a mapping key to be
+    # indented (e.g. `foo:\n  - a`), whereas PyYAML's default is often
+    # `foo:\n- a`.
+    class _IndentDumper(yaml.SafeDumper):  # type: ignore
+        def increase_indent(self, flow: bool = False, indentless: bool = False):
+            return super().increase_indent(flow, False)
+
     return (
-        yaml.safe_dump(obj, default_flow_style=False, sort_keys=sort_keys).rstrip()
+        yaml.dump(
+            obj,
+            Dumper=_IndentDumper,
+            default_flow_style=False,
+            sort_keys=sort_keys,
+            indent=2,
+            allow_unicode=True,
+        ).rstrip()
         + "\n"
     )
 
@@ -124,7 +140,7 @@ def _extract_jinjaturtle_block(text: str) -> str:
     return text.strip() + "\n"
 
 
-def _normalize_jinjaturtle_vars_text(vars_text: str) -> str:
+def _normalise_jinjaturtle_vars_text(vars_text: str) -> str:
     """Deduplicate keys in a vars fragment by parsing as YAML and dumping it back."""
     m = _yaml_load_mapping(vars_text)
     if not m:
@@ -166,14 +182,14 @@ def _copy_artifacts(
             dst = os.path.join(dst_files_dir, rel)
 
             # If a file was successfully templatised by JinjaTurtle, do NOT
-            # also materialize the raw copy in the destination files dir.
+            # also materialise the raw copy in the destination files dir.
             # (This keeps the output minimal and avoids redundant "raw" files.)
             if exclude_rels and rel in exclude_rels:
                 try:
                     if os.path.isfile(dst):
                         os.remove(dst)
                 except Exception:
-                    pass
+                    pass  # nosec
                 continue
 
             if preserve_existing and os.path.exists(dst):
@@ -342,7 +358,7 @@ def _jinjify_managed_files(
         except Exception:
             # If jinjaturtle cannot process a file for any reason, skip silently.
             # (Enroll's core promise is to be optimistic and non-interactive.)
-            continue
+            continue  # nosec
 
         tmpl_rel = src_rel + ".j2"
         tmpl_dst = os.path.join(role_dir, "templates", tmpl_rel)
@@ -372,7 +388,7 @@ def _hostvars_only_jinjaturtle(vars_text: str) -> str:
 def _defaults_with_jinjaturtle(base_defaults: str, vars_text: str) -> str:
     if not vars_text.strip():
         return base_defaults.rstrip() + "\n"
-    vars_text = _normalize_jinjaturtle_vars_text(vars_text)
+    vars_text = _normalise_jinjaturtle_vars_text(vars_text)
     # Always regenerate the block (we regenerate whole defaults files anyway)
     return (
         base_defaults.rstrip()
@@ -450,7 +466,11 @@ def _render_generic_files_tasks(
     owner: "{{{{ item.owner }}}}"
     group: "{{{{ item.group }}}}"
     mode: "{{{{ item.mode }}}}"
-  loop: "{{{{ {var_prefix}_managed_files | default([]) | selectattr('is_systemd_unit','equalto', true) | selectattr('kind','equalto','template') | list }}}}"
+  loop: >-
+    {{{{ {var_prefix}_managed_files | default([])
+      | selectattr('is_systemd_unit', 'equalto', true)
+      | selectattr('kind', 'equalto', 'template')
+      | list }}}}
   notify: "{{{{ item.notify | default([]) }}}}"
 
 - name: Deploy systemd unit files (copies)
@@ -465,12 +485,20 @@ def _render_generic_files_tasks(
     owner: "{{{{ item.owner }}}}"
     group: "{{{{ item.group }}}}"
     mode: "{{{{ item.mode }}}}"
-  loop: "{{{{ {var_prefix}_managed_files | default([]) | selectattr('is_systemd_unit','equalto', true) | selectattr('kind','equalto','copy') | list }}}}"
+  loop: >-
+    {{{{ {var_prefix}_managed_files | default([])
+      | selectattr('is_systemd_unit', 'equalto', true)
+      | selectattr('kind', 'equalto', 'copy')
+      | list }}}}
   notify: "{{{{ item.notify | default([]) }}}}"
 
 - name: Reload systemd to pick up unit changes
   ansible.builtin.meta: flush_handlers
-  when: "({var_prefix}_managed_files | default([]) | selectattr('is_systemd_unit','equalto', true) | list | length) > 0"
+  when: >-
+    ({var_prefix}_managed_files | default([])
+      | selectattr('is_systemd_unit', 'equalto', true)
+      | list
+      | length) > 0
 
 - name: Deploy other managed files (templates)
   ansible.builtin.template:
@@ -479,7 +507,11 @@ def _render_generic_files_tasks(
     owner: "{{{{ item.owner }}}}"
     group: "{{{{ item.group }}}}"
     mode: "{{{{ item.mode }}}}"
-  loop: "{{{{ {var_prefix}_managed_files | default([]) | selectattr('is_systemd_unit','equalto', false) | selectattr('kind','equalto','template') | list }}}}"
+  loop: >-
+    {{{{ {var_prefix}_managed_files | default([])
+      | selectattr('is_systemd_unit', 'equalto', false)
+      | selectattr('kind', 'equalto', 'template')
+      | list }}}}
   notify: "{{{{ item.notify | default([]) }}}}"
 
 - name: Deploy other managed files (copies)
@@ -494,7 +526,11 @@ def _render_generic_files_tasks(
     owner: "{{{{ item.owner }}}}"
     group: "{{{{ item.group }}}}"
     mode: "{{{{ item.mode }}}}"
-  loop: "{{{{ {var_prefix}_managed_files | default([]) | selectattr('is_systemd_unit','equalto', false) | selectattr('kind','equalto','copy') | list }}}}"
+  loop: >-
+    {{{{ {var_prefix}_managed_files | default([])
+      | selectattr('is_systemd_unit', 'equalto', false)
+      | selectattr('kind', 'equalto', 'copy')
+      | list }}}}
   notify: "{{{{ item.notify | default([]) }}}}"
 """
 

@@ -11,7 +11,7 @@ rm -rf "${BUNDLE_DIR}" "${ANSIBLE_DIR}"
 
 # Generate data
 poetry run \
-	enroll enroll \
+	enroll single-shot \
 	  --harvest "${BUNDLE_DIR}" \
 	  --out "${ANSIBLE_DIR}"
 
