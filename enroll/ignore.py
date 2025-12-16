@@ -31,6 +31,10 @@ SENSITIVE_CONTENT_PATTERNS = [
     re.compile(rb"(?i)\b(pass|passwd|token|secret|api[_-]?key)\b"),
 ]
 
+COMMENT_PREFIXES = (b"#", b";", b"//")
+BLOCK_START = b"/*"
+BLOCK_END = b"*/"
+
 
 @dataclass
 class IgnorePolicy:
@@ -41,6 +45,28 @@ class IgnorePolicy:
     def __post_init__(self) -> None:
         if self.deny_globs is None:
             self.deny_globs = list(DEFAULT_DENY_GLOBS)
+
+    def iter_effective_lines(self, content: bytes):
+        in_block = False
+        for raw in content.splitlines():
+            line = raw.lstrip()
+
+            if in_block:
+                if BLOCK_END in line:
+                    in_block = False
+                continue
+
+            if not line:
+                continue
+
+            if line.startswith(BLOCK_START):
+                in_block = True
+                continue
+
+            if line.startswith(COMMENT_PREFIXES) or line.startswith(b"*"):
+                continue
+
+            yield raw
 
     def deny_reason(self, path: str) -> Optional[str]:
         for g in self.deny_globs:
@@ -67,8 +93,9 @@ class IgnorePolicy:
         if b"\x00" in data:
             return "binary_like"
 
-        for pat in SENSITIVE_CONTENT_PATTERNS:
-            if pat.search(data):
-                return "sensitive_content"
+        for line in self.iter_effective_lines(data):
+            for pat in SENSITIVE_CONTENT_PATTERNS:
+                if pat.search(line):
+                    return "sensitive_content"
 
         return None

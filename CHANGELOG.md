@@ -1,3 +1,16 @@
+# 0.0.5
+
+ * Use JinjaTurtle to generate dynamic template/inventory if it's on the PATH
+ * Support --fqdn flag for site-specific inventory and an inventory hosts file.
+   This radically re-architects the roles to loop through abstract inventory
+   because otherwise different servers can collide with each other through use
+   of the same role. Use 'single site' mode (no `--fqdn`) if you want more readable,
+   self-contained roles (in which case, store each manifested output in its own
+   repo per server)
+ * Generate an ansible.cfg if not present, to support host_vars plugin and other params,
+   when using `--fqdn` mode
+ * Be more permissive with files that we previously thought contained secrets (ignore commented lines)
+
 # 0.0.4
 
  * Fix dash package detection issue

@@ -8,12 +8,13 @@ Build-Depends:
  dh-python,
  pybuild-plugin-pyproject,
  python3-all,
+ python3-yaml,
  python3-poetry-core
 Standards-Version: 4.6.2
 Homepage: https://git.mig5.net/mig5/enroll
 
 Package: enroll
 Architecture: all
-Depends: ${misc:Depends}, ${python3:Depends}
+Depends: ${misc:Depends}, ${python3:Depends}, python3-yaml
 Description: Harvest a host into Ansible roles
  A tool that inspects a system and emits Ansible roles/playbooks to reproduce it.

@@ -24,6 +24,7 @@ RUN set -eux; \
       pybuild-plugin-pyproject \
       python3-all \
       python3-poetry-core \
+      python3-yaml \
       rsync \
       ca-certificates \
     ; \

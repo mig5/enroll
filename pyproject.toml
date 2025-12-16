@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "enroll"
-version = "0.0.4"
+version = "0.0.5"
 description = "Enroll a server's running state retrospectively into Ansible"
 authors = ["Miguel Jacq <mig@mig5.net>"]
 license = "GPL-3.0-or-later"
@@ -10,6 +10,7 @@ repository = "https://git.mig5.net/mig5/enroll"
 
 [tool.poetry.dependencies]
 python = "^3.10"
+pyyaml = "^6.0.3"
 
 [tool.poetry.scripts]
 enroll = "enroll.cli:main"

@@ -1,3 +1,12 @@
+enroll (0.0.5) unstable; urgency=medium
+
+  * Use JinjaTurtle to generate dynamic template/inventory if it's on the PATH
+  * Support --fqdn flag for site-specific inventory and an inventory hosts file
+  * Generate an ansible.cfg if not present, to support host_vars plugin and other params
+  * Be more permissive with files that we previously thought contained secrets (ignore commented lines)
+
+ -- Miguel Jacq <mig@mig5.net>  Tue, 16 Dec 2025 12:00:00 +1100
+
 enroll (0.0.4) unstable; urgency=medium
 
   * Fix dash package detection issue
