@@ -1,3 +1,13 @@
+# 0.1.0
+
+ * Add remote mode for harvesting a remote machine via a local workstation (no need to install enroll remotely)
+   Optionally use `--no-sudo` if you don't want the remote user to have passwordless sudo when conducting the
+   harvest, albeit you'll end up with less useful data (same as if running `enroll harvest` on a machine without
+   sudo)
+ * Add `--dangerous` flag to capture even sensitive data (use at your own risk!)
+ * Do a better job at capturing other config files in `/etc/<package>/` even if that package doesn't normally
+   ship or manage those files.
+
 # 0.0.5
 
  * Use JinjaTurtle to generate dynamic template/inventory if it's on the PATH

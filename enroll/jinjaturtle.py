@@ -81,25 +81,3 @@ def run_jinjaturtle(
         return JinjifyResult(
             template_text=template_text, vars_text=vars_text.rstrip() + "\n"
         )
-
-
-def replace_or_append_block(
-    base_text: str,
-    *,
-    begin: str,
-    end: str,
-    block_body: str,
-) -> str:
-    """Replace a marked block if present; else append it."""
-    pattern = re.compile(
-        re.escape(begin) + r".*?" + re.escape(end),
-        flags=re.DOTALL,
-    )
-    new_block = f"{begin}\n{block_body.rstrip()}\n{end}"
-    if pattern.search(base_text):
-        return pattern.sub(new_block, base_text).rstrip() + "\n"
-    # ensure base ends with newline
-    bt = base_text.rstrip() + "\n"
-    if not bt.endswith("\n"):
-        bt += "\n"
-    return bt + "\n" + new_block + "\n"

@@ -8,7 +8,7 @@
 
 It aims to be **optimistic and noninteractive**:
 - Detects packages that have been installed
-- Detects Debian package ownership of `/etc` files using dpkg’s local database.
+- Detects Debian package ownership of `/etc` files using dpkg's local database.
 - Captures config that has **changed from packaged defaults** (dpkg conffile hashes + package md5sums when available).
 - Also captures **service-relevant custom/unowned files** under `/etc/<service>/...` (e.g. drop-in config includes).
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
@@ -23,12 +23,12 @@ It aims to be **optimistic and noninteractive**:
 **enroll** has two distinct ways to generate Ansible:
 
 ## 1) Single-site mode (default: *no* `--fqdn`)
-Use this when you’re enrolling **one server** (or you’re generating a “golden” role set you intend to reuse).
+Use this when you're enrolling **one server** (or you're generating a "golden" role set you intend to reuse).
 
 **What you get**
 - Config, templates, and defaults are primarily **contained inside each role**.
-- Raw config files (when not templated) live in the role’s `files/`.
-- Template variables (when templated) live in the role’s `defaults/main.yml`.
+- Raw config files (when not templated) live in the role's `files/`.
+- Template variables (when templated) live in the role's `defaults/main.yml`.
 
 **Pros**
 - Roles are more **self-contained** and easier to understand.
@@ -36,14 +36,14 @@ Use this when you’re enrolling **one server** (or you’re generating a “gol
 - Less inventory abstraction/duplication.
 
 **Cons**
-- Less convenient for quickly enrolling multiple hosts with divergent configs (you’ll do more manual work to make roles flexible across hosts).
+- Less convenient for quickly enrolling multiple hosts with divergent configs (you'll do more manual work to make roles flexible across hosts).
 
 ## 2) Multi-site mode (`--fqdn`)
 Use this when you want to enroll **several existing servers** quickly, especially if they differ.
 
 **What you get**
 - Roles are **shared** across hosts, but host-specific data lives in inventory.
-- Host inventory drives what’s managed:
+- Host inventory drives what's managed:
   - which files to deploy for that host
   - which packages are relevant for that host
   - which services should be enabled/started for that host
@@ -51,17 +51,17 @@ Use this when you want to enroll **several existing servers** quickly, especiall
 
 **Pros**
 - Fastest way to retrofit **multiple servers** into config management.
-- Avoids shared-role “host A breaks host B” problems by keeping host-specific state in inventory.
+- Avoids shared-role "host A breaks host B" problems by keeping host-specific state in inventory.
 - Better fit when you already have a fleet and want to capture/reflect reality first.
 
 **Cons**
-- More abstraction: roles become more “data-driven”.
+- More abstraction: roles become more "data-driven".
 - Potential duplication: raw files may exist per-host in inventory (even if identical).
 - Harder to use the roles to **provision a brand-new server** without also building an inventory for that new host, because multi-site output assumes the server already exists and is being retrofitted.
 
 **Rule of thumb**
-- If your goal is *“make this one server reproducible / provisionable”* → start with **single-site**.
-- If your goal is *“get several already-running servers under management quickly”* → use **multi-site**.
+- If your goal is *"make this one server reproducible / provisionable"* → start with **single-site**.
+- If your goal is *"get several already-running servers under management quickly"* → use **multi-site**.
 
 ---
 
@@ -75,6 +75,24 @@ It also detects if any config files have been *changed* from their packaged defa
 
 The harvest writes a state.json file explaining all the data it harvested and, if it chose not to harvest something, explanations as to why that is the case (see below: sensitive data).
 
+### Remote harvesting (workstation → remote)
+
+If you'd prefer not to install **enroll** on the target host, you can run the harvest over SSH from your workstation and pull the harvest bundle back locally:
+
+```bash
+enroll harvest --remote-host myhost.example.com --remote-user myuser --out /tmp/enroll-harvest
+```
+
+- `--remote-port` defaults to `22`
+- `--remote-user` defaults to your local `$USER`
+
+This uploads a self-contained `enroll` zipapp to a temporary directory on the remote host, runs `harvest` there, then downloads the resulting harvest bundle to the `--out` directory on your workstation.
+
+**Privilege note:** A "full" harvest typically needs root access. Remote harvesting assumes the remote user can run `sudo` **without a password prompt** (NOPASSWD) so the harvest can run non-interactively. If you don't want this, pass `--no-sudo` as well.
+
+**JinjaTurtle note:** If you want to take advantage of JinjaTurtle to turn configs into templates (see below note on JinjaTurtle integration), you'll still need to install JinjaTurtle on the remote host first.
+
+
 ## Sensitive data
 
 **enroll** doesn't make any assumptions about how you might handle sensitive data from your config files, in Ansible. Some people might use SOPS, others might use Vault, others might do something else entirely.
@@ -84,6 +102,25 @@ For this reason, **enroll** will attempt to read config files, and if it detects
 This inevitably means that it will deliberately miss some important config files that you probably *want* to manage in Ansible.
 
 Nonetheless, in the Harvest 'state' file, there should be an explanation of 'excluded files'. You can parse or inspect this file to find what it chose to ignore, and then you know what you might want to augment the results with later, once you 'manifest' the harvest into Ansible configuration.
+
+Nonetheless, in some cases it may be appropriate to truly grab as much as you can, including secrets. For that, read on for the `--dangerous` flag.
+
+### Opting in to fetching sensitive data: `--dangerous`
+
+**WARNING:** `--dangerous` disables enroll's "likely a secret" safety checks. This can cause private keys, TLS key material, API tokens, database passwords, and other credentials to be copied into your harvest output **in plaintext**.
+
+Only use `--dangerous` if you explicitly want to scoop up sensitive files and you understand where the harvest output is stored, who can read it, and how it will be handled (backups, git commits, etc, as well as risk of using `--out` with a shared `/tmp` location where other users could see the data). We offer no liability if your sensitive data is compromised through the use of this tool!
+
+**Strong recommendation:** If you plan to keep harvested files long-term (especially in git), encrypt secrets at rest. A common approach is to use **SOPS** and then use the **community.sops** Ansible collection to load/decrypt encrypted content during deploy.
+
+Install the collection:
+
+```bash
+ansible-galaxy collection install community.sops
+```
+
+Then you can use the collection's lookup/vars plugins or modules to decrypt or load SOPS-encrypted vars at runtime.
+
 
 ## Manifest
 
@@ -114,15 +151,17 @@ JinjaTurtle will be used automatically if it is detected on the `$PATH`. You can
 
 If you *do* have JinjaTurtle installed, but *don't* wish to make use of it, you can use `--no-jinjaturtle`, in which case all config files will be kept as 'raw' files.
 
+**Remote mode**: if you are using the `--remote-xxx` flags for `manifest` or `single-shot` subcommands, and want to take advantage of the JinjaTurtle integration, you'll still need to install JinjaTurtle on the remote host *in advance*.
+
 ---
 
-# How multi-site avoids “shared role breaks a host”
+# How multi-site avoids "shared role breaks a host"
 
 In multi-site mode, **roles are data-driven**. The role contains generic tasks like:
 
-- “deploy all files listed for this host”
-- “install packages listed for this host”
-- “apply systemd enable/start state listed for this host”
+- "deploy all files listed for this host"
+- "install packages listed for this host"
+- "apply systemd enable/start state listed for this host"
 
 The host inventory is what decides which files/packages/services apply to that host. This prevents the classic failure mode where host2 adds a config file to a shared role and host1 then fails trying to deploy a file it never had.
 
@@ -130,7 +169,7 @@ Raw non-templated files are stored under:
 
 - `inventory/host_vars/<fqdn>/<role>/.files/...`
 
-…and the host’s role variables describe which of those files should be deployed.
+…and the host's role variables describe which of those files should be deployed.
 
 ---
 
@@ -182,6 +221,24 @@ On the host (root recommended to harvest as much data as possible):
 ```bash
 enroll harvest --out /tmp/enroll-harvest
 ```
+### Remote harvest over SSH (no enroll install required on the remote host)
+
+```bash
+enroll harvest --remote-host myhost.example.com --remote-user myuser --out /tmp/enroll-harvest
+```
+
+### `--dangerous` (captures potentially sensitive files — read the warning above)
+
+```bash
+enroll harvest --out /tmp/enroll-harvest --dangerous
+```
+
+Remote + dangerous:
+
+```bash
+enroll harvest --remote-host myhost.example.com --remote-user myuser --out /tmp/enroll-harvest --dangerous
+```
+
 
 ## 2. Generate Ansible manifests (roles/playbook) from that harvest
 
@@ -208,6 +265,14 @@ Alternatively, do both steps in one shot:
 ```bash
 enroll single-shot --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn "$(hostname -f)"
 ```
+Remote single-shot (run harvest over SSH, then manifest locally):
+
+```bash
+enroll single-shot --remote-host myhost.example.com --remote-user myuser --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn "myhost.example.com"
+```
+
+In multi-site mode (`--fqdn`), you can run single-shot repeatedly against multiple hosts while reusing the same `--out` directory so each host merges into the existing Ansible repo.
+
 
 ## 3. Run Ansible
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -70,36 +72,6 @@ def _yaml_dump_mapping(obj: Dict[str, Any], *, sort_keys: bool = True) -> str:
     )
 
 
-def _merge_list_keep_order(existing: List[Any], new: List[Any]) -> List[Any]:
-    out = list(existing)
-    seen = set(existing)
-    for item in new:
-        if item not in seen:
-            out.append(item)
-            seen.add(item)
-    return out
-
-
-def _merge_mappings_preserve(
-    existing: Dict[str, Any], incoming: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Merge incoming into existing:
-    - lists: union (preserve existing order)
-    - scalars/dicts: only set if missing (do not overwrite)
-    """
-    merged = dict(existing)
-    for k, v in incoming.items():
-        if k in merged:
-            if isinstance(merged[k], list) and isinstance(v, list):
-                merged[k] = _merge_list_keep_order(merged[k], v)
-            else:
-                # keep existing value (non-overwriting)
-                continue
-        else:
-            merged[k] = v
-    return merged
-
-
 def _merge_mappings_overwrite(
     existing: Dict[str, Any], incoming: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -111,33 +83,6 @@ def _merge_mappings_overwrite(
     merged = dict(existing)
     merged.update(incoming)
     return merged
-
-
-def _write_role_defaults_merge(role_dir: str, incoming: Dict[str, Any]) -> None:
-    """Write/merge role defaults without clobbering existing values.
-    Used in site mode to keep roles reusable across hosts.
-    """
-    defaults_path = os.path.join(role_dir, "defaults", "main.yml")
-    existing: Dict[str, Any] = {}
-    if os.path.exists(defaults_path):
-        try:
-            existing_text = Path(defaults_path).read_text(encoding="utf-8")
-            existing = _yaml_load_mapping(existing_text)
-        except Exception:
-            existing = {}
-    merged = _merge_mappings_preserve(existing, incoming)
-    body = "---\n" + _yaml_dump_mapping(merged, sort_keys=True)
-    with open(defaults_path, "w", encoding="utf-8") as f:
-        f.write(body)
-
-
-def _extract_jinjaturtle_block(text: str) -> str:
-    """Return YAML text inside JINJATURTLE_BEGIN/END markers, or the whole text if no markers."""
-    if JINJATURTLE_BEGIN in text and JINJATURTLE_END in text:
-        start = text.split(JINJATURTLE_BEGIN, 1)[1]
-        inner = start.split(JINJATURTLE_END, 1)[0]
-        return inner.strip() + "\n"
-    return text.strip() + "\n"
 
 
 def _normalise_jinjaturtle_vars_text(vars_text: str) -> str:
@@ -156,6 +101,30 @@ def _yaml_list(items: List[str], indent: int = 2) -> str:
     if not items:
         return f"{pad}[]"
     return "\n".join(f"{pad}- {x}" for x in items)
+
+
+def _copy2_replace(src: str, dst: str) -> None:
+    dst_dir = os.path.dirname(dst)
+    os.makedirs(dst_dir, exist_ok=True)
+
+    # Copy to a temp file in the same directory, then atomically replace.
+    fd, tmp = tempfile.mkstemp(prefix=".enroll-tmp-", dir=dst_dir)
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp)
+
+        # Ensure the working tree stays mergeable: make the file user-writable.
+        st = os.stat(tmp, follow_symlinks=False)
+        mode = stat.S_IMODE(st.st_mode)
+        if not (mode & stat.S_IWUSR):
+            os.chmod(tmp, mode | stat.S_IWUSR)
+
+        os.replace(tmp, dst)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
 
 
 def _copy_artifacts(
@@ -195,7 +164,7 @@ def _copy_artifacts(
             if preserve_existing and os.path.exists(dst):
                 continue
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
+            _copy2_replace(src, dst)
 
 
 def _write_role_scaffold(role_dir: str) -> None:
@@ -378,11 +347,6 @@ def _jinjify_managed_files(
         combined = _yaml_dump_mapping(vars_map, sort_keys=True)
         return templated, combined
     return templated, ""
-
-
-def _hostvars_only_jinjaturtle(vars_text: str) -> str:
-    # keep as valid YAML file
-    return _defaults_with_jinjaturtle("---\n", vars_text)
 
 
 def _defaults_with_jinjaturtle(base_defaults: str, vars_text: str) -> str:

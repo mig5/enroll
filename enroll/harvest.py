@@ -199,7 +199,11 @@ def _maybe_add_specific_paths(hints: Set[str]) -> List[str]:
 
 
 def _scan_unowned_under_roots(
-    roots: List[str], owned_etc: Set[str], limit: int = MAX_UNOWNED_FILES_PER_ROLE
+    roots: List[str],
+    owned_etc: Set[str],
+    limit: int = MAX_UNOWNED_FILES_PER_ROLE,
+    *,
+    confish_only: bool = True,
 ) -> List[str]:
     found: List[str] = []
     for root in roots:
@@ -218,7 +222,7 @@ def _scan_unowned_under_roots(
                     continue
                 if not os.path.isfile(p) or os.path.islink(p):
                     continue
-                if not _is_confish(p):
+                if confish_only and not _is_confish(p):
                     continue
                 found.append(p)
     return found
@@ -233,8 +237,20 @@ def _topdirs_for_package(pkg: str, pkg_to_etc_paths: Dict[str, List[str]]) -> Se
     return topdirs
 
 
-def harvest(bundle_dir: str, policy: Optional[IgnorePolicy] = None) -> str:
-    policy = policy or IgnorePolicy()
+def harvest(
+    bundle_dir: str,
+    policy: Optional[IgnorePolicy] = None,
+    *,
+    dangerous: bool = False,
+) -> str:
+    # If a policy is not supplied, build one. `--dangerous` relaxes secret
+    # detection and deny-glob skipping.
+    if policy is None:
+        policy = IgnorePolicy(dangerous=dangerous)
+    elif dangerous:
+        # If callers explicitly provided a policy but also requested
+        # dangerous behavior, honour the CLI intent.
+        policy.dangerous = True
     os.makedirs(bundle_dir, exist_ok=True)
 
     if hasattr(os, "geteuid") and os.geteuid() != 0:
@@ -338,10 +354,42 @@ def harvest(bundle_dir: str, policy: Optional[IgnorePolicy] = None) -> str:
                     if current != baseline:
                         candidates.setdefault(path, "modified_packaged_file")
 
-        roots: List[str] = []
+        # Capture custom/unowned files living under /etc/<name> for this service.
+        #
+        # Historically we only captured "config-ish" files (by extension). That
+        # misses important runtime-generated artifacts like certificates and
+        # key material under service directories (e.g. /etc/openvpn/*.crt).
+        #
+        # To avoid exploding output for shared trees (e.g. /etc/systemd), keep
+        # the older "config-ish only" behavior for known shared topdirs.
+        any_roots: List[str] = []
+        confish_roots: List[str] = []
         for h in hints:
-            roots.extend([f"/etc/{h}", f"/etc/{h}.d"])
-        for pth in _scan_unowned_under_roots(roots, owned_etc):
+            roots_for_h = [f"/etc/{h}", f"/etc/{h}.d"]
+            if h in SHARED_ETC_TOPDIRS:
+                confish_roots.extend(roots_for_h)
+            else:
+                any_roots.extend(roots_for_h)
+
+        found: List[str] = []
+        found.extend(
+            _scan_unowned_under_roots(
+                any_roots,
+                owned_etc,
+                limit=MAX_UNOWNED_FILES_PER_ROLE,
+                confish_only=False,
+            )
+        )
+        if len(found) < MAX_UNOWNED_FILES_PER_ROLE:
+            found.extend(
+                _scan_unowned_under_roots(
+                    confish_roots,
+                    owned_etc,
+                    limit=MAX_UNOWNED_FILES_PER_ROLE - len(found),
+                    confish_only=True,
+                )
+            )
+        for pth in found:
             candidates.setdefault(pth, "custom_unowned")
 
         if not pkgs and not candidates:
@@ -449,8 +497,14 @@ def harvest(bundle_dir: str, policy: Optional[IgnorePolicy] = None) -> str:
             roots.extend([f"/etc/logrotate.d/{td}"])
             roots.extend([f"/etc/sysctl.d/{td}.conf"])
 
+        # Capture any custom/unowned files under /etc/<topdir> for this
+        # manually-installed package. This may include runtime-generated
+        # artifacts like certificates, key files, and helper scripts which are
+        # not owned by any .deb.
         for pth in _scan_unowned_under_roots(
-            [r for r in roots if os.path.isdir(r)], owned_etc
+            [r for r in roots if os.path.isdir(r)],
+            owned_etc,
+            confish_only=False,
         ):
             candidates.setdefault(pth, "custom_unowned")
 

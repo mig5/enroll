@@ -38,9 +38,13 @@ BLOCK_END = b"*/"
 
 @dataclass
 class IgnorePolicy:
-    deny_globs: list[str] = None
+    deny_globs: Optional[list[str]] = None
     max_file_bytes: int = 256_000
     sample_bytes: int = 64_000
+    # If True, be much less conservative about collecting potentially
+    # sensitive files. This disables deny globs (e.g. /etc/shadow,
+    # /etc/ssl/private/*) and skips heuristic content scanning.
+    dangerous: bool = False
 
     def __post_init__(self) -> None:
         if self.deny_globs is None:
@@ -69,9 +73,10 @@ class IgnorePolicy:
             yield raw
 
     def deny_reason(self, path: str) -> Optional[str]:
-        for g in self.deny_globs:
-            if fnmatch.fnmatch(path, g):
-                return "denied_path"
+        if not self.dangerous:
+            for g in self.deny_globs or []:
+                if fnmatch.fnmatch(path, g):
+                    return "denied_path"
 
         try:
             st = os.stat(path, follow_symlinks=True)
@@ -93,9 +98,10 @@ class IgnorePolicy:
         if b"\x00" in data:
             return "binary_like"
 
-        for line in self.iter_effective_lines(data):
-            for pat in SENSITIVE_CONTENT_PATTERNS:
-                if pat.search(line):
-                    return "sensitive_content"
+        if not self.dangerous:
+            for line in self.iter_effective_lines(data):
+                for pat in SENSITIVE_CONTENT_PATTERNS:
+                    if pat.search(line):
+                        return "sensitive_content"
 
         return None

@@ -223,3 +223,29 @@ def test_manifest_site_mode_creates_host_inventory_and_raw_files(tmp_path: Path)
     assert (
         out / "inventory" / "host_vars" / fqdn / "foo" / ".files" / "etc" / "foo.conf"
     ).exists()
+
+
+def test_copy2_replace_overwrites_readonly_destination(tmp_path: Path):
+    """Merging into an existing manifest should tolerate read-only files.
+
+    Some harvested artifacts (e.g. private keys) may be mode 0400. If a previous
+    run copied them into the destination tree, a subsequent run must still be
+    able to update/replace them.
+    """
+
+    import os
+    import stat
+
+    from enroll.manifest import _copy2_replace
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.write_text("new", encoding="utf-8")
+    dst.write_text("old", encoding="utf-8")
+    os.chmod(dst, 0o400)
+
+    _copy2_replace(str(src), str(dst))
+
+    assert dst.read_text(encoding="utf-8") == "new"
+    mode = stat.S_IMODE(dst.stat().st_mode)
+    assert mode & stat.S_IWUSR  # destination should remain mergeable
