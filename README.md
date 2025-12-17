@@ -259,10 +259,10 @@ On the host (root recommended to harvest as much data as possible):
 ```bash
 enroll harvest --out /tmp/enroll-harvest
 ```
-### Remote harvest over SSH (no enroll install required on the remote host)
+### Remote harvest over SSH (no enroll install required on the remote host, no need for --out)
 
 ```bash
-enroll harvest --remote-host myhost.example.com --remote-user myuser --out /tmp/enroll-harvest
+enroll harvest --remote-host myhost.example.com --remote-user myuser
 ```
 
 ### `--dangerous` (captures potentially sensitive files — read the warning above)
@@ -274,7 +274,7 @@ enroll harvest --out /tmp/enroll-harvest --dangerous
 Remote + dangerous:
 
 ```bash
-enroll harvest --remote-host myhost.example.com --remote-user myuser --out /tmp/enroll-harvest --dangerous
+enroll harvest --remote-host myhost.example.com --remote-user myuser --dangerous
 ```
 
 ### `--sops` (encrypt bundles at rest)
