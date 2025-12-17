@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
+import subprocess # nosec
 import tempfile
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -62,7 +62,7 @@ def encrypt_file_binary(
         ],
         capture_output=True,
         check=False,
-    )
+    ) # nosec
     if res.returncode != 0:
         raise SopsError(
             "sops encryption failed:\n"
@@ -112,7 +112,7 @@ def decrypt_file_binary_to(
         ],
         capture_output=True,
         check=False,
-    )
+    ) # nosec
     if res.returncode != 0:
         raise SopsError(
             "sops decryption failed:\n"

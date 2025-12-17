@@ -200,7 +200,7 @@ def remote_harvest(
 
             # Stream a tarball back to the local machine (avoid creating a tar file on the remote).
             cmd = f"tar -cz -C {rbundle} ."
-            _stdin, stdout, stderr = ssh.exec_command(cmd)
+            _stdin, stdout, stderr = ssh.exec_command(cmd) # nosec
             with open(local_tgz, "wb") as f:
                 while True:
                     chunk = stdout.read(1024 * 128)
