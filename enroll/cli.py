@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import tarfile
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -9,6 +11,56 @@ from .cache import new_harvest_cache_dir
 from .harvest import harvest
 from .manifest import manifest
 from .remote import remote_harvest
+from .sopsutil import SopsError, encrypt_file_binary
+
+
+def _resolve_sops_out_file(out: Optional[str], *, hint: str) -> Path:
+    """Resolve an output *file* path for --sops mode.
+
+    If `out` looks like a directory (or points to an existing directory), we
+    place the encrypted harvest inside it as harvest.tar.gz.sops.
+    """
+    if out:
+        p = Path(out).expanduser()
+        if p.exists() and p.is_dir():
+            return p / "harvest.tar.gz.sops"
+        # Heuristic: treat paths with a suffix as files; otherwise directories.
+        if p.suffix:
+            return p
+        return p / "harvest.tar.gz.sops"
+
+    # Default: use a secure cache directory.
+    d = new_harvest_cache_dir(hint=hint).dir
+    return d / "harvest.tar.gz.sops"
+
+
+def _tar_dir_to(path_dir: Path, tar_path: Path) -> None:
+    tar_path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(tar_path, mode="w:gz") as tf:
+        # Keep a stable on-disk layout when extracted: state.json + artifacts/
+        tf.add(str(path_dir), arcname=".")
+
+
+def _encrypt_harvest_dir_to_sops(
+    bundle_dir: Path, out_file: Path, fps: list[str]
+) -> Path:
+    out_file = Path(out_file)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create the tarball alongside the output file (keeps filesystem permissions/locality sane).
+    fd, tmp_tgz = tempfile.mkstemp(
+        prefix=".enroll-harvest-", suffix=".tar.gz", dir=str(out_file.parent)
+    )
+    os.close(fd)
+    try:
+        _tar_dir_to(bundle_dir, Path(tmp_tgz))
+        encrypt_file_binary(Path(tmp_tgz), out_file, pgp_fingerprints=fps, mode=0o600)
+    finally:
+        try:
+            os.unlink(tmp_tgz)
+        except FileNotFoundError:
+            pass
+    return out_file
 
 
 def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
@@ -60,11 +112,26 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     h = sub.add_parser("harvest", help="Harvest service/package/config state")
-    h.add_argument("--out", help="Harvest output directory")
+    h.add_argument(
+        "--out",
+        help=(
+            "Harvest output directory. If --sops is set, this may be either a directory "
+            "(an encrypted file named harvest.tar.gz.sops will be created inside) or a file path."
+        ),
+    )
     h.add_argument(
         "--dangerous",
         action="store_true",
         help="Collect files more aggressively (may include secrets). Disables secret-avoidance checks.",
+    )
+    h.add_argument(
+        "--sops",
+        nargs="+",
+        metavar="GPG_FINGERPRINT",
+        help=(
+            "Encrypt the harvest output as a SOPS-encrypted tarball using the given GPG fingerprint(s). "
+            "Requires `sops` on PATH."
+        ),
     )
     h.add_argument(
         "--no-sudo",
@@ -77,23 +144,55 @@ def main() -> None:
     m.add_argument(
         "--harvest",
         required=True,
-        help="Path to the directory created by the harvest command",
+        help=(
+            "Path to the directory created by the harvest command, or (with --sops) "
+            "a SOPS-encrypted harvest tarball."
+        ),
     )
     m.add_argument(
         "--out",
         required=True,
-        help="Output directory for generated roles/playbook Ansible manifest",
+        help=(
+            "Output location for the generated manifest. In plain mode this is a directory. "
+            "In --sops mode this may be either a directory (an encrypted file named manifest.tar.gz.sops will be created inside) "
+            "or a file path."
+        ),
+    )
+    m.add_argument(
+        "--sops",
+        nargs="+",
+        metavar="GPG_FINGERPRINT",
+        help=(
+            "In --sops mode, decrypt the harvest using `sops -d` (if the harvest is an encrypted file) "
+            "and then bundle+encrypt the entire generated manifest output into a single SOPS-encrypted tarball "
+            "(binary) using the given GPG fingerprint(s). Requires `sops` on PATH."
+        ),
     )
     _add_common_manifest_args(m)
 
     s = sub.add_parser(
         "single-shot", help="Harvest state, then manifest Ansible code, in one shot"
     )
-    s.add_argument("--harvest", help="Path to the directory to place the harvest in")
+    s.add_argument(
+        "--harvest",
+        help=(
+            "Where to place the harvest. In plain mode this is a directory; in --sops mode this may be "
+            "a directory or a file path (an encrypted file is produced)."
+        ),
+    )
     s.add_argument(
         "--dangerous",
         action="store_true",
         help="Collect files more aggressively (may include secrets). Disables secret-avoidance checks.",
+    )
+    s.add_argument(
+        "--sops",
+        nargs="+",
+        metavar="GPG_FINGERPRINT",
+        help=(
+            "Encrypt the harvest as a SOPS-encrypted tarball, and bundle+encrypt the manifest output in --out "
+            "(same behavior as `harvest --sops` and `manifest --sops`)."
+        ),
     )
     s.add_argument(
         "--no-sudo",
@@ -103,7 +202,11 @@ def main() -> None:
     s.add_argument(
         "--out",
         required=True,
-        help="Output directory for generated roles/playbook Ansible manifest",
+        help=(
+            "Output location for the generated manifest. In plain mode this is a directory. "
+            "In --sops mode this may be either a directory (an encrypted file named manifest.tar.gz.sops will be created inside) "
+            "or a file path."
+        ),
     )
     _add_common_manifest_args(s)
     _add_remote_args(s)
@@ -112,54 +215,169 @@ def main() -> None:
 
     remote_host: Optional[str] = getattr(args, "remote_host", None)
 
-    if args.cmd == "harvest":
-        if remote_host:
-            out_dir = (
-                Path(args.out)
-                if args.out
-                else new_harvest_cache_dir(hint=remote_host).dir
+    try:
+        if args.cmd == "harvest":
+            sops_fps = getattr(args, "sops", None)
+            if remote_host:
+                if sops_fps:
+                    out_file = _resolve_sops_out_file(args.out, hint=remote_host)
+                    with tempfile.TemporaryDirectory(prefix="enroll-harvest-") as td:
+                        tmp_bundle = Path(td) / "bundle"
+                        tmp_bundle.mkdir(parents=True, exist_ok=True)
+                        try:
+                            os.chmod(tmp_bundle, 0o700)
+                        except OSError:
+                            pass
+                        remote_harvest(
+                            local_out_dir=tmp_bundle,
+                            remote_host=remote_host,
+                            remote_port=int(args.remote_port),
+                            remote_user=args.remote_user,
+                            dangerous=bool(args.dangerous),
+                            no_sudo=bool(args.no_sudo),
+                        )
+                        _encrypt_harvest_dir_to_sops(
+                            tmp_bundle, out_file, list(sops_fps)
+                        )
+                    print(str(out_file))
+                else:
+                    out_dir = (
+                        Path(args.out)
+                        if args.out
+                        else new_harvest_cache_dir(hint=remote_host).dir
+                    )
+                    state = remote_harvest(
+                        local_out_dir=out_dir,
+                        remote_host=remote_host,
+                        remote_port=int(args.remote_port),
+                        remote_user=args.remote_user,
+                        dangerous=bool(args.dangerous),
+                        no_sudo=bool(args.no_sudo),
+                    )
+                    print(str(state))
+            else:
+                if sops_fps:
+                    out_file = _resolve_sops_out_file(args.out, hint="local")
+                    with tempfile.TemporaryDirectory(prefix="enroll-harvest-") as td:
+                        tmp_bundle = Path(td) / "bundle"
+                        tmp_bundle.mkdir(parents=True, exist_ok=True)
+                        try:
+                            os.chmod(tmp_bundle, 0o700)
+                        except OSError:
+                            pass
+                        harvest(str(tmp_bundle), dangerous=bool(args.dangerous))
+                        _encrypt_harvest_dir_to_sops(
+                            tmp_bundle, out_file, list(sops_fps)
+                        )
+                    print(str(out_file))
+                else:
+                    if not args.out:
+                        raise SystemExit(
+                            "error: --out is required unless --remote-host is set"
+                        )
+                    path = harvest(args.out, dangerous=bool(args.dangerous))
+                    print(path)
+        elif args.cmd == "manifest":
+            out_enc = manifest(
+                args.harvest,
+                args.out,
+                fqdn=args.fqdn,
+                jinjaturtle=_jt_mode(args),
+                sops_fingerprints=getattr(args, "sops", None),
             )
-            state = remote_harvest(
-                local_out_dir=out_dir,
-                remote_host=remote_host,
-                remote_port=int(args.remote_port),
-                remote_user=args.remote_user,
-                dangerous=bool(args.dangerous),
-                no_sudo=bool(args.no_sudo),
-            )
-            print(str(state))
-        else:
-            if not args.out:
-                raise SystemExit("error: --out is required unless --remote-host is set")
-            path = harvest(args.out, dangerous=bool(args.dangerous))
-            print(path)
-    elif args.cmd == "manifest":
-        manifest(args.harvest, args.out, fqdn=args.fqdn, jinjaturtle=_jt_mode(args))
-    elif args.cmd == "single-shot":
-        if remote_host:
-            harvest_dir = (
-                Path(args.harvest)
-                if args.harvest
-                else new_harvest_cache_dir(hint=remote_host).dir
-            )
-            remote_harvest(
-                local_out_dir=harvest_dir,
-                remote_host=remote_host,
-                remote_port=int(args.remote_port),
-                remote_user=args.remote_user,
-                dangerous=bool(args.dangerous),
-                no_sudo=bool(args.no_sudo),
-            )
-            manifest(
-                str(harvest_dir), args.out, fqdn=args.fqdn, jinjaturtle=_jt_mode(args)
-            )
-            # For usability (when --harvest wasn't provided), print the harvest path.
-            if not args.harvest:
-                print(str(harvest_dir / "state.json"))
-        else:
-            if not args.harvest:
-                raise SystemExit(
-                    "error: --harvest is required unless --remote-host is set"
-                )
-            harvest(args.harvest, dangerous=bool(args.dangerous))
-            manifest(args.harvest, args.out, fqdn=args.fqdn, jinjaturtle=_jt_mode(args))
+            if getattr(args, "sops", None) and out_enc:
+                print(str(out_enc))
+        elif args.cmd == "single-shot":
+            sops_fps = getattr(args, "sops", None)
+            if remote_host:
+                if sops_fps:
+                    out_file = _resolve_sops_out_file(args.harvest, hint=remote_host)
+                    with tempfile.TemporaryDirectory(prefix="enroll-harvest-") as td:
+                        tmp_bundle = Path(td) / "bundle"
+                        tmp_bundle.mkdir(parents=True, exist_ok=True)
+                        try:
+                            os.chmod(tmp_bundle, 0o700)
+                        except OSError:
+                            pass
+                        remote_harvest(
+                            local_out_dir=tmp_bundle,
+                            remote_host=remote_host,
+                            remote_port=int(args.remote_port),
+                            remote_user=args.remote_user,
+                            dangerous=bool(args.dangerous),
+                            no_sudo=bool(args.no_sudo),
+                        )
+                        _encrypt_harvest_dir_to_sops(
+                            tmp_bundle, out_file, list(sops_fps)
+                        )
+
+                    manifest(
+                        str(out_file),
+                        args.out,
+                        fqdn=args.fqdn,
+                        jinjaturtle=_jt_mode(args),
+                        sops_fingerprints=list(sops_fps),
+                    )
+                    if not args.harvest:
+                        print(str(out_file))
+                else:
+                    harvest_dir = (
+                        Path(args.harvest)
+                        if args.harvest
+                        else new_harvest_cache_dir(hint=remote_host).dir
+                    )
+                    remote_harvest(
+                        local_out_dir=harvest_dir,
+                        remote_host=remote_host,
+                        remote_port=int(args.remote_port),
+                        remote_user=args.remote_user,
+                        dangerous=bool(args.dangerous),
+                        no_sudo=bool(args.no_sudo),
+                    )
+                    manifest(
+                        str(harvest_dir),
+                        args.out,
+                        fqdn=args.fqdn,
+                        jinjaturtle=_jt_mode(args),
+                    )
+                    # For usability (when --harvest wasn't provided), print the harvest path.
+                    if not args.harvest:
+                        print(str(harvest_dir / "state.json"))
+            else:
+                if sops_fps:
+                    out_file = _resolve_sops_out_file(args.harvest, hint="local")
+                    with tempfile.TemporaryDirectory(prefix="enroll-harvest-") as td:
+                        tmp_bundle = Path(td) / "bundle"
+                        tmp_bundle.mkdir(parents=True, exist_ok=True)
+                        try:
+                            os.chmod(tmp_bundle, 0o700)
+                        except OSError:
+                            pass
+                        harvest(str(tmp_bundle), dangerous=bool(args.dangerous))
+                        _encrypt_harvest_dir_to_sops(
+                            tmp_bundle, out_file, list(sops_fps)
+                        )
+
+                    manifest(
+                        str(out_file),
+                        args.out,
+                        fqdn=args.fqdn,
+                        jinjaturtle=_jt_mode(args),
+                        sops_fingerprints=list(sops_fps),
+                    )
+                    if not args.harvest:
+                        print(str(out_file))
+                else:
+                    if not args.harvest:
+                        raise SystemExit(
+                            "error: --harvest is required unless --remote-host is set"
+                        )
+                    harvest(args.harvest, dangerous=bool(args.dangerous))
+                    manifest(
+                        args.harvest,
+                        args.out,
+                        fqdn=args.fqdn,
+                        jinjaturtle=_jt_mode(args),
+                    )
+    except SopsError as e:
+        raise SystemExit(f"error: {e}")

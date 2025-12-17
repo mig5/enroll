@@ -138,15 +138,29 @@ def remote_harvest(
             look_for_keys=True,
         )
 
+        # If no username was explicitly provided, SSH may have selected a default.
+        # We need a concrete username for the (sudo) chown step below.
+        resolved_user = remote_user
+        if not resolved_user:
+            rc, out, err = _ssh_run(ssh, "id -un")
+            if rc == 0 and out.strip():
+                resolved_user = out.strip()
+
         sftp = ssh.open_sftp()
+        rtmp: Optional[str] = None
         try:
             rc, out, err = _ssh_run(ssh, "mktemp -d")
             if rc != 0:
                 raise RuntimeError(f"Remote mktemp failed: {err.strip()}")
             rtmp = out.strip()
+
+            # Be explicit: restrict the remote staging area to the current user.
+            rc, out, err = _ssh_run(ssh, f"chmod 700 {rtmp}")
+            if rc != 0:
+                raise RuntimeError(f"Remote chmod failed: {err.strip()}")
+
             rapp = f"{rtmp}/enroll.pyz"
             rbundle = f"{rtmp}/bundle"
-            rtgz = f"{rtmp}/bundle.tgz"
 
             sftp.put(str(pyz), rapp)
 
@@ -169,7 +183,12 @@ def remote_harvest(
 
             if not no_sudo:
                 # Ensure user can read the files, before we tar it
-                cmd = f"sudo chown -R {remote_user} {rbundle}"
+                if not resolved_user:
+                    raise RuntimeError(
+                        "Unable to determine remote username for chown. "
+                        "Pass --remote-user explicitly or use --no-sudo."
+                    )
+                cmd = f"sudo chown -R {resolved_user} {rbundle}"
                 rc, out, err = _ssh_run(ssh, cmd)
                 if rc != 0:
                     raise RuntimeError(
@@ -179,26 +198,33 @@ def remote_harvest(
                         f"Stderr: {err.strip()}"
                     )
 
-            # Tar the bundle for efficient download.
-            cmd = f"tar -czf {rtgz} -C {rbundle} ."
-            rc, out, err = _ssh_run(ssh, cmd)
+            # Stream a tarball back to the local machine (avoid creating a tar file on the remote).
+            cmd = f"tar -cz -C {rbundle} ."
+            _stdin, stdout, stderr = ssh.exec_command(cmd)
+            with open(local_tgz, "wb") as f:
+                while True:
+                    chunk = stdout.read(1024 * 128)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            rc = stdout.channel.recv_exit_status()
+            err_text = stderr.read().decode("utf-8", errors="replace")
             if rc != 0:
                 raise RuntimeError(
-                    "Remote tar failed.\n"
+                    "Remote tar stream failed.\n"
                     f"Command: {cmd}\n"
                     f"Exit code: {rc}\n"
-                    f"Stderr: {err.strip()}"
+                    f"Stderr: {err_text.strip()}"
                 )
-
-            sftp.get(rtgz, str(local_tgz))
 
             # Extract into the destination.
             with tarfile.open(local_tgz, mode="r:gz") as tf:
                 _safe_extract_tar(tf, local_out_dir)
 
-            # Cleanup remote tmpdir.
-            _ssh_run(ssh, f"rm -rf {rtmp}")
         finally:
+            # Cleanup remote tmpdir even on failure.
+            if rtmp:
+                _ssh_run(ssh, f"rm -rf {rtmp}")
             try:
                 sftp.close()
                 ssh.close()

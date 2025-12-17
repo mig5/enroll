@@ -73,6 +73,10 @@ class IgnorePolicy:
             yield raw
 
     def deny_reason(self, path: str) -> Optional[str]:
+        # Always ignore plain *.log files (rarely useful as config, often noisy).
+        if path.endswith(".log"):
+            return "log_file"
+
         if not self.dangerous:
             for g in self.deny_globs or []:
                 if fnmatch.fnmatch(path, g):

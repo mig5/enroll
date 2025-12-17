@@ -1,3 +1,19 @@
+enroll (0.1.0) unstable; urgency=medium
+
+  * Add remote mode for harvesting a remote machine via a local workstation (no need to install enroll remotely)
+    Optionally use `--no-sudo` if you don't want the remote user to have passwordless sudo when conducting the
+    harvest, albeit you'll end up with less useful data (same as if running `enroll harvest` on a machine without
+    sudo)
+  * Add `--dangerous` flag to capture even sensitive data (use at your own risk!)
+  * Add `--sops` flag which makes the harvest and the manifest 'out' data encrypted as a single SOPS data file.
+    This would make `--dangerous` a little bit safer, if your intention is just to store the Ansible manifest
+    in git or somewhere similar for disaster-recovery purposes (e.g encrypted at rest for safe-keeping).
+  * Do a better job at capturing other config files in `/etc/<package>/` even if that package doesn't normally
+    ship or manage those files.
+  * Don't collect files ending in `.log`
+
+ -- Miguel Jacq <mig@mig5.net>  Tue, 17 Dec 2025 18:00:00 +1100
+
 enroll (0.0.5) unstable; urgency=medium
 
   * Use JinjaTurtle to generate dynamic template/inventory if it's on the PATH
