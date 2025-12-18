@@ -23,6 +23,11 @@ DEFAULT_DENY_GLOBS = [
     "/etc/gshadow",
     "/etc/*shadow",
     "/etc/letsencrypt/*",
+    "/usr/local/etc/ssl/private/*",
+    "/usr/local/etc/ssh/ssh_host_*",
+    "/usr/local/etc/*shadow",
+    "/usr/local/etc/*gshadow",
+    "/usr/local/etc/letsencrypt/*",
 ]
 
 SENSITIVE_CONTENT_PATTERNS = [

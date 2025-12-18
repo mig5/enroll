@@ -47,6 +47,29 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
             "excluded": [],
             "notes": [],
         },
+        "usr_local_custom": {
+            "role_name": "usr_local_custom",
+            "managed_files": [
+                {
+                    "path": "/usr/local/etc/myapp.conf",
+                    "src_rel": "usr/local/etc/myapp.conf",
+                    "owner": "root",
+                    "group": "root",
+                    "mode": "0644",
+                    "reason": "usr_local_etc_custom",
+                },
+                {
+                    "path": "/usr/local/bin/myscript",
+                    "src_rel": "usr/local/bin/myscript",
+                    "owner": "root",
+                    "group": "root",
+                    "mode": "0755",
+                    "reason": "usr_local_bin_script",
+                },
+            ],
+            "excluded": [],
+            "notes": [],
+        },
         "services": [
             {
                 "unit": "foo.service",
@@ -92,6 +115,26 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
         "kbd", encoding="utf-8"
     )
 
+    # Create artifacts for usr_local_custom files so copy works
+    (bundle / "artifacts" / "usr_local_custom" / "usr" / "local" / "etc").mkdir(
+        parents=True, exist_ok=True
+    )
+    (
+        bundle
+        / "artifacts"
+        / "usr_local_custom"
+        / "usr"
+        / "local"
+        / "etc"
+        / "myapp.conf"
+    ).write_text("myapp=1\n", encoding="utf-8")
+    (bundle / "artifacts" / "usr_local_custom" / "usr" / "local" / "bin").mkdir(
+        parents=True, exist_ok=True
+    )
+    (
+        bundle / "artifacts" / "usr_local_custom" / "usr" / "local" / "bin" / "myscript"
+    ).write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+
     manifest(str(bundle), str(out))
 
     # Service role: systemd management should be gated on foo_manage_unit and a probe.
@@ -119,6 +162,7 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     pb = (out / "playbook.yml").read_text(encoding="utf-8")
     assert "- users" in pb
     assert "- etc_custom" in pb
+    assert "- usr_local_custom" in pb
     assert "- curl" in pb
     assert "- foo" in pb
 
@@ -168,6 +212,21 @@ def test_manifest_site_mode_creates_host_inventory_and_raw_files(tmp_path: Path)
             "excluded": [],
             "notes": [],
         },
+        "usr_local_custom": {
+            "role_name": "usr_local_custom",
+            "managed_files": [
+                {
+                    "path": "/usr/local/etc/myapp.conf",
+                    "src_rel": "usr/local/etc/myapp.conf",
+                    "owner": "root",
+                    "group": "root",
+                    "mode": "0644",
+                    "reason": "usr_local_etc_custom",
+                }
+            ],
+            "excluded": [],
+            "notes": [],
+        },
         "services": [
             {
                 "unit": "foo.service",
@@ -196,6 +255,20 @@ def test_manifest_site_mode_creates_host_inventory_and_raw_files(tmp_path: Path)
 
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    # Artifacts for usr_local_custom file so copy works.
+    (bundle / "artifacts" / "usr_local_custom" / "usr" / "local" / "etc").mkdir(
+        parents=True, exist_ok=True
+    )
+    (
+        bundle
+        / "artifacts"
+        / "usr_local_custom"
+        / "usr"
+        / "local"
+        / "etc"
+        / "myapp.conf"
+    ).write_text("myapp=1\n", encoding="utf-8")
 
     manifest(str(bundle), str(out), fqdn=fqdn)
 

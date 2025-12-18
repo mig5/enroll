@@ -629,6 +629,7 @@ def _manifest_from_bundle_dir(
     package_roles: List[Dict[str, Any]] = state.get("package_roles", [])
     users_snapshot: Dict[str, Any] = state.get("users", {})
     etc_custom_snapshot: Dict[str, Any] = state.get("etc_custom", {})
+    usr_local_custom_snapshot: Dict[str, Any] = state.get("usr_local_custom", {})
 
     site_mode = fqdn is not None and fqdn != ""
 
@@ -661,6 +662,7 @@ def _manifest_from_bundle_dir(
 
     manifested_users_roles: List[str] = []
     manifested_etc_custom_roles: List[str] = []
+    manifested_usr_local_custom_roles: List[str] = []
     manifested_service_roles: List[str] = []
     manifested_pkg_roles: List[str] = []
 
@@ -1000,6 +1002,105 @@ Unowned /etc config files not attributed to packages or services.
     # -------------------------
 
     # -------------------------
+
+    # -------------------------
+    # usr_local_custom role (/usr/local/etc + /usr/local/bin scripts)
+    # -------------------------
+    if usr_local_custom_snapshot and usr_local_custom_snapshot.get("managed_files"):
+        role = usr_local_custom_snapshot.get("role_name", "usr_local_custom")
+        role_dir = os.path.join(roles_root, role)
+        _write_role_scaffold(role_dir)
+
+        var_prefix = role
+
+        managed_files = usr_local_custom_snapshot.get("managed_files", [])
+        excluded = usr_local_custom_snapshot.get("excluded", [])
+        notes = usr_local_custom_snapshot.get("notes", [])
+
+        templated, jt_vars = _jinjify_managed_files(
+            bundle_dir,
+            role,
+            role_dir,
+            managed_files,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not site_mode,
+        )
+
+        # Copy only the non-templated artifacts (templates live in the role).
+        if site_mode:
+            _copy_artifacts(
+                bundle_dir,
+                role,
+                _host_role_files_dir(out_dir, fqdn or "", role),
+                exclude_rels=templated,
+            )
+        else:
+            _copy_artifacts(
+                bundle_dir,
+                role,
+                os.path.join(role_dir, "files"),
+                exclude_rels=templated,
+            )
+
+        files_var = _build_managed_files_var(
+            managed_files,
+            templated,
+            notify_other=None,
+            notify_systemd=None,
+        )
+
+        jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
+        vars_map: Dict[str, Any] = {f"{var_prefix}_managed_files": files_var}
+        vars_map = _merge_mappings_overwrite(vars_map, jt_map)
+
+        if site_mode:
+            _write_role_defaults(role_dir, {f"{var_prefix}_managed_files": []})
+            _write_hostvars(out_dir, fqdn or "", role, vars_map)
+        else:
+            _write_role_defaults(role_dir, vars_map)
+
+        tasks = "---\n" + _render_generic_files_tasks(
+            var_prefix, include_restart_notify=False
+        )
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(tasks.rstrip() + "\n")
+
+        # No handlers needed for this role, but keep a valid YAML document.
+        with open(
+            os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\n")
+
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\ndependencies: []\n")
+
+        readme = (
+            """# usr_local_custom\n\n"""
+            "Unowned /usr/local files (scripts in /usr/local/bin and config under /usr/local/etc).\n\n"
+            "## Managed files\n"
+            + ("\n".join([f"- {mf.get('path')}" for mf in managed_files]) or "- (none)")
+            + "\n\n## Excluded\n"
+            + (
+                "\n".join([f"- {e.get('path')} ({e.get('reason')})" for e in excluded])
+                or "- (none)"
+            )
+            + "\n\n## Notes\n"
+            + ("\n".join([f"- {n}" for n in notes]) or "- (none)")
+            + "\n"
+        )
+        with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write(readme)
+
+        manifested_usr_local_custom_roles.append(role)
+
+    # -------------------------
+
+    # -------------------------
     # Service roles
     # -------------------------
     for svc in services:
@@ -1310,6 +1411,7 @@ Generated for package `{pkg}`.
         manifested_pkg_roles
         + manifested_service_roles
         + manifested_etc_custom_roles
+        + manifested_usr_local_custom_roles
         + manifested_users_roles
     )
 

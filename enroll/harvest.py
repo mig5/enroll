@@ -78,6 +78,14 @@ class EtcCustomSnapshot:
     notes: List[str]
 
 
+@dataclass
+class UsrLocalCustomSnapshot:
+    role_name: str
+    managed_files: List[ManagedFile]
+    excluded: List[ExcludedFile]
+    notes: List[str]
+
+
 ALLOWED_UNOWNED_EXTS = {
     ".conf",
     ".cfg",
@@ -701,6 +709,103 @@ def harvest(
         notes=etc_notes,
     )
 
+    # -------------------------
+    # usr_local_custom role (/usr/local/etc + /usr/local/bin scripts)
+    # -------------------------
+    ul_notes: List[str] = []
+    ul_excluded: List[ExcludedFile] = []
+    ul_managed: List[ManagedFile] = []
+    ul_role_name = "usr_local_custom"
+
+    # Extend the already-captured set with etc_custom.
+    already_all: Set[str] = set(already)
+    for mf in etc_managed:
+        already_all.add(mf.path)
+
+    def _scan_usr_local_tree(
+        root: str, *, require_executable: bool, cap: int, reason: str
+    ) -> None:
+        scanned = 0
+        if not os.path.isdir(root):
+            return
+        for dirpath, _, filenames in os.walk(root):
+            for fn in filenames:
+                path = os.path.join(dirpath, fn)
+                if path in already_all:
+                    continue
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+                if require_executable:
+                    try:
+                        owner, group, mode = stat_triplet(path)
+                    except OSError:
+                        ul_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                        continue
+                    try:
+                        if (int(mode, 8) & 0o111) == 0:
+                            continue
+                    except ValueError:
+                        # If mode parsing fails, be conservative and skip.
+                        continue
+                else:
+                    try:
+                        owner, group, mode = stat_triplet(path)
+                    except OSError:
+                        ul_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                        continue
+
+                deny = policy.deny_reason(path)
+                if deny:
+                    ul_excluded.append(ExcludedFile(path=path, reason=deny))
+                    continue
+
+                src_rel = path.lstrip("/")
+                try:
+                    _copy_into_bundle(bundle_dir, ul_role_name, path, src_rel)
+                except OSError:
+                    ul_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                    continue
+
+                ul_managed.append(
+                    ManagedFile(
+                        path=path,
+                        src_rel=src_rel,
+                        owner=owner,
+                        group=group,
+                        mode=mode,
+                        reason=reason,
+                    )
+                )
+
+                already_all.add(path)
+                scanned += 1
+                if scanned >= cap:
+                    ul_notes.append(f"Reached file cap ({cap}) while scanning {root}.")
+                    return
+
+    # /usr/local/etc: capture all non-binary regular files (filtered by IgnorePolicy)
+    _scan_usr_local_tree(
+        "/usr/local/etc",
+        require_executable=False,
+        cap=2000,
+        reason="usr_local_etc_custom",
+    )
+
+    # /usr/local/bin: capture executable scripts only (skip non-executable text)
+    _scan_usr_local_tree(
+        "/usr/local/bin",
+        require_executable=True,
+        cap=2000,
+        reason="usr_local_bin_script",
+    )
+
+    usr_local_custom_snapshot = UsrLocalCustomSnapshot(
+        role_name=ul_role_name,
+        managed_files=ul_managed,
+        excluded=ul_excluded,
+        notes=ul_notes,
+    )
+
     state = {
         "host": {"hostname": os.uname().nodename, "os": "debian"},
         "users": asdict(users_snapshot),
@@ -709,6 +814,7 @@ def harvest(
         "manual_packages_skipped": manual_pkgs_skipped,
         "package_roles": [asdict(p) for p in pkg_snaps],
         "etc_custom": asdict(etc_custom_snapshot),
+        "usr_local_custom": asdict(usr_local_custom_snapshot),
     }
 
     state_path = os.path.join(bundle_dir, "state.json")

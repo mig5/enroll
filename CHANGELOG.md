@@ -1,3 +1,8 @@
+# 0.1.2
+
+ * Include files from `/usr/local/bin` and `/usr/local/etc` in harvest (assuming they aren't binaries or
+   symlinks) and store in `usr_local_custom` role, similar to `etc_custom`.
+
 # 0.1.1
 
  * Add `diff` subcommand which can compare two harvests and send email or webhook notifications in different

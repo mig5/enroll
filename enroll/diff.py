@@ -190,6 +190,12 @@ def _iter_managed_files(state: Dict[str, Any]) -> Iterable[Tuple[str, Dict[str, 
     for mf in ec.get("managed_files", []) or []:
         yield str(ec_role), mf
 
+    # usr_local_custom
+    ul = state.get("usr_local_custom") or {}
+    ul_role = ul.get("role_name") or "usr_local_custom"
+    for mf in ul.get("managed_files", []) or []:
+        yield str(ul_role), mf
+
 
 def _file_index(bundle_dir: Path, state: Dict[str, Any]) -> Dict[str, FileRec]:
     """Return mapping of absolute path -> FileRec.

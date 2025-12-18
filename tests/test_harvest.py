@@ -23,29 +23,50 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     real_islink = os.path.islink
 
     # Fake filesystem: two /etc files exist, only one is dpkg-owned.
+    # Also include some /usr/local files to populate usr_local_custom.
     files = {
         "/etc/openvpn/server.conf": b"server",
         "/etc/default/keyboard": b"kbd",
+        "/usr/local/etc/myapp.conf": b"myapp=1\n",
+        "/usr/local/bin/myscript": b"#!/bin/sh\necho hi\n",
+        # non-executable text under /usr/local/bin should be skipped
+        "/usr/local/bin/readme.txt": b"hello\n",
     }
-    dirs = {"/etc", "/etc/openvpn", "/etc/default"}
+    dirs = {
+        "/etc",
+        "/etc/openvpn",
+        "/etc/default",
+        "/usr",
+        "/usr/local",
+        "/usr/local/etc",
+        "/usr/local/bin",
+    }
 
     def fake_isfile(p: str) -> bool:
         if p.startswith("/etc/") or p == "/etc":
+            return p in files
+        if p.startswith("/usr/local/"):
             return p in files
         return real_isfile(p)
 
     def fake_isdir(p: str) -> bool:
         if p.startswith("/etc"):
             return p in dirs
+        if p.startswith("/usr/local") or p in ("/usr", "/usr/local"):
+            return p in dirs
         return real_isdir(p)
 
     def fake_islink(p: str) -> bool:
         if p.startswith("/etc"):
             return False
+        if p.startswith("/usr/local"):
+            return False
         return real_islink(p)
 
     def fake_exists(p: str) -> bool:
         if p.startswith("/etc"):
+            return p in files or p in dirs
+        if p.startswith("/usr/local") or p in ("/usr", "/usr/local"):
             return p in files or p in dirs
         return real_exists(p)
 
@@ -57,6 +78,10 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
             yield ("/etc/openvpn", [], ["server.conf"])
         elif root == "/etc/default":
             yield ("/etc/default", [], ["keyboard"])
+        elif root == "/usr/local/etc":
+            yield ("/usr/local/etc", [], ["myapp.conf"])
+        elif root == "/usr/local/bin":
+            yield ("/usr/local/bin", [], ["myscript", "readme.txt"])
         else:
             yield (root, [], [])
 
@@ -109,7 +134,13 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     monkeypatch.setattr(h, "list_manual_packages", lambda: ["openvpn", "curl"])
     monkeypatch.setattr(h, "collect_non_system_users", lambda: [])
 
-    monkeypatch.setattr(h, "stat_triplet", lambda p: ("root", "root", "0644"))
+    def fake_stat_triplet(p: str):
+        if p == "/usr/local/bin/myscript":
+            return ("root", "root", "0755")
+        # /usr/local/bin/readme.txt remains non-executable
+        return ("root", "root", "0644")
+
+    monkeypatch.setattr(h, "stat_triplet", fake_stat_triplet)
 
     # Avoid needing source files on disk by implementing our own bundle copier
     def fake_copy(bundle_dir: str, role_name: str, abs_path: str, src_rel: str):
@@ -139,3 +170,9 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     assert any(
         mf["path"] == "/etc/default/keyboard" for mf in etc_custom["managed_files"]
     )
+
+    # /usr/local content is attributed to usr_local_custom
+    ul = st["usr_local_custom"]
+    assert any(mf["path"] == "/usr/local/etc/myapp.conf" for mf in ul["managed_files"])
+    assert any(mf["path"] == "/usr/local/bin/myscript" for mf in ul["managed_files"])
+    assert all(mf["path"] != "/usr/local/bin/readme.txt" for mf in ul["managed_files"])

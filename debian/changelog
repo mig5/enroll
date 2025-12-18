@@ -1,3 +1,10 @@
+enroll (0.1.2) unstable; urgency=medium
+
+  * Include files from `/usr/local/bin` and `/usr/local/etc` in harvest (assuming they aren't binaries or
+    symlinks) and store in `usr_local_custom` role, similar to `etc_custom`.
+
+ -- Miguel Jacq <mig@mig5.net>  Thu, 18 Dec 2025 17:07:00 +1100
+
 enroll (0.1.1) unstable; urgency=medium
 
   * Add `diff` subcommand which can compare two harvests and send email or webhook notifications in different
