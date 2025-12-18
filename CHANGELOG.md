@@ -1,3 +1,8 @@
+# 0.1.1
+
+ * Add `diff` subcommand which can compare two harvests and send email or webhook notifications in different
+   formats.
+
 # 0.1.0
 
  * Add remote mode for harvesting a remote machine via a local workstation (no need to install enroll remotely)

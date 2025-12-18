@@ -1,3 +1,10 @@
+enroll (0.1.1) unstable; urgency=medium
+
+  * Add `diff` subcommand which can compare two harvests and send email or webhook notifications in different
+    formats.
+
+ -- Miguel Jacq <mig@mig5.net>  Thu, 18 Dec 2025 15:00:00 +1100
+
 enroll (0.1.0) unstable; urgency=medium
 
   * Add remote mode for harvesting a remote machine via a local workstation (no need to install enroll remotely)
@@ -12,7 +19,7 @@ enroll (0.1.0) unstable; urgency=medium
     ship or manage those files.
   * Don't collect files ending in `.log`
 
- -- Miguel Jacq <mig@mig5.net>  Tue, 17 Dec 2025 18:00:00 +1100
+ -- Miguel Jacq <mig@mig5.net>  Wed, 17 Dec 2025 18:00:00 +1100
 
 enroll (0.0.5) unstable; urgency=medium
 

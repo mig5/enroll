@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from .cache import new_harvest_cache_dir
+from .diff import compare_harvests, format_report, post_webhook, send_email
 from .harvest import harvest
 from .manifest import manifest
 from .remote import remote_harvest
@@ -211,6 +212,90 @@ def main() -> None:
     _add_common_manifest_args(s)
     _add_remote_args(s)
 
+    d = sub.add_parser("diff", help="Compare two harvests and report differences")
+    d.add_argument(
+        "--old",
+        required=True,
+        help=(
+            "Old/baseline harvest (directory, a path to state.json, a tarball, or a SOPS-encrypted bundle)."
+        ),
+    )
+    d.add_argument(
+        "--new",
+        required=True,
+        help=(
+            "New/current harvest (directory, a path to state.json, a tarball, or a SOPS-encrypted bundle)."
+        ),
+    )
+    d.add_argument(
+        "--sops",
+        action="store_true",
+        help="Allow SOPS-encrypted harvest bundle inputs (requires `sops` on PATH).",
+    )
+    d.add_argument(
+        "--format",
+        choices=["text", "markdown", "json"],
+        default="text",
+        help="Report output format (default: text).",
+    )
+    d.add_argument(
+        "--out",
+        help="Write the report to this file instead of stdout.",
+    )
+    d.add_argument(
+        "--exit-code",
+        action="store_true",
+        help="Exit with status 2 if differences are detected.",
+    )
+    d.add_argument(
+        "--notify-always",
+        action="store_true",
+        help="Send webhook/email even when there are no differences.",
+    )
+    d.add_argument(
+        "--webhook",
+        help="POST the report to this URL (only when differences are detected, unless --notify-always).",
+    )
+    d.add_argument(
+        "--webhook-format",
+        choices=["json", "text", "markdown"],
+        default="json",
+        help="Payload format for --webhook (default: json).",
+    )
+    d.add_argument(
+        "--webhook-header",
+        action="append",
+        default=[],
+        metavar="K:V",
+        help="Extra HTTP header for --webhook (repeatable), e.g. 'Authorization: Bearer ...'.",
+    )
+    d.add_argument(
+        "--email-to",
+        action="append",
+        default=[],
+        help="Email the report to this address (repeatable; only when differences are detected unless --notify-always).",
+    )
+    d.add_argument(
+        "--email-from",
+        help="From address for --email-to (default: enroll@<hostname>).",
+    )
+    d.add_argument(
+        "--email-subject",
+        help="Subject for --email-to (default: 'enroll diff report').",
+    )
+    d.add_argument(
+        "--smtp",
+        help="SMTP server host[:port] for --email-to. If omitted, uses local sendmail.",
+    )
+    d.add_argument(
+        "--smtp-user",
+        help="SMTP username (optional).",
+    )
+    d.add_argument(
+        "--smtp-password-env",
+        help="Environment variable containing SMTP password (optional).",
+    )
+
     args = ap.parse_args()
 
     remote_host: Optional[str] = getattr(args, "remote_host", None)
@@ -287,6 +372,61 @@ def main() -> None:
             )
             if getattr(args, "sops", None) and out_enc:
                 print(str(out_enc))
+        elif args.cmd == "diff":
+            report, has_changes = compare_harvests(
+                args.old,
+                args.new,
+                sops_mode=bool(getattr(args, "sops", False)),
+            )
+
+            txt = format_report(report, fmt=str(getattr(args, "format", "text")))
+            out_path = getattr(args, "out", None)
+            if out_path:
+                p = Path(out_path).expanduser()
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(txt, encoding="utf-8")
+            else:
+                print(txt, end="" if txt.endswith("\n") else "\n")
+
+            should_notify = has_changes or bool(getattr(args, "notify_always", False))
+
+            webhook = getattr(args, "webhook", None)
+            if webhook and should_notify:
+                wf = str(getattr(args, "webhook_format", "json"))
+                payload = format_report(report, fmt=wf)
+                body = payload.encode("utf-8")
+                headers = {}
+                if wf == "json":
+                    headers["Content-Type"] = "application/json"
+                else:
+                    headers["Content-Type"] = "text/plain; charset=utf-8"
+                for hv in getattr(args, "webhook_header", []) or []:
+                    if ":" in hv:
+                        k, v = hv.split(":", 1)
+                        headers[k.strip()] = v.strip()
+                status, _resp = post_webhook(webhook, body, headers=headers)
+                if status and status >= 400:
+                    raise SystemExit(f"error: webhook returned HTTP {status}")
+
+            to_addrs = getattr(args, "email_to", []) or []
+            if to_addrs and should_notify:
+                subject = getattr(args, "email_subject", None) or "enroll diff report"
+                smtp_pw = None
+                pw_env = getattr(args, "smtp_password_env", None)
+                if pw_env:
+                    smtp_pw = os.environ.get(str(pw_env))
+                send_email(
+                    to_addrs=list(to_addrs),
+                    subject=str(subject),
+                    body=txt,
+                    from_addr=getattr(args, "email_from", None),
+                    smtp=getattr(args, "smtp", None),
+                    smtp_user=getattr(args, "smtp_user", None),
+                    smtp_password=smtp_pw,
+                )
+
+            if getattr(args, "exit_code", False) and has_changes:
+                raise SystemExit(2)
         elif args.cmd == "single-shot":
             sops_fps = getattr(args, "sops", None)
             if remote_host:
@@ -379,5 +519,55 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                     )
+        elif args.cmd == "diff":
+            report, has_changes = compare_harvests(
+                args.old, args.new, sops_mode=bool(getattr(args, "sops", False))
+            )
+
+            rendered = format_report(report, fmt=str(args.format))
+            if args.out:
+                Path(args.out).expanduser().write_text(rendered, encoding="utf-8")
+            else:
+                print(rendered, end="")
+
+            do_notify = bool(has_changes or getattr(args, "notify_always", False))
+
+            if do_notify and getattr(args, "webhook", None):
+                wf = str(getattr(args, "webhook_format", "json"))
+                body = format_report(report, fmt=wf).encode("utf-8")
+                headers = {"User-Agent": "enroll"}
+                if wf == "json":
+                    headers["Content-Type"] = "application/json"
+                else:
+                    headers["Content-Type"] = "text/plain; charset=utf-8"
+                for hv in getattr(args, "webhook_header", []) or []:
+                    if ":" not in hv:
+                        raise SystemExit(
+                            "error: --webhook-header must be in the form 'K:V'"
+                        )
+                    k, v = hv.split(":", 1)
+                    headers[k.strip()] = v.strip()
+                status, _ = post_webhook(str(args.webhook), body, headers=headers)
+                if status and status >= 400:
+                    raise SystemExit(f"error: webhook returned HTTP {status}")
+
+            if do_notify and (getattr(args, "email_to", []) or []):
+                subject = getattr(args, "email_subject", None) or "enroll diff report"
+                smtp_password = None
+                pw_env = getattr(args, "smtp_password_env", None)
+                if pw_env:
+                    smtp_password = os.environ.get(str(pw_env))
+                send_email(
+                    to_addrs=list(getattr(args, "email_to", []) or []),
+                    subject=str(subject),
+                    body=rendered,
+                    from_addr=getattr(args, "email_from", None),
+                    smtp=getattr(args, "smtp", None),
+                    smtp_user=getattr(args, "smtp_user", None),
+                    smtp_password=smtp_password,
+                )
+
+            if getattr(args, "exit_code", False) and has_changes:
+                raise SystemExit(2)
     except SopsError as e:
         raise SystemExit(f"error: {e}")
