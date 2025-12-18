@@ -14,6 +14,7 @@ It aims to be **optimistic and noninteractive**:
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
 - Captures non-system users and their SSH public keys.
 - Captures miscellaneous `/etc` files it can’t attribute to a package and installs them in an `etc_custom` role.
+- Ditto for /usr/local/bin (for non-binary files) and /usr/local/etc
 - Avoids trying to start systemd services that were detected as inactive during harvest.
 
 ---
