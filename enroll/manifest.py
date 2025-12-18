@@ -567,7 +567,7 @@ def _tar_dir_to_with_progress(
             cols = shutil.get_terminal_size((80, 20)).columns
             msg = msg[: cols - 1]
         except Exception:
-            pass # nosec
+            pass  # nosec
         os.write(2, ("\r" + msg).encode("utf-8", errors="replace"))
 
     with tarfile.open(tar_path, mode="w:gz") as tf:
