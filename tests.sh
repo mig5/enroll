@@ -15,10 +15,10 @@ poetry run \
 	  --harvest "${BUNDLE_DIR}" \
 	  --out "${ANSIBLE_DIR}"
 
-builtin cd "${ANSIBLE_DIR}" 
+builtin cd "${ANSIBLE_DIR}"
 
 # Lint
-ansible-lint "${ANSIBLE_DIR}" 
+ansible-lint "${ANSIBLE_DIR}"
 
 # Run
 ansible-playbook playbook.yml -i "localhost," -c local --check --diff

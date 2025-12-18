@@ -357,4 +357,3 @@ My Forgejo doesn't yet support proper federation, and for that reason I've not o
 Instead, you can e-mail me (see the pyproject.toml for details) or contact me on the Fediverse:
 
 https://goto.mig5.net/@mig5
-
