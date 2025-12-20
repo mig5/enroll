@@ -2,6 +2,8 @@
 
  * Allow the user to add extra paths to harvest, or paths to ignore, using `--exclude-path` and `--include-path`
    arguments.
+ * Add support for an enroll.ini config file to store arguments per subcommand, to avoid having to remember
+   them all for repetitive executions.
 
 # 0.1.2
 

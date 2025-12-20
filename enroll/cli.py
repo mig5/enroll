@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import os
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -13,6 +15,232 @@ from .harvest import harvest
 from .manifest import manifest
 from .remote import remote_harvest
 from .sopsutil import SopsError, encrypt_file_binary
+
+
+def _discover_config_path(argv: list[str]) -> Optional[Path]:
+    """Return the config path to use, if any.
+
+    Precedence:
+      1) --no-config disables loading.
+      2) --config PATH (or -c PATH)
+      3) $ENROLL_CONFIG
+      4) ./enroll.ini, ./.enroll.ini
+      5) $XDG_CONFIG_HOME/enroll/enroll.ini (or ~/.config/enroll/enroll.ini)
+
+    The config file is optional; if no file is found, returns None.
+    """
+
+    # Quick scan for explicit flags without needing to build the full parser.
+    if "--no-config" in argv:
+        return None
+
+    def _value_after(flag: str) -> Optional[str]:
+        try:
+            i = argv.index(flag)
+        except ValueError:
+            return None
+        if i + 1 >= len(argv):
+            return None
+        return argv[i + 1]
+
+    p = _value_after("--config") or _value_after("-c")
+    if p:
+        return Path(p).expanduser()
+
+    envp = os.environ.get("ENROLL_CONFIG")
+    if envp:
+        return Path(envp).expanduser()
+
+    cwd = Path.cwd()
+    for name in ("enroll.ini", ".enroll.ini"):
+        cp = cwd / name
+        if cp.exists() and cp.is_file():
+            return cp
+
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        base = Path(xdg).expanduser()
+    else:
+        base = Path.home() / ".config"
+    cp = base / "enroll" / "enroll.ini"
+    if cp.exists() and cp.is_file():
+        return cp
+
+    return None
+
+
+def _parse_bool(s: str) -> Optional[bool]:
+    v = str(s).strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _action_lookup(p: argparse.ArgumentParser) -> dict[str, argparse.Action]:
+    """Map config keys -> argparse actions for a parser.
+
+    Accepts both dest names and long option names without leading dashes,
+    normalized with '-' -> '_'.
+    """
+
+    m: dict[str, argparse.Action] = {}
+    for a in p._actions:  # noqa: SLF001 (argparse internal)
+        if not getattr(a, "dest", None):
+            continue
+        dest = str(a.dest).strip().lower()
+        if dest:
+            m[dest] = a
+        for opt in getattr(a, "option_strings", []) or []:
+            k = opt.lstrip("-").strip().lower()
+            if k:
+                m[k.replace("-", "_")] = a
+                m[k] = a
+    return m
+
+
+def _choose_flag(a: argparse.Action) -> Optional[str]:
+    # Prefer a long flag if available (e.g. --dangerous over -d)
+    for s in getattr(a, "option_strings", []) or []:
+        if s.startswith("--"):
+            return s
+    for s in getattr(a, "option_strings", []) or []:
+        return s
+    return None
+
+
+def _split_list_value(v: str) -> list[str]:
+    # Support comma-separated and/or multi-line lists.
+    raw = str(v)
+    if "\n" in raw:
+        parts = [p.strip() for p in raw.splitlines()]
+        return [p for p in parts if p]
+    if "," in raw:
+        parts = [p.strip() for p in raw.split(",")]
+        return [p for p in parts if p]
+    raw = raw.strip()
+    return [raw] if raw else []
+
+
+def _section_to_argv(
+    p: argparse.ArgumentParser, cfg: configparser.ConfigParser, section: str
+) -> list[str]:
+    """Translate an INI section into argv tokens for this parser."""
+    if not cfg.has_section(section):
+        return []
+
+    lookup = _action_lookup(p)
+    out: list[str] = []
+
+    for k, v in cfg.items(section):
+        key = str(k).strip().lower().replace("-", "_")
+        # Avoid recursion / confusing self-configuration.
+        if key in {"config", "no_config"}:
+            continue
+
+        a = lookup.get(key)
+        if not a:
+            # Unknown keys are ignored (but we try to be helpful).
+            print(
+                f"warning: config [{section}] contains unknown option '{k}' (ignored)",
+                file=sys.stderr,
+            )
+            continue
+
+        flag = _choose_flag(a)
+        if not flag:
+            continue
+
+        # Boolean flags
+        if isinstance(a, argparse._StoreTrueAction):  # noqa: SLF001
+            b = _parse_bool(v)
+            if b is True:
+                out.append(flag)
+            continue
+        if isinstance(a, argparse._StoreFalseAction):  # noqa: SLF001
+            b = _parse_bool(v)
+            if b is False:
+                out.append(flag)
+            continue
+
+        # Repeated options
+        if isinstance(a, argparse._AppendAction):  # noqa: SLF001
+            for item in _split_list_value(v):
+                out.extend([flag, item])
+            continue
+
+        # Count flags (rare, but easy to support)
+        if isinstance(a, argparse._CountAction):  # noqa: SLF001
+            b = _parse_bool(v)
+            if b is True:
+                out.append(flag)
+            else:
+                try:
+                    n = int(str(v).strip())
+                except ValueError:
+                    n = 0
+                out.extend([flag] * max(0, n))
+            continue
+
+        # Standard scalar options
+        sval = str(v).strip()
+        if sval:
+            out.extend([flag, sval])
+
+    return out
+
+
+def _inject_config_argv(
+    argv: list[str],
+    *,
+    cfg_path: Optional[Path],
+    root_parser: argparse.ArgumentParser,
+    subparsers: dict[str, argparse.ArgumentParser],
+) -> list[str]:
+    """Return argv with config-derived tokens inserted.
+
+    We insert:
+      - [enroll] options before the subcommand
+      - [<subcommand>] options immediately after the subcommand token
+
+    CLI flags always win because they come later in argv.
+    """
+
+    if not cfg_path:
+        return argv
+    cfg_path = Path(cfg_path).expanduser()
+    if not (cfg_path.exists() and cfg_path.is_file()):
+        return argv
+
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(cfg_path, encoding="utf-8")
+    except (OSError, configparser.Error) as e:
+        raise SystemExit(f"error: failed to read config file {cfg_path}: {e}")
+
+    global_tokens = _section_to_argv(root_parser, cfg, "enroll")
+
+    # Find the subcommand token position.
+    cmd_pos: Optional[int] = None
+    cmd_name: Optional[str] = None
+    for i, tok in enumerate(argv):
+        if tok in subparsers:
+            cmd_pos = i
+            cmd_name = tok
+            break
+    if cmd_pos is None or cmd_name is None:
+        # No subcommand found (argparse will handle the error); only apply global.
+        return global_tokens + argv
+
+    cmd_tokens = _section_to_argv(subparsers[cmd_name], cfg, cmd_name)
+    # Also accept section names with '_' in place of '-' (e.g. [single_shot])
+    if "-" in cmd_name:
+        alt = cmd_name.replace("-", "_")
+        if alt != cmd_name:
+            cmd_tokens += _section_to_argv(subparsers[cmd_name], cfg, alt)
+
+    return global_tokens + argv[: cmd_pos + 1] + cmd_tokens + argv[cmd_pos + 1 :]
 
 
 def _resolve_sops_out_file(out: Optional[str], *, hint: str) -> Path:
@@ -95,6 +323,22 @@ def _add_remote_args(p: argparse.ArgumentParser) -> None:
         "--remote-host",
         help="SSH host to run harvesting on (if set, harvest runs remotely and is pulled locally).",
     )
+
+
+def _add_config_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "-c",
+        "--config",
+        help=(
+            "Path to an INI config file for default options. If omitted, enroll will look for "
+            "./enroll.ini, ./.enroll.ini, or ~/.config/enroll/enroll.ini (or $XDG_CONFIG_HOME/enroll/enroll.ini)."
+        ),
+    )
+    p.add_argument(
+        "--no-config",
+        action="store_true",
+        help="Do not load any INI config file (even if one would be auto-discovered).",
+    )
     p.add_argument(
         "--remote-port",
         type=int,
@@ -110,9 +354,11 @@ def _add_remote_args(p: argparse.ArgumentParser) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="enroll")
+    _add_config_args(ap)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     h = sub.add_parser("harvest", help="Harvest service/package/config state")
+    _add_config_args(h)
     h.add_argument(
         "--out",
         help=(
@@ -163,6 +409,7 @@ def main() -> None:
     _add_remote_args(h)
 
     m = sub.add_parser("manifest", help="Render Ansible roles from a harvest")
+    _add_config_args(m)
     m.add_argument(
         "--harvest",
         required=True,
@@ -195,6 +442,7 @@ def main() -> None:
     s = sub.add_parser(
         "single-shot", help="Harvest state, then manifest Ansible code, in one shot"
     )
+    _add_config_args(s)
     s.add_argument(
         "--harvest",
         help=(
@@ -255,6 +503,7 @@ def main() -> None:
     _add_remote_args(s)
 
     d = sub.add_parser("diff", help="Compare two harvests and report differences")
+    _add_config_args(d)
     d.add_argument(
         "--old",
         required=True,
@@ -338,7 +587,20 @@ def main() -> None:
         help="Environment variable containing SMTP password (optional).",
     )
 
-    args = ap.parse_args()
+    argv = sys.argv[1:]
+    cfg_path = _discover_config_path(argv)
+    argv = _inject_config_argv(
+        argv,
+        cfg_path=cfg_path,
+        root_parser=ap,
+        subparsers={
+            "harvest": h,
+            "manifest": m,
+            "single-shot": s,
+            "diff": d,
+        },
+    )
+    args = ap.parse_args(argv)
 
     remote_host: Optional[str] = getattr(args, "remote_host", None)
 

@@ -336,3 +336,59 @@ ansible-playbook -i "localhost," -c local /tmp/enroll-ansible/playbook.yml
 ```bash
 ansible-playbook /tmp/enroll-ansible/playbooks/"$(hostname -f)".yml
 ```
+
+## Configuration file
+
+As can be seen above, there are a lot of powerful 'permutations' available to all four subcommands.
+
+Sometimes, it can be easier to store them in a config file so you don't have to remember them!
+
+Enroll supports reading an ini-style file of all the arguments for each subcommand.
+
+### Location of the config file
+
+The path the config file can be specified with `-c` or `--config` on the command-line. Otherwise,
+Enroll will look for `./enroll.ini`, `./.enroll.ini` (in the current working directory),
+``~/.config/enroll/enroll.ini` (or `$XDG_CONFIG_HOME/enroll/enroll.ini`).
+
+You may also pass `--no-config` if you deliberately want to ignore the config file even if it existed.
+
+### Precedence
+
+Highest wins:
+
+ * Explicit CLI flags
+ * INI config ([cmd], [enroll])
+ * argparse defaults
+
+### Example config file
+
+Here is an example.
+
+Whenever an argument on the command-line has a 'hyphen' in it, just be sure to change it to an underscore in the ini file.
+
+```ini
+[enroll]
+# (future global flags may live here)
+
+[harvest]
+dangerous = false
+include_path =
+  /home/*/.bashrc
+  /home/*/.profile
+exclude_path = /usr/local/bin/docker-*, /usr/local/bin/some-tool
+# remote_host = yourserver.example.com
+# remote_user = you
+# remote_port = 2222
+
+[manifest]
+# you can set defaults here too, e.g.
+no_jinjaturtle = true
+sops = 00AE817C24A10C2540461A9C1D7CDE0234DB458D
+
+[single-shot]
+# if you use single-shot, put its defaults here.
+# It does not inherit those of the subsections above, so you
+# may wish to repeat them here.
+include_path = re:^/home/[^/]+/\.config/myapp/.*$
+```

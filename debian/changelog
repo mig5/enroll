@@ -1,3 +1,12 @@
+enroll (0.1.3) unstable; urgency=medium
+
+  * Allow the user to add extra paths to harvest, or paths to ignore, using `--exclude-path` and `--include-path`
+    arguments.
+  * Add support for an enroll.ini config file to store arguments per subcommand, to avoid having to remember
+    them all for repetitive executions.
+
+ -- Miguel Jacq <mig@mig5.net>  Sat, 20 Dec 2025 18:24:00 +1100
+
 enroll (0.1.2) unstable; urgency=medium
 
   * Include files from `/usr/local/bin` and `/usr/local/etc` in harvest (assuming they aren't binaries or
