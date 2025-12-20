@@ -126,6 +126,27 @@ def main() -> None:
         help="Collect files more aggressively (may include secrets). Disables secret-avoidance checks.",
     )
     h.add_argument(
+        "--include-path",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "Include extra file paths to harvest (repeatable). Supports globs (including '**') and regex via 're:<regex>'. "
+            "Included files are still filtered by IgnorePolicy unless --dangerous is used."
+        ),
+    )
+    h.add_argument(
+        "--exclude-path",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "Exclude file paths from harvesting (repeatable). Supports globs (including '**') and regex via 're:<regex>'. "
+            "Excludes apply to all harvesting, including defaults."
+        ),
+    )
+
+    h.add_argument(
         "--sops",
         nargs="+",
         metavar="GPG_FINGERPRINT",
@@ -186,6 +207,27 @@ def main() -> None:
         action="store_true",
         help="Collect files more aggressively (may include secrets). Disables secret-avoidance checks.",
     )
+    s.add_argument(
+        "--include-path",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "Include extra file paths to harvest (repeatable). Supports globs (including '**') and regex via 're:<regex>'. "
+            "Included files are still filtered by IgnorePolicy unless --dangerous is used."
+        ),
+    )
+    s.add_argument(
+        "--exclude-path",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "Exclude file paths from harvesting (repeatable). Supports globs (including '**') and regex via 're:<regex>'. "
+            "Excludes apply to all harvesting, including defaults."
+        ),
+    )
+
     s.add_argument(
         "--sops",
         nargs="+",
@@ -320,6 +362,8 @@ def main() -> None:
                             remote_user=args.remote_user,
                             dangerous=bool(args.dangerous),
                             no_sudo=bool(args.no_sudo),
+                            include_paths=list(getattr(args, "include_path", []) or []),
+                            exclude_paths=list(getattr(args, "exclude_path", []) or []),
                         )
                         _encrypt_harvest_dir_to_sops(
                             tmp_bundle, out_file, list(sops_fps)
@@ -338,6 +382,8 @@ def main() -> None:
                         remote_user=args.remote_user,
                         dangerous=bool(args.dangerous),
                         no_sudo=bool(args.no_sudo),
+                        include_paths=list(getattr(args, "include_path", []) or []),
+                        exclude_paths=list(getattr(args, "exclude_path", []) or []),
                     )
                     print(str(state))
             else:
@@ -350,7 +396,12 @@ def main() -> None:
                             os.chmod(tmp_bundle, 0o700)
                         except OSError:
                             pass
-                        harvest(str(tmp_bundle), dangerous=bool(args.dangerous))
+                        harvest(
+                            str(tmp_bundle),
+                            dangerous=bool(args.dangerous),
+                            include_paths=list(getattr(args, "include_path", []) or []),
+                            exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                        )
                         _encrypt_harvest_dir_to_sops(
                             tmp_bundle, out_file, list(sops_fps)
                         )
@@ -360,7 +411,12 @@ def main() -> None:
                         raise SystemExit(
                             "error: --out is required unless --remote-host is set"
                         )
-                    path = harvest(args.out, dangerous=bool(args.dangerous))
+                    path = harvest(
+                        args.out,
+                        dangerous=bool(args.dangerous),
+                        include_paths=list(getattr(args, "include_path", []) or []),
+                        exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                    )
                     print(path)
         elif args.cmd == "manifest":
             out_enc = manifest(
@@ -446,6 +502,8 @@ def main() -> None:
                             remote_user=args.remote_user,
                             dangerous=bool(args.dangerous),
                             no_sudo=bool(args.no_sudo),
+                            include_paths=list(getattr(args, "include_path", []) or []),
+                            exclude_paths=list(getattr(args, "exclude_path", []) or []),
                         )
                         _encrypt_harvest_dir_to_sops(
                             tmp_bundle, out_file, list(sops_fps)
@@ -473,6 +531,8 @@ def main() -> None:
                         remote_user=args.remote_user,
                         dangerous=bool(args.dangerous),
                         no_sudo=bool(args.no_sudo),
+                        include_paths=list(getattr(args, "include_path", []) or []),
+                        exclude_paths=list(getattr(args, "exclude_path", []) or []),
                     )
                     manifest(
                         str(harvest_dir),
@@ -493,7 +553,12 @@ def main() -> None:
                             os.chmod(tmp_bundle, 0o700)
                         except OSError:
                             pass
-                        harvest(str(tmp_bundle), dangerous=bool(args.dangerous))
+                        harvest(
+                            str(tmp_bundle),
+                            dangerous=bool(args.dangerous),
+                            include_paths=list(getattr(args, "include_path", []) or []),
+                            exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                        )
                         _encrypt_harvest_dir_to_sops(
                             tmp_bundle, out_file, list(sops_fps)
                         )
@@ -512,7 +577,12 @@ def main() -> None:
                         raise SystemExit(
                             "error: --harvest is required unless --remote-host is set"
                         )
-                    harvest(args.harvest, dangerous=bool(args.dangerous))
+                    harvest(
+                        args.harvest,
+                        dangerous=bool(args.dangerous),
+                        include_paths=list(getattr(args, "include_path", []) or []),
+                        exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                    )
                     manifest(
                         args.harvest,
                         args.out,

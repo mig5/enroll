@@ -6,9 +6,17 @@ import enroll.cli as cli
 def test_cli_harvest_subcommand_calls_harvest(monkeypatch, capsys, tmp_path):
     called = {}
 
-    def fake_harvest(out: str, dangerous: bool = False):
+    def fake_harvest(
+        out: str,
+        dangerous: bool = False,
+        include_paths=None,
+        exclude_paths=None,
+        **_kwargs,
+    ):
         called["out"] = out
         called["dangerous"] = dangerous
+        called["include_paths"] = include_paths or []
+        called["exclude_paths"] = exclude_paths or []
         return str(tmp_path / "state.json")
 
     monkeypatch.setattr(cli, "harvest", fake_harvest)
@@ -17,6 +25,8 @@ def test_cli_harvest_subcommand_calls_harvest(monkeypatch, capsys, tmp_path):
     cli.main()
     assert called["out"] == str(tmp_path)
     assert called["dangerous"] is False
+    assert called["include_paths"] == []
+    assert called["exclude_paths"] == []
     captured = capsys.readouterr()
     assert str(tmp_path / "state.json") in captured.out
 
@@ -55,8 +65,16 @@ def test_cli_manifest_subcommand_calls_manifest(monkeypatch, tmp_path):
 def test_cli_enroll_subcommand_runs_harvest_then_manifest(monkeypatch, tmp_path):
     calls = []
 
-    def fake_harvest(bundle_dir: str, dangerous: bool = False):
-        calls.append(("harvest", bundle_dir, dangerous))
+    def fake_harvest(
+        bundle_dir: str,
+        dangerous: bool = False,
+        include_paths=None,
+        exclude_paths=None,
+        **_kwargs,
+    ):
+        calls.append(
+            ("harvest", bundle_dir, dangerous, include_paths or [], exclude_paths or [])
+        )
         return str(tmp_path / "bundle" / "state.json")
 
     def fake_manifest(bundle_dir: str, out_dir: str, **kwargs):
@@ -87,7 +105,7 @@ def test_cli_enroll_subcommand_runs_harvest_then_manifest(monkeypatch, tmp_path)
 
     cli.main()
     assert calls == [
-        ("harvest", str(tmp_path / "bundle"), False),
+        ("harvest", str(tmp_path / "bundle"), False, [], []),
         ("manifest", str(tmp_path / "bundle"), str(tmp_path / "ansible"), None, "auto"),
     ]
 
@@ -95,9 +113,17 @@ def test_cli_enroll_subcommand_runs_harvest_then_manifest(monkeypatch, tmp_path)
 def test_cli_harvest_dangerous_flag_is_forwarded(monkeypatch, tmp_path):
     called = {}
 
-    def fake_harvest(out: str, dangerous: bool = False):
+    def fake_harvest(
+        out: str,
+        dangerous: bool = False,
+        include_paths=None,
+        exclude_paths=None,
+        **_kwargs,
+    ):
         called["out"] = out
         called["dangerous"] = dangerous
+        called["include_paths"] = include_paths or []
+        called["exclude_paths"] = exclude_paths or []
         return str(tmp_path / "state.json")
 
     monkeypatch.setattr(cli, "harvest", fake_harvest)
@@ -107,6 +133,8 @@ def test_cli_harvest_dangerous_flag_is_forwarded(monkeypatch, tmp_path):
 
     cli.main()
     assert called["dangerous"] is True
+    assert called["include_paths"] == []
+    assert called["exclude_paths"] == []
 
 
 def test_cli_harvest_remote_calls_remote_harvest_and_uses_cache_dir(
@@ -131,6 +159,9 @@ def test_cli_harvest_remote_calls_remote_harvest_and_uses_cache_dir(
         remote_user,
         dangerous,
         no_sudo,
+        include_paths=None,
+        exclude_paths=None,
+        **_kwargs,
     ):
         called.update(
             {
@@ -140,6 +171,8 @@ def test_cli_harvest_remote_calls_remote_harvest_and_uses_cache_dir(
                 "remote_user": remote_user,
                 "dangerous": dangerous,
                 "no_sudo": no_sudo,
+                "include_paths": include_paths or [],
+                "exclude_paths": exclude_paths or [],
             }
         )
         return cache_dir / "state.json"
@@ -169,6 +202,8 @@ def test_cli_harvest_remote_calls_remote_harvest_and_uses_cache_dir(
     assert called["remote_user"] == "alice"
     assert called["dangerous"] is False
     assert called["no_sudo"] is False
+    assert called["include_paths"] == []
+    assert called["exclude_paths"] == []
 
 
 def test_cli_single_shot_remote_without_harvest_prints_state_path(

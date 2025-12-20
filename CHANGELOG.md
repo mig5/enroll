@@ -1,3 +1,8 @@
+# 0.1.3
+
+ * Allow the user to add extra paths to harvest, or paths to ignore, using `--exclude-path` and `--include-path`
+   arguments.
+
 # 0.1.2
 
  * Include files from `/usr/local/bin` and `/usr/local/etc` in harvest (assuming they aren't binaries or

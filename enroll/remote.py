@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import tarfile
 import tempfile
@@ -97,6 +98,8 @@ def remote_harvest(
     remote_python: str = "python3",
     dangerous: bool = False,
     no_sudo: bool = False,
+    include_paths: Optional[list[str]] = None,
+    exclude_paths: Optional[list[str]] = None,
 ) -> Path:
     """Run enroll harvest on a remote host via SSH and pull the bundle locally.
 
@@ -165,13 +168,25 @@ def remote_harvest(
             sftp.put(str(pyz), rapp)
 
             # Run remote harvest.
-            _cmd = f"{remote_python} {rapp} harvest --out {rbundle}"
+            argv: list[str] = [
+                remote_python,
+                rapp,
+                "harvest",
+                "--out",
+                rbundle,
+            ]
+            if dangerous:
+                argv.append("--dangerous")
+            for p in include_paths or []:
+                argv.extend(["--include-path", str(p)])
+            for p in exclude_paths or []:
+                argv.extend(["--exclude-path", str(p)])
+
+            _cmd = " ".join(shlex.quote(a) for a in argv)
             if not no_sudo:
                 cmd = f"sudo {_cmd}"
             else:
                 cmd = _cmd
-            if dangerous:
-                cmd += " --dangerous"
             rc, out, err = _ssh_run(ssh, cmd)
             if rc != 0:
                 raise RuntimeError(

@@ -69,6 +69,7 @@ Harvest state about a host and write a harvest bundle.
 - Changed-from-default config (plus related custom/unowned files under service dirs)
 - Non-system users + SSH public keys
 - Misc `/etc` that can’t be attributed to a package (`etc_custom` role)
+- Optional user-specified extra files/dirs via `--include-path` (emitted as an `extra_paths` role at manifest time)
 
 **Common flags**
 - Remote harvesting:
@@ -79,6 +80,14 @@ Harvest state about a host and write a harvest bundle.
   - `--dangerous`: disables secret-safety checks (see “Sensitive data” below)
 - Encrypt bundles at rest:
   - `--sops <FINGERPRINT...>`: writes a single encrypted `harvest.tar.gz.sops` instead of a plaintext directory
+- Path selection (include/exclude):
+  - `--include-path <PATTERN>` (repeatable): add extra files/dirs to harvest (even from locations normally ignored, like `/home`). Still subject to secret-safety checks unless `--dangerous`.
+  - `--exclude-path <PATTERN>` (repeatable): skip files/dirs even if they would normally be harvested.
+  - Pattern syntax:
+    - plain path: matches that file; directories match the directory + everything under it
+    - glob (default): supports `*` and `**` (prefix with `glob:` to force)
+    - regex: prefix with `re:` or `regex:`
+  - Precedence: excludes win over includes.
 
 ---
 
@@ -225,6 +234,23 @@ enroll harvest --out /tmp/enroll-harvest
 ### Remote harvest over SSH
 ```bash
 enroll harvest --remote-host myhost.example.com --remote-user myuser --out /tmp/enroll-harvest
+```
+
+### Include paths (`--include-path`)
+```bash
+# Add a few dotfiles from /home (still secret-safe unless --dangerous)
+enroll harvest --out /tmp/enroll-harvest --include-path '/home/*/.bashrc' --include-path '/home/*/.profile'
+```
+
+### Exclude paths (`--exclude-path`)
+```bash
+# Skip specific /usr/local/bin entries (or patterns)
+enroll harvest --out /tmp/enroll-harvest --exclude-path '/usr/local/bin/docker-*' --exclude-path '/usr/local/bin/some-tool'
+```
+
+### Regex include
+```bash
+enroll harvest --out /tmp/enroll-harvest --include-path 're:^/home/[^/]+/\.config/myapp/.*$'
 ```
 
 ### `--dangerous`
