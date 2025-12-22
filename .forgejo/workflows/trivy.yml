@@ -23,7 +23,7 @@ jobs:
 
       - name: Run trivy
         run: |
-          trivy fs --no-progress --ignore-unfixed --format table --disable-telemetry .
+          trivy fs --no-progress --ignore-unfixed --format table --disable-telemetry --skip-version-check --exit-code 1 .
 
       # Notify if any previous step in this job failed
       - name: Notify on failure
