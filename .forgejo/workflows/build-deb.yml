@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+
+jobs:
+  test:
+    runs-on: docker
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          build-essential \
+          devscripts \
+          debhelper \
+          dh-python \
+          pybuild-plugin-pyproject \
+          python3-all \
+          python3-poetry-core \
+          python3-yaml \
+          python3-paramiko \
+          rsync \
+          ca-certificates
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build deb
+        run: |
+          mkdir /out
+
+          rsync -a --delete \
+            --exclude '.git' \
+            --exclude '.venv' \
+            --exclude 'dist' \
+            --exclude 'build' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude '.mypy_cache' \
+            ./ /out/
+
+          cd /out/
+          export DEBEMAIL="mig@mig5.net"
+          export DEBFULLNAME="Miguel Jacq"
+
+          dch --distribution "trixie" --local "~trixie" "CI build for trixie"
+          dpkg-buildpackage -us -uc -b
+
+      # Notify if any previous step in this job failed
+      - name: Notify on failure
+        if: ${{ failure() }}
+        env:
+          WEBHOOK_URL: ${{ secrets.NODERED_WEBHOOK_URL }}
+          REPOSITORY: ${{ forgejo.repository }}
+          RUN_NUMBER: ${{ forgejo.run_number }}
+          SERVER_URL: ${{ forgejo.server_url }}
+        run: |
+          curl -X POST \
+               -H "Content-Type: application/json" \
+               -d "{\"repository\":\"$REPOSITORY\",\"run_number\":\"$RUN_NUMBER\",\"status\":\"failure\",\"url\":\"$SERVER_URL/$REPOSITORY/actions/runs/$RUN_NUMBER\"}" \
+               "$WEBHOOK_URL"
