@@ -184,6 +184,12 @@ def _iter_managed_files(state: Dict[str, Any]) -> Iterable[Tuple[str, Dict[str, 
     for mf in u.get("managed_files", []) or []:
         yield str(u_role), mf
 
+    # apt_config
+    ac = state.get("apt_config") or {}
+    ac_role = ac.get("role_name") or "apt_config"
+    for mf in ac.get("managed_files", []) or []:
+        yield str(ac_role), mf
+
     # etc_custom
     ec = state.get("etc_custom") or {}
     ec_role = ec.get("role_name") or "etc_custom"

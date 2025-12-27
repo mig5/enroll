@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import tarfile
@@ -627,6 +628,7 @@ def _manifest_from_bundle_dir(
     services: List[Dict[str, Any]] = state.get("services", [])
     package_roles: List[Dict[str, Any]] = state.get("package_roles", [])
     users_snapshot: Dict[str, Any] = state.get("users", {})
+    apt_config_snapshot: Dict[str, Any] = state.get("apt_config", {})
     etc_custom_snapshot: Dict[str, Any] = state.get("etc_custom", {})
     usr_local_custom_snapshot: Dict[str, Any] = state.get("usr_local_custom", {})
     extra_paths_snapshot: Dict[str, Any] = state.get("extra_paths", {})
@@ -661,6 +663,7 @@ def _manifest_from_bundle_dir(
         _ensure_ansible_cfg(os.path.join(out_dir, "ansible.cfg"))
 
     manifested_users_roles: List[str] = []
+    manifested_apt_config_roles: List[str] = []
     manifested_etc_custom_roles: List[str] = []
     manifested_usr_local_custom_roles: List[str] = []
     manifested_extra_paths_roles: List[str] = []
@@ -886,6 +889,157 @@ Generated non-system user accounts and SSH public material.
             f.write(readme)
 
         manifested_users_roles.append(role)
+
+    # -------------------------
+    # apt_config role (APT sources, pinning, and keyrings)
+    # -------------------------
+    if apt_config_snapshot and apt_config_snapshot.get("managed_files"):
+        role = apt_config_snapshot.get("role_name", "apt_config")
+        role_dir = os.path.join(roles_root, role)
+        _write_role_scaffold(role_dir)
+
+        var_prefix = role
+
+        managed_files = apt_config_snapshot.get("managed_files", [])
+        excluded = apt_config_snapshot.get("excluded", [])
+        notes = apt_config_snapshot.get("notes", [])
+
+        templated, jt_vars = _jinjify_managed_files(
+            bundle_dir,
+            role,
+            role_dir,
+            managed_files,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not site_mode,
+        )
+
+        # Copy only the non-templated artifacts (templates live in the role).
+        if site_mode:
+            _copy_artifacts(
+                bundle_dir,
+                role,
+                _host_role_files_dir(out_dir, fqdn or "", role),
+                exclude_rels=templated,
+            )
+        else:
+            _copy_artifacts(
+                bundle_dir,
+                role,
+                os.path.join(role_dir, "files"),
+                exclude_rels=templated,
+            )
+
+        files_var = _build_managed_files_var(
+            managed_files,
+            templated,
+            notify_other=None,
+            notify_systemd=None,
+        )
+
+        jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
+        vars_map: Dict[str, Any] = {f"{var_prefix}_managed_files": files_var}
+        vars_map = _merge_mappings_overwrite(vars_map, jt_map)
+
+        if site_mode:
+            _write_role_defaults(role_dir, {f"{var_prefix}_managed_files": []})
+            _write_hostvars(out_dir, fqdn or "", role, vars_map)
+        else:
+            _write_role_defaults(role_dir, vars_map)
+
+        tasks = """---\n""" + _render_generic_files_tasks(
+            var_prefix, include_restart_notify=False
+        )
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(tasks.rstrip() + "\n")
+
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\ndependencies: []\n")
+
+        # README: summarise repos and keyrings
+        source_paths: List[str] = []
+        keyring_paths: List[str] = []
+        repo_hosts: Set[str] = set()
+
+        url_re = re.compile(r"(?:https?|ftp)://([^/\s]+)", re.IGNORECASE)
+
+        for mf in managed_files:
+            p = str(mf.get("path") or "")
+            src_rel = str(mf.get("src_rel") or "")
+            if not p or not src_rel:
+                continue
+
+            if p == "/etc/apt/sources.list" or p.startswith("/etc/apt/sources.list.d/"):
+                source_paths.append(p)
+                art_path = os.path.join(bundle_dir, "artifacts", role, src_rel)
+                try:
+                    with open(art_path, "r", encoding="utf-8", errors="replace") as sf:
+                        for line in sf:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            for m in url_re.finditer(line):
+                                repo_hosts.add(m.group(1))
+                except OSError:
+                    pass  # nosec
+
+            if (
+                p.startswith("/etc/apt/trusted.gpg")
+                or p.startswith("/etc/apt/keyrings/")
+                or p.startswith("/usr/share/keyrings/")
+            ):
+                keyring_paths.append(p)
+
+        source_paths = sorted(set(source_paths))
+        keyring_paths = sorted(set(keyring_paths))
+        repos = sorted(repo_hosts)
+
+        readme = (
+            """# apt_config
+
+APT configuration harvested from the system (sources, pinning, and keyrings).
+
+## Repository hosts
+"""
+            + ("\n".join([f"- {h}" for h in repos]) or "- (none)")
+            + """\n
+## Source files
+"""
+            + ("\n".join([f"- {p}" for p in source_paths]) or "- (none)")
+            + """\n
+## Keyrings
+"""
+            + ("\n".join([f"- {p}" for p in keyring_paths]) or "- (none)")
+            + """\n
+## Managed files
+"""
+            + (
+                "\n".join(
+                    [f"- {mf.get('path')} ({mf.get('reason')})" for mf in managed_files]
+                )
+                or "- (none)"
+            )
+            + """\n
+## Excluded
+"""
+            + (
+                "\n".join([f"- {e.get('path')} ({e.get('reason')})" for e in excluded])
+                or "- (none)"
+            )
+            + """\n
+## Notes
+"""
+            + ("\n".join([f"- {n}" for n in notes]) or "- (none)")
+            + """\n"""
+        )
+        with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write(readme)
+
+        manifested_apt_config_roles.append(role)
 
     # -------------------------
     # etc_custom role (unowned /etc not already attributed)
@@ -1512,7 +1666,8 @@ Generated for package `{pkg}`.
 
         manifested_pkg_roles.append(role)
     all_roles = (
-        manifested_pkg_roles
+        manifested_apt_config_roles
+        + manifested_pkg_roles
         + manifested_service_roles
         + manifested_etc_custom_roles
         + manifested_usr_local_custom_roles

@@ -78,6 +78,14 @@ class UsersSnapshot:
 
 
 @dataclass
+class AptConfigSnapshot:
+    role_name: str
+    managed_files: List[ManagedFile]
+    excluded: List[ExcludedFile]
+    notes: List[str]
+
+
+@dataclass
 class EtcCustomSnapshot:
     role_name: str
     managed_files: List[ManagedFile]
@@ -126,7 +134,6 @@ ALLOWED_UNOWNED_EXTS = {
 }
 
 MAX_FILES_CAP = 4000
-
 MAX_UNOWNED_FILES_PER_ROLE = 500
 
 # Directories that are shared across many packages; never attribute unowned files in these trees to a single package.
@@ -401,30 +408,61 @@ def _parse_apt_signed_by(source_files: List[str]) -> Set[str]:
     return out
 
 
-def _iter_system_capture_paths() -> List[tuple[str, str]]:
-    """Return (path, reason) pairs for essential system config/state."""
-    out: List[tuple[str, str]] = []
+def _iter_apt_capture_paths() -> List[tuple[str, str]]:
+    """Return (path, reason) pairs for APT configuration.
 
-    # APT: capture sources and related config
+    This captures the full /etc/apt tree (subject to IgnorePolicy at copy time),
+    plus any keyrings referenced via signed-by/Signed-By which may live outside
+    /etc (e.g. /usr/share/keyrings).
+    """
+    reasons: Dict[str, str] = {}
+
+    # Capture all regular files under /etc/apt (no symlinks).
+    if os.path.isdir("/etc/apt"):
+        for dirpath, _, filenames in os.walk("/etc/apt"):
+            for fn in filenames:
+                p = os.path.join(dirpath, fn)
+                if os.path.islink(p) or not os.path.isfile(p):
+                    continue
+                reasons.setdefault(p, "apt_config")
+
+    # Identify source files explicitly for nicer reasons and keyring discovery.
     apt_sources: List[str] = []
     for g in _APT_SOURCE_GLOBS:
         apt_sources.extend(_iter_matching_files(g))
     for p in sorted(set(apt_sources)):
-        out.append((p, "system_apt_sources"))
+        reasons[p] = "apt_source"
 
-    # APT: misc config files/dirs
-    for g in _APT_MISC_GLOBS:
+    # Keyrings in standard locations.
+    for g in (
+        "/etc/apt/trusted.gpg",
+        "/etc/apt/trusted.gpg.d/*",
+        "/etc/apt/keyrings/*",
+    ):
         for p in _iter_matching_files(g):
-            out.append((p, "system_apt_config"))
+            reasons[p] = "apt_keyring"
 
-    # APT: referenced keyrings (may live outside /etc)
+    # Keyrings referenced by sources (may live outside /etc/apt).
     signed_by = _parse_apt_signed_by(sorted(set(apt_sources)))
     for p in sorted(signed_by):
         if os.path.islink(p) or not os.path.isfile(p):
             continue
-        out.append((p, "system_apt_keyring"))
+        if p.startswith("/etc/apt/"):
+            reasons[p] = "apt_keyring"
+        else:
+            reasons[p] = "apt_signed_by_keyring"
 
-    # Other system config/state globs
+    # De-dup with stable ordering.
+    uniq: List[tuple[str, str]] = []
+    for p in sorted(reasons.keys()):
+        uniq.append((p, reasons[p]))
+    return uniq
+
+
+def _iter_system_capture_paths() -> List[tuple[str, str]]:
+    """Return (path, reason) pairs for essential system config/state (non-APT)."""
+    out: List[tuple[str, str]] = []
+
     for spec, reason in _SYSTEM_CAPTURE_GLOBS:
         for p in _iter_matching_files(spec):
             out.append((p, reason))
@@ -543,6 +581,8 @@ def harvest(
             md5sums = read_pkg_md5sums(pkg)
             for path in pkg_to_etc_paths.get(pkg, []):
                 if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+                if path.startswith("/etc/apt/"):
                     continue
                 if path in conff:
                     # Only capture conffiles when they differ from the package default.
@@ -784,6 +824,8 @@ def harvest(
         for path in pkg_to_etc_paths.get(pkg, []):
             if not os.path.isfile(path) or os.path.islink(path):
                 continue
+            if path.startswith("/etc/apt/"):
+                continue
             if path in conff:
                 try:
                     current = file_md5(path)
@@ -947,6 +989,55 @@ def harvest(
     )
 
     # -------------------------
+    # apt_config role (APT configuration and keyrings)
+    # -------------------------
+    apt_notes: List[str] = []
+    apt_excluded: List[ExcludedFile] = []
+    apt_managed: List[ManagedFile] = []
+    apt_role_name = "apt_config"
+
+    for path, reason in _iter_apt_capture_paths():
+        if path_filter.is_excluded(path):
+            apt_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
+            continue
+
+        deny = policy.deny_reason(path)
+        if deny:
+            apt_excluded.append(ExcludedFile(path=path, reason=deny))
+            continue
+
+        try:
+            owner, group, mode = stat_triplet(path)
+        except OSError:
+            apt_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+            continue
+
+        src_rel = path.lstrip("/")
+        try:
+            _copy_into_bundle(bundle_dir, apt_role_name, path, src_rel)
+        except OSError:
+            apt_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+            continue
+
+        apt_managed.append(
+            ManagedFile(
+                path=path,
+                src_rel=src_rel,
+                owner=owner,
+                group=group,
+                mode=mode,
+                reason=reason,
+            )
+        )
+
+    apt_config_snapshot = AptConfigSnapshot(
+        role_name=apt_role_name,
+        managed_files=apt_managed,
+        excluded=apt_excluded,
+        notes=apt_notes,
+    )
+
+    # -------------------------
     # etc_custom role (unowned /etc files not already attributed elsewhere)
     # -------------------------
     etc_notes: List[str] = []
@@ -963,6 +1054,8 @@ def harvest(
         for mf in p.managed_files:
             already.add(mf.path)
     for mf in users_managed:
+        already.add(mf.path)
+    for mf in apt_managed:
         already.add(mf.path)
 
     # Maps for re-attributing shared snippets (cron.d/logrotate.d) to existing roles.
@@ -1107,6 +1200,8 @@ def harvest(
     for dirpath, _, filenames in os.walk("/etc"):
         for fn in filenames:
             path = os.path.join(dirpath, fn)
+            if path.startswith("/etc/apt/"):
+                continue
             if path in already:
                 continue
             if path in owned_etc:
@@ -1408,6 +1503,7 @@ def harvest(
         "manual_packages": manual_pkgs,
         "manual_packages_skipped": manual_pkgs_skipped,
         "package_roles": [asdict(p) for p in pkg_snaps],
+        "apt_config": asdict(apt_config_snapshot),
         "etc_custom": asdict(etc_custom_snapshot),
         "usr_local_custom": asdict(usr_local_custom_snapshot),
         "extra_paths": asdict(extra_paths_snapshot),
