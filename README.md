@@ -191,6 +191,25 @@ sudo apt update
 sudo apt install enroll
 ```
 
+### Fedora 42
+
+```bash
+sudo rpm --import https://mig5.net/static/mig5.asc
+
+sudo tee /etc/yum.repos.d/mig5.repo > /dev/null << 'EOF'
+[mig5]
+name=mig5 Repository
+baseurl=https://rpm.mig5.net/rpm/$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://mig5.net/static/mig5.asc
+EOF
+
+sudo dnf upgrade --refresh
+sudo dnf install enroll
+```
+
 ## AppImage
 Download it from my Releases page, then:
 
