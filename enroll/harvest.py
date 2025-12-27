@@ -125,7 +125,9 @@ ALLOWED_UNOWNED_EXTS = {
     "",  # allow extensionless (common in /etc/default and /etc/init.d)
 }
 
-MAX_UNOWNED_FILES_PER_ROLE = 400
+MAX_FILES_CAP = 4000
+
+MAX_UNOWNED_FILES_PER_ROLE = 500
 
 # Directories that are shared across many packages; never attribute unowned files in these trees to a single package.
 SHARED_ETC_TOPDIRS = {
@@ -324,7 +326,7 @@ _SYSTEM_CAPTURE_GLOBS: List[tuple[str, str]] = [
 ]
 
 
-def _iter_matching_files(spec: str, *, cap: int = 2000) -> List[str]:
+def _iter_matching_files(spec: str, *, cap: int = MAX_FILES_CAP) -> List[str]:
     """Expand a glob spec and also walk directories to collect files."""
     out: List[str] = []
     for p in glob.glob(spec):
@@ -963,43 +965,141 @@ def harvest(
     for mf in users_managed:
         already.add(mf.path)
 
+    # Maps for re-attributing shared snippets (cron.d/logrotate.d) to existing roles.
+    svc_by_role: Dict[str, ServiceSnapshot] = {s.role_name: s for s in service_snaps}
+    pkg_by_role: Dict[str, PackageSnapshot] = {p.role_name: p for p in pkg_snaps}
+
+    def _target_role_for_shared_snippet(path: str) -> Optional[tuple[str, str]]:
+        """If `path` is a shared snippet, return (role_name, reason) to attach to."""
+        base = os.path.basename(path)
+
+        # Try full filename and stem (before first dot).
+        candidates: List[str] = [base]
+        if "." in base:
+            candidates.append(base.split(".", 1)[0])
+
+        seen: Set[str] = set()
+        uniq: List[str] = []
+        for c in candidates:
+            if c and c not in seen:
+                seen.add(c)
+                uniq.append(c)
+
+        if path.startswith("/etc/logrotate.d/"):
+            for c in uniq:
+                rn = _safe_name(c)
+                if rn in svc_by_role or rn in pkg_by_role:
+                    return (rn, "logrotate_snippet")
+            return None
+
+        if path.startswith("/etc/cron.d/"):
+            for c in uniq:
+                rn = _safe_name(c)
+                if rn in svc_by_role or rn in pkg_by_role:
+                    return (rn, "cron_snippet")
+            return None
+
+        return None
+
     # Capture essential system config/state (even if package-owned).
     for path, reason in _iter_system_capture_paths():
         if path in already:
             continue
 
+        target = _target_role_for_shared_snippet(path)
+
         if path_filter.is_excluded(path):
-            etc_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
+            if target:
+                rn, _ = target
+                if rn in svc_by_role:
+                    svc_by_role[rn].excluded.append(
+                        ExcludedFile(path=path, reason="user_excluded")
+                    )
+                elif rn in pkg_by_role:
+                    pkg_by_role[rn].excluded.append(
+                        ExcludedFile(path=path, reason="user_excluded")
+                    )
+            else:
+                etc_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
+            already.add(path)
             continue
 
         deny = policy.deny_reason(path)
         if deny:
-            etc_excluded.append(ExcludedFile(path=path, reason=deny))
+            if target:
+                rn, _ = target
+                if rn in svc_by_role:
+                    svc_by_role[rn].excluded.append(
+                        ExcludedFile(path=path, reason=deny)
+                    )
+                elif rn in pkg_by_role:
+                    pkg_by_role[rn].excluded.append(
+                        ExcludedFile(path=path, reason=deny)
+                    )
+            else:
+                etc_excluded.append(ExcludedFile(path=path, reason=deny))
+            already.add(path)
             continue
 
         try:
             owner, group, mode = stat_triplet(path)
         except OSError:
-            etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+            if target:
+                rn, _ = target
+                if rn in svc_by_role:
+                    svc_by_role[rn].excluded.append(
+                        ExcludedFile(path=path, reason="unreadable")
+                    )
+                elif rn in pkg_by_role:
+                    pkg_by_role[rn].excluded.append(
+                        ExcludedFile(path=path, reason="unreadable")
+                    )
+            else:
+                etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+            already.add(path)
             continue
 
         src_rel = path.lstrip("/")
+        role_for_copy = etc_role_name
+        reason_for_role = reason
+        if target:
+            role_for_copy, reason_for_role = target
+
         try:
-            _copy_into_bundle(bundle_dir, etc_role_name, path, src_rel)
+            _copy_into_bundle(bundle_dir, role_for_copy, path, src_rel)
         except OSError:
-            etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+            if target:
+                rn, _ = target
+                if rn in svc_by_role:
+                    svc_by_role[rn].excluded.append(
+                        ExcludedFile(path=path, reason="unreadable")
+                    )
+                elif rn in pkg_by_role:
+                    pkg_by_role[rn].excluded.append(
+                        ExcludedFile(path=path, reason="unreadable")
+                    )
+            else:
+                etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+            already.add(path)
             continue
 
-        etc_managed.append(
-            ManagedFile(
-                path=path,
-                src_rel=src_rel,
-                owner=owner,
-                group=group,
-                mode=mode,
-                reason=reason,
-            )
+        mf = ManagedFile(
+            path=path,
+            src_rel=src_rel,
+            owner=owner,
+            group=group,
+            mode=mode,
+            reason=reason_for_role,
         )
+        if target:
+            rn, _ = target
+            if rn in svc_by_role:
+                svc_by_role[rn].managed_files.append(mf)
+            elif rn in pkg_by_role:
+                pkg_by_role[rn].managed_files.append(mf)
+        else:
+            etc_managed.append(mf)
+
         already.add(path)
 
     # Walk /etc for remaining unowned config-ish files
@@ -1016,45 +1116,106 @@ def harvest(
             if not _is_confish(path):
                 continue
 
+            target = _target_role_for_shared_snippet(path)
+
             if path_filter.is_excluded(path):
-                etc_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
+                if target:
+                    rn, _ = target
+                    if rn in svc_by_role:
+                        svc_by_role[rn].excluded.append(
+                            ExcludedFile(path=path, reason="user_excluded")
+                        )
+                    elif rn in pkg_by_role:
+                        pkg_by_role[rn].excluded.append(
+                            ExcludedFile(path=path, reason="user_excluded")
+                        )
+                else:
+                    etc_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
+                already.add(path)
                 continue
 
             deny = policy.deny_reason(path)
             if deny:
-                etc_excluded.append(ExcludedFile(path=path, reason=deny))
+                if target:
+                    rn, _ = target
+                    if rn in svc_by_role:
+                        svc_by_role[rn].excluded.append(
+                            ExcludedFile(path=path, reason=deny)
+                        )
+                    elif rn in pkg_by_role:
+                        pkg_by_role[rn].excluded.append(
+                            ExcludedFile(path=path, reason=deny)
+                        )
+                else:
+                    etc_excluded.append(ExcludedFile(path=path, reason=deny))
+                already.add(path)
                 continue
 
             try:
                 owner, group, mode = stat_triplet(path)
             except OSError:
-                etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                if target:
+                    rn, _ = target
+                    if rn in svc_by_role:
+                        svc_by_role[rn].excluded.append(
+                            ExcludedFile(path=path, reason="unreadable")
+                        )
+                    elif rn in pkg_by_role:
+                        pkg_by_role[rn].excluded.append(
+                            ExcludedFile(path=path, reason="unreadable")
+                        )
+                else:
+                    etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                already.add(path)
                 continue
 
             src_rel = path.lstrip("/")
+            role_for_copy = etc_role_name
+            reason_for_role = "custom_unowned"
+            if target:
+                role_for_copy, reason_for_role = target
+
             try:
-                _copy_into_bundle(bundle_dir, etc_role_name, path, src_rel)
+                _copy_into_bundle(bundle_dir, role_for_copy, path, src_rel)
             except OSError:
-                etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                if target:
+                    rn, _ = target
+                    if rn in svc_by_role:
+                        svc_by_role[rn].excluded.append(
+                            ExcludedFile(path=path, reason="unreadable")
+                        )
+                    elif rn in pkg_by_role:
+                        pkg_by_role[rn].excluded.append(
+                            ExcludedFile(path=path, reason="unreadable")
+                        )
+                else:
+                    etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                already.add(path)
                 continue
 
-            etc_managed.append(
-                ManagedFile(
-                    path=path,
-                    src_rel=src_rel,
-                    owner=owner,
-                    group=group,
-                    mode=mode,
-                    reason="custom_unowned",
-                )
+            mf = ManagedFile(
+                path=path,
+                src_rel=src_rel,
+                owner=owner,
+                group=group,
+                mode=mode,
+                reason=reason_for_role,
             )
+            if target:
+                rn, _ = target
+                if rn in svc_by_role:
+                    svc_by_role[rn].managed_files.append(mf)
+                elif rn in pkg_by_role:
+                    pkg_by_role[rn].managed_files.append(mf)
+            else:
+                etc_managed.append(mf)
             scanned += 1
-            if scanned >= 2000:
+            if scanned >= MAX_FILES_CAP:
                 etc_notes.append(
-                    "Reached file cap (2000) while scanning /etc for unowned files."
+                    f"Reached file cap ({MAX_FILES_CAP}) while scanning /etc for unowned files."
                 )
                 break
-        if scanned >= 2000:
+        if scanned >= MAX_FILES_CAP:
             break
 
     etc_custom_snapshot = EtcCustomSnapshot(
@@ -1146,7 +1307,7 @@ def harvest(
     _scan_usr_local_tree(
         "/usr/local/etc",
         require_executable=False,
-        cap=2000,
+        cap=MAX_FILES_CAP,
         reason="usr_local_etc_custom",
     )
 
@@ -1154,7 +1315,7 @@ def harvest(
     _scan_usr_local_tree(
         "/usr/local/bin",
         require_executable=True,
-        cap=2000,
+        cap=MAX_FILES_CAP,
         reason="usr_local_bin_script",
     )
 
@@ -1188,7 +1349,7 @@ def harvest(
         files, inc_notes = expand_includes(
             path_filter.iter_include_patterns(),
             exclude=path_filter,
-            max_files=4000,
+            max_files=MAX_FILES_CAP,
         )
         included_files = files
         extra_notes.extend(inc_notes)

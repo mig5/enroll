@@ -174,7 +174,7 @@ def expand_includes(
     patterns: Sequence[CompiledPathPattern],
     *,
     exclude: Optional[PathFilter] = None,
-    max_files: int = 4000,
+    max_files: int,
 ) -> Tuple[List[str], List[str]]:
     """Expand include patterns into concrete file paths.
 
