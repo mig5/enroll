@@ -1,4 +1,4 @@
-%global upstream_version 0.1.4
+%global upstream_version 0.1.5
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,10 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sun Dec 28 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Consolidate logrotate and cron files into their main service/package roles if they exist.
+- Standardise on MAX_FILES_CAP in one place
+- Manage apt stuff in its own role, not in etc_custom
 * Sat Dec 27 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Attempt to capture more stuff from /etc that might not be attributable to a specific package. This includes common singletons and systemd timers
 - Avoid duplicate apt data in package-specific roles.

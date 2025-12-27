@@ -1,3 +1,9 @@
+# 0.1.5
+
+ * Consolidate logrotate and cron files into their main service/package roles if they exist.
+ * Standardise on MAX_FILES_CAP in one place
+ * Manage apt stuff in its own role, not in etc_custom
+
 # 0.1.4
 
  * Attempt to capture more stuff from /etc that might not be attributable to a specific package. This includes common singletons and systemd timers
