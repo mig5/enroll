@@ -30,6 +30,21 @@ DEFAULT_DENY_GLOBS = [
     "/usr/local/etc/letsencrypt/*",
 ]
 
+
+# Allow a small set of binary config artifacts that are commonly required to
+# reproduce system configuration (notably APT keyrings). These are still subject
+# to size and readability limits, but are exempt from the "binary_like" denial.
+DEFAULT_ALLOW_BINARY_GLOBS = [
+    "/etc/apt/trusted.gpg",
+    "/etc/apt/trusted.gpg.d/*.gpg",
+    "/etc/apt/keyrings/*.gpg",
+    "/etc/apt/keyrings/*.pgp",
+    "/etc/apt/keyrings/*.asc",
+    "/usr/share/keyrings/*.gpg",
+    "/usr/share/keyrings/*.pgp",
+    "/usr/share/keyrings/*.asc",
+]
+
 SENSITIVE_CONTENT_PATTERNS = [
     re.compile(rb"-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----"),
     re.compile(rb"(?i)\bpassword\s*="),
@@ -44,6 +59,7 @@ BLOCK_END = b"*/"
 @dataclass
 class IgnorePolicy:
     deny_globs: Optional[list[str]] = None
+    allow_binary_globs: Optional[list[str]] = None
     max_file_bytes: int = 256_000
     sample_bytes: int = 64_000
     # If True, be much less conservative about collecting potentially
@@ -54,6 +70,8 @@ class IgnorePolicy:
     def __post_init__(self) -> None:
         if self.deny_globs is None:
             self.deny_globs = list(DEFAULT_DENY_GLOBS)
+        if self.allow_binary_globs is None:
+            self.allow_binary_globs = list(DEFAULT_ALLOW_BINARY_GLOBS)
 
     def iter_effective_lines(self, content: bytes):
         in_block = False
@@ -105,6 +123,10 @@ class IgnorePolicy:
             return "unreadable"
 
         if b"\x00" in data:
+            for g in self.allow_binary_globs or []:
+                if fnmatch.fnmatch(path, g):
+                    # Binary is acceptable for explicitly-allowed paths.
+                    return None
             return "binary_like"
 
         if not self.dangerous:

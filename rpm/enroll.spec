@@ -1,4 +1,4 @@
-%global upstream_version 0.1.3
+%global upstream_version 0.1.4
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,5 +43,8 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sat Dec 27 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Attempt to capture more stuff from /etc that might not be attributable to a specific package. This includes common singletons and systemd timers
+- Avoid duplicate apt data in package-specific roles.
 * Sat Dec 27 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Initial RPM packaging for Fedora 42

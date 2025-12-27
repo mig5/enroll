@@ -33,6 +33,19 @@ def _run(cmd: list[str]) -> str:
     return p.stdout
 
 
+@dataclass
+class TimerInfo:
+    name: str
+    fragment_path: Optional[str]
+    dropin_paths: List[str]
+    env_files: List[str]
+    trigger_unit: Optional[str]
+    active_state: Optional[str]
+    sub_state: Optional[str]
+    unit_file_state: Optional[str]
+    condition_result: Optional[str]
+
+
 def list_enabled_services() -> List[str]:
     out = _run(
         [
@@ -53,6 +66,31 @@ def list_enabled_services() -> List[str]:
             continue
         # Skip template units like "getty@.service"
         if unit.endswith("@.service") or "@.service" in unit:
+            continue
+        units.append(unit)
+    return sorted(set(units))
+
+
+def list_enabled_timers() -> List[str]:
+    out = _run(
+        [
+            "systemctl",
+            "list-unit-files",
+            "--type=timer",
+            "--state=enabled",
+            "--no-legend",
+        ]
+    )
+    units: List[str] = []
+    for line in out.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        unit = parts[0].strip()
+        if not unit.endswith(".timer"):
+            continue
+        # Skip template units like "foo@.timer"
+        if unit.endswith("@.timer"):
             continue
         units.append(unit)
     return sorted(set(units))
@@ -112,6 +150,65 @@ def get_unit_info(unit: str) -> UnitInfo:
         dropin_paths=sorted(set(dropins)),
         env_files=sorted(set(env_files)),
         exec_paths=sorted(set(exec_paths)),
+        active_state=kv.get("ActiveState") or None,
+        sub_state=kv.get("SubState") or None,
+        unit_file_state=kv.get("UnitFileState") or None,
+        condition_result=kv.get("ConditionResult") or None,
+    )
+
+
+def get_timer_info(unit: str) -> TimerInfo:
+    p = subprocess.run(
+        [
+            "systemctl",
+            "show",
+            unit,
+            "-p",
+            "FragmentPath",
+            "-p",
+            "DropInPaths",
+            "-p",
+            "EnvironmentFiles",
+            "-p",
+            "Unit",
+            "-p",
+            "ActiveState",
+            "-p",
+            "SubState",
+            "-p",
+            "UnitFileState",
+            "-p",
+            "ConditionResult",
+        ],
+        text=True,
+        capture_output=True,
+    )  # nosec
+    if p.returncode != 0:
+        raise RuntimeError(f"systemctl show failed for {unit}: {p.stderr}")
+
+    kv: dict[str, str] = {}
+    for line in (p.stdout or "").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            kv[k] = v.strip()
+
+    fragment = kv.get("FragmentPath") or None
+    dropins = [pp for pp in (kv.get("DropInPaths", "") or "").split() if pp]
+
+    env_files: List[str] = []
+    for token in (kv.get("EnvironmentFiles", "") or "").split():
+        token = token.lstrip("-")
+        if token:
+            env_files.append(token)
+
+    trigger = kv.get("Unit") or None
+
+    return TimerInfo(
+        name=unit,
+        fragment_path=fragment,
+        dropin_paths=dropins,
+        env_files=env_files,
+        trigger_unit=trigger,
         active_state=kv.get("ActiveState") or None,
         sub_state=kv.get("SubState") or None,
         unit_file_state=kv.get("UnitFileState") or None,

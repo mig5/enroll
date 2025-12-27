@@ -1,3 +1,8 @@
+# 0.1.4
+
+ * Attempt to capture more stuff from /etc that might not be attributable to a specific package. This includes common singletons and systemd timers
+ * Avoid duplicate apt data in package-specific roles.
+
 # 0.1.3
 
  * Allow the user to add extra paths to harvest, or paths to ignore, using `--exclude-path` and `--include-path`
