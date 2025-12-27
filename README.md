@@ -6,7 +6,6 @@
 
 **enroll** inspects a Linux machine (currently Debian-only) and generates Ansible roles/playbooks (and optionally inventory) for what it finds.
 
-It aims to be **optimistic and noninteractive**:
 - Detects packages that have been installed.
 - Detects Debian package ownership of `/etc` files using dpkg’s local database.
 - Captures config that has **changed from packaged defaults** (dpkg conffile hashes + package md5sums when available).
@@ -26,9 +25,10 @@ It aims to be **optimistic and noninteractive**:
 1) **Harvest**: collect host facts + relevant files into a harvest bundle (`state.json` + harvested artifacts)
 2) **Manifest**: turn that harvest into Ansible roles/playbooks (and optionally inventory)
 
-Additionally:
+Additionally, some other functionalities exist:
 
 - **Diff**: compare two harvests and report what changed (packages/services/users/files) since the previous snapshot.
+- **Single-shot mode**: run both harvest and manifest at once.
 
 ---
 
