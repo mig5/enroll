@@ -112,9 +112,9 @@ class ExtraPathsSnapshot:
 
 
 ALLOWED_UNOWNED_EXTS = {
+    ".cfg",
     ".cnf",
     ".conf",
-    ".cfg",
     ".ini",
     ".json",
     ".link",
@@ -136,7 +136,9 @@ ALLOWED_UNOWNED_EXTS = {
 MAX_FILES_CAP = 4000
 MAX_UNOWNED_FILES_PER_ROLE = 500
 
-# Directories that are shared across many packages; never attribute unowned files in these trees to a single package.
+# Directories that are shared across many packages.
+# Never attribute all unowned files in these trees
+# to one single package.
 SHARED_ETC_TOPDIRS = {
     "apparmor.d",
     "apt",
@@ -195,6 +197,82 @@ def _copy_into_bundle(
     shutil.copy2(abs_path, dst)
 
 
+def _capture_file(
+    *,
+    bundle_dir: str,
+    role_name: str,
+    abs_path: str,
+    reason: str,
+    policy: IgnorePolicy,
+    path_filter: PathFilter,
+    managed_out: List[ManagedFile],
+    excluded_out: List[ExcludedFile],
+    seen_role: Optional[Set[str]] = None,
+    seen_global: Optional[Set[str]] = None,
+    metadata: Optional[tuple[str, str, str]] = None,
+) -> bool:
+    """Try to capture a single file into the bundle.
+
+    Returns True if the file was copied (managed), False otherwise.
+
+    * seen_role: de-dupe within a role (prevents duplicate tasks/records)
+    * seen_global: de-dupe across roles/stages (prevents multiple roles copying same path)
+    * metadata: optional (owner, group, mode) tuple to avoid re-statting
+    """
+
+    if seen_global is not None and abs_path in seen_global:
+        return False
+    if seen_role is not None and abs_path in seen_role:
+        return False
+
+    def _mark_seen() -> None:
+        if seen_role is not None:
+            seen_role.add(abs_path)
+        if seen_global is not None:
+            seen_global.add(abs_path)
+
+    if path_filter.is_excluded(abs_path):
+        excluded_out.append(ExcludedFile(path=abs_path, reason="user_excluded"))
+        _mark_seen()
+        return False
+
+    deny = policy.deny_reason(abs_path)
+    if deny:
+        excluded_out.append(ExcludedFile(path=abs_path, reason=deny))
+        _mark_seen()
+        return False
+
+    try:
+        owner, group, mode = (
+            metadata if metadata is not None else stat_triplet(abs_path)
+        )
+    except OSError:
+        excluded_out.append(ExcludedFile(path=abs_path, reason="unreadable"))
+        _mark_seen()
+        return False
+
+    src_rel = abs_path.lstrip("/")
+    try:
+        _copy_into_bundle(bundle_dir, role_name, abs_path, src_rel)
+    except OSError:
+        excluded_out.append(ExcludedFile(path=abs_path, reason="unreadable"))
+        _mark_seen()
+        return False
+
+    managed_out.append(
+        ManagedFile(
+            path=abs_path,
+            src_rel=src_rel,
+            owner=owner,
+            group=group,
+            mode=mode,
+            reason=reason,
+        )
+    )
+    _mark_seen()
+    return True
+
+
 def _is_confish(path: str) -> bool:
     base = os.path.basename(path)
     _, ext = os.path.splitext(base)
@@ -227,7 +305,6 @@ def _maybe_add_specific_paths(hints: Set[str]) -> List[str]:
                 f"/etc/default/{h}",
                 f"/etc/init.d/{h}",
                 f"/etc/sysctl.d/{h}.conf",
-                f"/etc/logrotate.d/{h}",
             ]
         )
     return paths
@@ -492,7 +569,7 @@ def harvest(
         policy = IgnorePolicy(dangerous=dangerous)
     elif dangerous:
         # If callers explicitly provided a policy but also requested
-        # dangerous behavior, honour the CLI intent.
+        # dangerous behaviour, honour the CLI intent.
         policy.dangerous = True
     os.makedirs(bundle_dir, exist_ok=True)
 
@@ -513,12 +590,21 @@ def harvest(
     # Service roles
     # -------------------------
     service_snaps: List[ServiceSnapshot] = []
+    # Track alias strings (service names, package names, stems) that should map
+    # back to the service role for shared snippet attribution (cron.d/logrotate.d).
+    service_role_aliases: Dict[str, Set[str]] = {}
+    # De-dupe per-role captures (avoids duplicate tasks in manifest generation).
+    seen_by_role: Dict[str, Set[str]] = {}
     for unit in list_enabled_services():
         role = _role_name_from_unit(unit)
 
         try:
             ui = get_unit_info(unit)
         except UnitQueryError as e:
+            # Even when we can't query the unit, keep a minimal alias mapping so
+            # shared snippets can still be attributed to this role by name.
+            service_role_aliases.setdefault(role, _hint_names(unit, set()) | {role})
+            seen_by_role.setdefault(role, set())
             service_snaps.append(
                 ServiceSnapshot(
                     unit=unit,
@@ -567,6 +653,10 @@ def harvest(
 
         hints = _hint_names(unit, pkgs)
         _add_pkgs_from_etc_topdirs(hints, topdir_to_pkgs, pkgs)
+        # Keep a stable set of aliases for this service role. Include current
+        # packages as well, so that package-named snippets (e.g. cron.d or
+        # logrotate.d entries) can still be attributed back to this service.
+        service_role_aliases[role] = set(hints) | set(pkgs) | {role}
 
         for sp in _maybe_add_specific_paths(hints):
             if not os.path.exists(sp):
@@ -610,7 +700,7 @@ def harvest(
         # key material under service directories (e.g. /etc/openvpn/*.crt).
         #
         # To avoid exploding output for shared trees (e.g. /etc/systemd), keep
-        # the older "config-ish only" behavior for known shared topdirs.
+        # the older "config-ish only" behaviour for known shared topdirs.
         any_roots: List[str] = []
         confish_roots: List[str] = []
         for h in hints:
@@ -646,34 +736,20 @@ def harvest(
                 "No packages or /etc candidates detected (unexpected for enabled service)."
             )
 
+        # De-dupe within this role while capturing. This also avoids emitting
+        # duplicate Ansible tasks for the same destination path.
+        role_seen = seen_by_role.setdefault(role, set())
         for path, reason in sorted(candidates.items()):
-            if path_filter.is_excluded(path):
-                excluded.append(ExcludedFile(path=path, reason="user_excluded"))
-                continue
-            deny = policy.deny_reason(path)
-            if deny:
-                excluded.append(ExcludedFile(path=path, reason=deny))
-                continue
-            try:
-                owner, group, mode = stat_triplet(path)
-            except OSError:
-                excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                continue
-            src_rel = path.lstrip("/")
-            try:
-                _copy_into_bundle(bundle_dir, role, path, src_rel)
-            except OSError:
-                excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                continue
-            managed.append(
-                ManagedFile(
-                    path=path,
-                    src_rel=src_rel,
-                    owner=owner,
-                    group=group,
-                    mode=mode,
-                    reason=reason,
-                )
+            _capture_file(
+                bundle_dir=bundle_dir,
+                role_name=role,
+                abs_path=path,
+                reason=reason,
+                policy=policy,
+                path_filter=path_filter,
+                managed_out=managed,
+                excluded_out=excluded,
+                seen_role=role_seen,
             )
 
         service_snaps.append(
@@ -735,36 +811,18 @@ def harvest(
             snap = service_snap_by_unit.get(ti.trigger_unit)
 
         if snap is not None:
+            role_seen = seen_by_role.setdefault(snap.role_name, set())
             for path in timer_paths:
-                if path_filter.is_excluded(path):
-                    snap.excluded.append(
-                        ExcludedFile(path=path, reason="user_excluded")
-                    )
-                    continue
-                deny = policy.deny_reason(path)
-                if deny:
-                    snap.excluded.append(ExcludedFile(path=path, reason=deny))
-                    continue
-                try:
-                    owner, group, mode = stat_triplet(path)
-                except OSError:
-                    snap.excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                    continue
-                src_rel = path.lstrip("/")
-                try:
-                    _copy_into_bundle(bundle_dir, snap.role_name, path, src_rel)
-                except OSError:
-                    snap.excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                    continue
-                snap.managed_files.append(
-                    ManagedFile(
-                        path=path,
-                        src_rel=src_rel,
-                        owner=owner,
-                        group=group,
-                        mode=mode,
-                        reason="related_timer",
-                    )
+                _capture_file(
+                    bundle_dir=bundle_dir,
+                    role_name=snap.role_name,
+                    abs_path=path,
+                    reason="related_timer",
+                    policy=policy,
+                    path_filter=path_filter,
+                    managed_out=snap.managed_files,
+                    excluded_out=snap.excluded,
+                    seen_role=role_seen,
                 )
             continue
 
@@ -852,7 +910,6 @@ def harvest(
             roots.extend([f"/etc/{td}", f"/etc/{td}.d"])
             roots.extend([f"/etc/default/{td}"])
             roots.extend([f"/etc/init.d/{td}"])
-            roots.extend([f"/etc/logrotate.d/{td}"])
             roots.extend([f"/etc/sysctl.d/{td}.conf"])
 
         # Capture any custom/unowned files under /etc/<topdir> for this
@@ -871,34 +928,18 @@ def harvest(
                 if r not in owned_etc and _is_confish(r):
                     candidates.setdefault(r, "custom_specific_path")
 
+        role_seen = seen_by_role.setdefault(role, set())
         for path, reason in sorted(candidates.items()):
-            if path_filter.is_excluded(path):
-                excluded.append(ExcludedFile(path=path, reason="user_excluded"))
-                continue
-            deny = policy.deny_reason(path)
-            if deny:
-                excluded.append(ExcludedFile(path=path, reason=deny))
-                continue
-            try:
-                owner, group, mode = stat_triplet(path)
-            except OSError:
-                excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                continue
-            src_rel = path.lstrip("/")
-            try:
-                _copy_into_bundle(bundle_dir, role, path, src_rel)
-            except OSError:
-                excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                continue
-            managed.append(
-                ManagedFile(
-                    path=path,
-                    src_rel=src_rel,
-                    owner=owner,
-                    group=group,
-                    mode=mode,
-                    reason=reason,
-                )
+            _capture_file(
+                bundle_dir=bundle_dir,
+                role_name=role,
+                abs_path=path,
+                reason=reason,
+                policy=policy,
+                path_filter=path_filter,
+                managed_out=managed,
+                excluded_out=excluded,
+                seen_role=role_seen,
             )
 
         if not pkg_to_etc_paths.get(pkg, []) and not managed:
@@ -929,6 +970,7 @@ def harvest(
         users_notes.append(f"Failed to enumerate users: {e!r}")
 
     users_role_name = "users"
+    users_role_seen = seen_by_role.setdefault(users_role_name, set())
 
     for u in user_records:
         users_list.append(
@@ -946,38 +988,21 @@ def harvest(
 
         # Copy only safe SSH public material: authorized_keys + *.pub
         for sf in u.ssh_files:
-            if path_filter.is_excluded(sf):
-                users_excluded.append(ExcludedFile(path=sf, reason="user_excluded"))
-                continue
-            deny = policy.deny_reason(sf)
-            if deny:
-                users_excluded.append(ExcludedFile(path=sf, reason=deny))
-                continue
-            try:
-                owner, group, mode = stat_triplet(sf)
-            except OSError:
-                users_excluded.append(ExcludedFile(path=sf, reason="unreadable"))
-                continue
-            src_rel = sf.lstrip("/")
-            try:
-                _copy_into_bundle(bundle_dir, users_role_name, sf, src_rel)
-            except OSError:
-                users_excluded.append(ExcludedFile(path=sf, reason="unreadable"))
-                continue
             reason = (
                 "authorized_keys"
                 if sf.endswith("/authorized_keys")
                 else "ssh_public_key"
             )
-            users_managed.append(
-                ManagedFile(
-                    path=sf,
-                    src_rel=src_rel,
-                    owner=owner,
-                    group=group,
-                    mode=mode,
-                    reason=reason,
-                )
+            _capture_file(
+                bundle_dir=bundle_dir,
+                role_name=users_role_name,
+                abs_path=sf,
+                reason=reason,
+                policy=policy,
+                path_filter=path_filter,
+                managed_out=users_managed,
+                excluded_out=users_excluded,
+                seen_role=users_role_seen,
             )
 
     users_snapshot = UsersSnapshot(
@@ -995,39 +1020,19 @@ def harvest(
     apt_excluded: List[ExcludedFile] = []
     apt_managed: List[ManagedFile] = []
     apt_role_name = "apt_config"
+    apt_role_seen = seen_by_role.setdefault(apt_role_name, set())
 
     for path, reason in _iter_apt_capture_paths():
-        if path_filter.is_excluded(path):
-            apt_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
-            continue
-
-        deny = policy.deny_reason(path)
-        if deny:
-            apt_excluded.append(ExcludedFile(path=path, reason=deny))
-            continue
-
-        try:
-            owner, group, mode = stat_triplet(path)
-        except OSError:
-            apt_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-            continue
-
-        src_rel = path.lstrip("/")
-        try:
-            _copy_into_bundle(bundle_dir, apt_role_name, path, src_rel)
-        except OSError:
-            apt_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-            continue
-
-        apt_managed.append(
-            ManagedFile(
-                path=path,
-                src_rel=src_rel,
-                owner=owner,
-                group=group,
-                mode=mode,
-                reason=reason,
-            )
+        _capture_file(
+            bundle_dir=bundle_dir,
+            role_name=apt_role_name,
+            abs_path=path,
+            reason=reason,
+            policy=policy,
+            path_filter=path_filter,
+            managed_out=apt_managed,
+            excluded_out=apt_excluded,
+            seen_role=apt_role_seen,
         )
 
     apt_config_snapshot = AptConfigSnapshot(
@@ -1062,11 +1067,58 @@ def harvest(
     svc_by_role: Dict[str, ServiceSnapshot] = {s.role_name: s for s in service_snaps}
     pkg_by_role: Dict[str, PackageSnapshot] = {p.role_name: p for p in pkg_snaps}
 
-    def _target_role_for_shared_snippet(path: str) -> Optional[tuple[str, str]]:
-        """If `path` is a shared snippet, return (role_name, reason) to attach to."""
-        base = os.path.basename(path)
+    # Package name -> role_name for manually-installed package roles.
+    pkg_name_to_role: Dict[str, str] = {p.package: p.role_name for p in pkg_snaps}
 
-        # Try full filename and stem (before first dot).
+    # Package name -> list of service role names that reference it.
+    pkg_to_service_roles: Dict[str, List[str]] = {}
+    for s in service_snaps:
+        for pkg in s.packages:
+            pkg_to_service_roles.setdefault(pkg, []).append(s.role_name)
+
+    # Alias -> role mapping used as a fallback when dpkg ownership is missing.
+    # Prefer service roles over package roles when both would match.
+    alias_ranked: Dict[str, tuple[int, str]] = {}
+
+    def _add_alias(alias: str, role_name: str, *, priority: int) -> None:
+        key = _safe_name(alias)
+        if not key:
+            return
+        cur = alias_ranked.get(key)
+        if (
+            cur is None
+            or priority < cur[0]
+            or (priority == cur[0] and role_name < cur[1])
+        ):
+            alias_ranked[key] = (priority, role_name)
+
+    for role_name, aliases in service_role_aliases.items():
+        for a in aliases:
+            _add_alias(a, role_name, priority=0)
+
+    for p in pkg_snaps:
+        _add_alias(p.package, p.role_name, priority=1)
+
+    def _target_role_for_shared_snippet(path: str) -> Optional[tuple[str, str]]:
+        """If `path` is a shared snippet, return (role_name, reason) to attach to.
+
+        This is used primarily for /etc/logrotate.d/* and /etc/cron.d/* where
+        files are "owned" by many packages but people tend to reason about them
+        per service.
+
+        Resolution order:
+        1) dpkg owner -> service role (if any service references the package)
+        2) dpkg owner -> package role (manual package role exists)
+        3) basename/stem alias match -> preferred role
+        """
+        if path.startswith("/etc/logrotate.d/"):
+            tag = "logrotate_snippet"
+        elif path.startswith("/etc/cron.d/"):
+            tag = "cron_snippet"
+        else:
+            return None
+
+        base = os.path.basename(path)
         candidates: List[str] = [base]
         if "." in base:
             candidates.append(base.split(".", 1)[0])
@@ -1078,122 +1130,62 @@ def harvest(
                 seen.add(c)
                 uniq.append(c)
 
-        if path.startswith("/etc/logrotate.d/"):
-            for c in uniq:
-                rn = _safe_name(c)
-                if rn in svc_by_role or rn in pkg_by_role:
-                    return (rn, "logrotate_snippet")
-            return None
+        pkg = dpkg_owner(path)
+        if pkg:
+            svc_roles = pkg_to_service_roles.get(pkg)
+            if svc_roles:
+                # Deterministic tie-break: lowest role name.
+                return (sorted(set(svc_roles))[0], tag)
+            pkg_role = pkg_name_to_role.get(pkg)
+            if pkg_role:
+                return (pkg_role, tag)
 
-        if path.startswith("/etc/cron.d/"):
-            for c in uniq:
-                rn = _safe_name(c)
-                if rn in svc_by_role or rn in pkg_by_role:
-                    return (rn, "cron_snippet")
-            return None
+        for c in uniq:
+            key = _safe_name(c)
+            hit = alias_ranked.get(key)
+            if hit is not None:
+                return (hit[1], tag)
 
         return None
 
+    def _lists_for_role(role_name: str) -> tuple[List[ManagedFile], List[ExcludedFile]]:
+        if role_name in svc_by_role:
+            snap = svc_by_role[role_name]
+            return (snap.managed_files, snap.excluded)
+        if role_name in pkg_by_role:
+            snap = pkg_by_role[role_name]
+            return (snap.managed_files, snap.excluded)
+        # Fallback (shouldn't normally happen): attribute to etc_custom.
+        return (etc_managed, etc_excluded)
+
     # Capture essential system config/state (even if package-owned).
+    etc_role_seen = seen_by_role.setdefault(etc_role_name, set())
     for path, reason in _iter_system_capture_paths():
         if path in already:
             continue
 
         target = _target_role_for_shared_snippet(path)
-
-        if path_filter.is_excluded(path):
-            if target:
-                rn, _ = target
-                if rn in svc_by_role:
-                    svc_by_role[rn].excluded.append(
-                        ExcludedFile(path=path, reason="user_excluded")
-                    )
-                elif rn in pkg_by_role:
-                    pkg_by_role[rn].excluded.append(
-                        ExcludedFile(path=path, reason="user_excluded")
-                    )
-            else:
-                etc_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
-            already.add(path)
-            continue
-
-        deny = policy.deny_reason(path)
-        if deny:
-            if target:
-                rn, _ = target
-                if rn in svc_by_role:
-                    svc_by_role[rn].excluded.append(
-                        ExcludedFile(path=path, reason=deny)
-                    )
-                elif rn in pkg_by_role:
-                    pkg_by_role[rn].excluded.append(
-                        ExcludedFile(path=path, reason=deny)
-                    )
-            else:
-                etc_excluded.append(ExcludedFile(path=path, reason=deny))
-            already.add(path)
-            continue
-
-        try:
-            owner, group, mode = stat_triplet(path)
-        except OSError:
-            if target:
-                rn, _ = target
-                if rn in svc_by_role:
-                    svc_by_role[rn].excluded.append(
-                        ExcludedFile(path=path, reason="unreadable")
-                    )
-                elif rn in pkg_by_role:
-                    pkg_by_role[rn].excluded.append(
-                        ExcludedFile(path=path, reason="unreadable")
-                    )
-            else:
-                etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-            already.add(path)
-            continue
-
-        src_rel = path.lstrip("/")
-        role_for_copy = etc_role_name
-        reason_for_role = reason
-        if target:
+        if target is not None:
             role_for_copy, reason_for_role = target
-
-        try:
-            _copy_into_bundle(bundle_dir, role_for_copy, path, src_rel)
-        except OSError:
-            if target:
-                rn, _ = target
-                if rn in svc_by_role:
-                    svc_by_role[rn].excluded.append(
-                        ExcludedFile(path=path, reason="unreadable")
-                    )
-                elif rn in pkg_by_role:
-                    pkg_by_role[rn].excluded.append(
-                        ExcludedFile(path=path, reason="unreadable")
-                    )
-            else:
-                etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-            already.add(path)
-            continue
-
-        mf = ManagedFile(
-            path=path,
-            src_rel=src_rel,
-            owner=owner,
-            group=group,
-            mode=mode,
-            reason=reason_for_role,
-        )
-        if target:
-            rn, _ = target
-            if rn in svc_by_role:
-                svc_by_role[rn].managed_files.append(mf)
-            elif rn in pkg_by_role:
-                pkg_by_role[rn].managed_files.append(mf)
+            managed_out, excluded_out = _lists_for_role(role_for_copy)
+            role_seen = seen_by_role.setdefault(role_for_copy, set())
         else:
-            etc_managed.append(mf)
+            role_for_copy, reason_for_role = (etc_role_name, reason)
+            managed_out, excluded_out = (etc_managed, etc_excluded)
+            role_seen = etc_role_seen
 
-        already.add(path)
+        _capture_file(
+            bundle_dir=bundle_dir,
+            role_name=role_for_copy,
+            abs_path=path,
+            reason=reason_for_role,
+            policy=policy,
+            path_filter=path_filter,
+            managed_out=managed_out,
+            excluded_out=excluded_out,
+            seen_role=role_seen,
+            seen_global=already,
+        )
 
     # Walk /etc for remaining unowned config-ish files
     scanned = 0
@@ -1212,99 +1204,28 @@ def harvest(
                 continue
 
             target = _target_role_for_shared_snippet(path)
-
-            if path_filter.is_excluded(path):
-                if target:
-                    rn, _ = target
-                    if rn in svc_by_role:
-                        svc_by_role[rn].excluded.append(
-                            ExcludedFile(path=path, reason="user_excluded")
-                        )
-                    elif rn in pkg_by_role:
-                        pkg_by_role[rn].excluded.append(
-                            ExcludedFile(path=path, reason="user_excluded")
-                        )
-                else:
-                    etc_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
-                already.add(path)
-                continue
-
-            deny = policy.deny_reason(path)
-            if deny:
-                if target:
-                    rn, _ = target
-                    if rn in svc_by_role:
-                        svc_by_role[rn].excluded.append(
-                            ExcludedFile(path=path, reason=deny)
-                        )
-                    elif rn in pkg_by_role:
-                        pkg_by_role[rn].excluded.append(
-                            ExcludedFile(path=path, reason=deny)
-                        )
-                else:
-                    etc_excluded.append(ExcludedFile(path=path, reason=deny))
-                already.add(path)
-                continue
-
-            try:
-                owner, group, mode = stat_triplet(path)
-            except OSError:
-                if target:
-                    rn, _ = target
-                    if rn in svc_by_role:
-                        svc_by_role[rn].excluded.append(
-                            ExcludedFile(path=path, reason="unreadable")
-                        )
-                    elif rn in pkg_by_role:
-                        pkg_by_role[rn].excluded.append(
-                            ExcludedFile(path=path, reason="unreadable")
-                        )
-                else:
-                    etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                already.add(path)
-                continue
-
-            src_rel = path.lstrip("/")
-            role_for_copy = etc_role_name
-            reason_for_role = "custom_unowned"
-            if target:
+            if target is not None:
                 role_for_copy, reason_for_role = target
-
-            try:
-                _copy_into_bundle(bundle_dir, role_for_copy, path, src_rel)
-            except OSError:
-                if target:
-                    rn, _ = target
-                    if rn in svc_by_role:
-                        svc_by_role[rn].excluded.append(
-                            ExcludedFile(path=path, reason="unreadable")
-                        )
-                    elif rn in pkg_by_role:
-                        pkg_by_role[rn].excluded.append(
-                            ExcludedFile(path=path, reason="unreadable")
-                        )
-                else:
-                    etc_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                already.add(path)
-                continue
-
-            mf = ManagedFile(
-                path=path,
-                src_rel=src_rel,
-                owner=owner,
-                group=group,
-                mode=mode,
-                reason=reason_for_role,
-            )
-            if target:
-                rn, _ = target
-                if rn in svc_by_role:
-                    svc_by_role[rn].managed_files.append(mf)
-                elif rn in pkg_by_role:
-                    pkg_by_role[rn].managed_files.append(mf)
+                managed_out, excluded_out = _lists_for_role(role_for_copy)
+                role_seen = seen_by_role.setdefault(role_for_copy, set())
             else:
-                etc_managed.append(mf)
-            scanned += 1
+                role_for_copy, reason_for_role = (etc_role_name, "custom_unowned")
+                managed_out, excluded_out = (etc_managed, etc_excluded)
+                role_seen = etc_role_seen
+
+            if _capture_file(
+                bundle_dir=bundle_dir,
+                role_name=role_for_copy,
+                abs_path=path,
+                reason=reason_for_role,
+                policy=policy,
+                path_filter=path_filter,
+                managed_out=managed_out,
+                excluded_out=excluded_out,
+                seen_role=role_seen,
+                seen_global=already,
+            ):
+                scanned += 1
             if scanned >= MAX_FILES_CAP:
                 etc_notes.append(
                     f"Reached file cap ({MAX_FILES_CAP}) while scanning /etc for unowned files."
@@ -1339,6 +1260,7 @@ def harvest(
         scanned = 0
         if not os.path.isdir(root):
             return
+        role_seen = seen_by_role.setdefault(ul_role_name, set())
         for dirpath, _, filenames in os.walk(root):
             for fn in filenames:
                 path = os.path.join(dirpath, fn)
@@ -1346,54 +1268,34 @@ def harvest(
                     continue
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
+                try:
+                    owner, group, mode = stat_triplet(path)
+                except OSError:
+                    ul_excluded.append(ExcludedFile(path=path, reason="unreadable"))
+                    continue
+
                 if require_executable:
-                    try:
-                        owner, group, mode = stat_triplet(path)
-                    except OSError:
-                        ul_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                        continue
                     try:
                         if (int(mode, 8) & 0o111) == 0:
                             continue
                     except ValueError:
                         # If mode parsing fails, be conservative and skip.
                         continue
-                else:
-                    try:
-                        owner, group, mode = stat_triplet(path)
-                    except OSError:
-                        ul_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                        continue
 
-                if path_filter.is_excluded(path):
-                    ul_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
-                    continue
-
-                deny = policy.deny_reason(path)
-                if deny:
-                    ul_excluded.append(ExcludedFile(path=path, reason=deny))
-                    continue
-
-                src_rel = path.lstrip("/")
-                try:
-                    _copy_into_bundle(bundle_dir, ul_role_name, path, src_rel)
-                except OSError:
-                    ul_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                    continue
-
-                ul_managed.append(
-                    ManagedFile(
-                        path=path,
-                        src_rel=src_rel,
-                        owner=owner,
-                        group=group,
-                        mode=mode,
-                        reason=reason,
-                    )
-                )
-
-                already_all.add(path)
-                scanned += 1
+                if _capture_file(
+                    bundle_dir=bundle_dir,
+                    role_name=ul_role_name,
+                    abs_path=path,
+                    reason=reason,
+                    policy=policy,
+                    path_filter=path_filter,
+                    managed_out=ul_managed,
+                    excluded_out=ul_excluded,
+                    seen_role=role_seen,
+                    metadata=(owner, group, mode),
+                ):
+                    already_all.add(path)
+                    scanned += 1
                 if scanned >= cap:
                     ul_notes.append(f"Reached file cap ({cap}) while scanning {root}.")
                     return
@@ -1428,6 +1330,7 @@ def harvest(
     extra_excluded: List[ExcludedFile] = []
     extra_managed: List[ManagedFile] = []
     extra_role_name = "extra_paths"
+    extra_role_seen = seen_by_role.setdefault(extra_role_name, set())
 
     include_specs = list(include_paths or [])
     exclude_specs = list(exclude_paths or [])
@@ -1453,39 +1356,18 @@ def harvest(
         if path in already_all:
             continue
 
-        if path_filter.is_excluded(path):
-            extra_excluded.append(ExcludedFile(path=path, reason="user_excluded"))
-            continue
-
-        deny = policy.deny_reason(path)
-        if deny:
-            extra_excluded.append(ExcludedFile(path=path, reason=deny))
-            continue
-
-        try:
-            owner, group, mode = stat_triplet(path)
-        except OSError:
-            extra_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-            continue
-
-        src_rel = path.lstrip("/")
-        try:
-            _copy_into_bundle(bundle_dir, extra_role_name, path, src_rel)
-        except OSError:
-            extra_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-            continue
-
-        extra_managed.append(
-            ManagedFile(
-                path=path,
-                src_rel=src_rel,
-                owner=owner,
-                group=group,
-                mode=mode,
-                reason="user_include",
-            )
-        )
-        already_all.add(path)
+        if _capture_file(
+            bundle_dir=bundle_dir,
+            role_name=extra_role_name,
+            abs_path=path,
+            reason="user_include",
+            policy=policy,
+            path_filter=path_filter,
+            managed_out=extra_managed,
+            excluded_out=extra_excluded,
+            seen_role=extra_role_seen,
+        ):
+            already_all.add(path)
 
     extra_paths_snapshot = ExtraPathsSnapshot(
         role_name=extra_role_name,

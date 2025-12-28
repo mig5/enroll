@@ -154,7 +154,9 @@ def parse_status_conffiles(
                 if ":" in line:
                     k, v = line.split(":", 1)
                     key = k
-                    cur[key] = v.lstrip()
+                    # Preserve leading spaces in continuation lines, but strip
+                    # the trailing newline from the initial key line value.
+                    cur[key] = v.lstrip().rstrip("\n")
 
     if cur:
         flush()

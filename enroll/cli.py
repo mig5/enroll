@@ -482,7 +482,7 @@ def main() -> None:
         metavar="GPG_FINGERPRINT",
         help=(
             "Encrypt the harvest as a SOPS-encrypted tarball, and bundle+encrypt the manifest output in --out "
-            "(same behavior as `harvest --sops` and `manifest --sops`)."
+            "(same behaviour as `harvest --sops` and `manifest --sops`)."
         ),
     )
     s.add_argument(

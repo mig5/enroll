@@ -141,7 +141,7 @@ class PathFilter:
       - Regex: prefix with 're:' or 'regex:'
       - Force glob: prefix with 'glob:'
       - A plain path without wildcards matches that path and everything under it
-        (directory-prefix behavior).
+        (directory-prefix behaviour).
 
     Examples:
       --exclude-path /usr/local/bin/docker-*

@@ -1,3 +1,8 @@
+# 0.1.6
+
+ * DRY up some code logic
+ * More test coverage
+
 # 0.1.5
 
  * Consolidate logrotate and cron files into their main service/package roles if they exist.

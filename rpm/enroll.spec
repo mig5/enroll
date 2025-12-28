@@ -1,4 +1,4 @@
-%global upstream_version 0.1.5
+%global upstream_version 0.1.6
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,9 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sun Dec 28 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- DRY up some code logic
+- More test coverage
 * Sun Dec 28 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Consolidate logrotate and cron files into their main service/package roles if they exist.
 - Standardise on MAX_FILES_CAP in one place

@@ -1,3 +1,10 @@
+enroll (0.1.6) unstable; urgency=medium
+
+  * DRY up some code logic
+  * More test coverage
+
+ -- Miguel Jacq <mig@mig5.net>  Sun, 28 Dec 2025 15:30:00 +1100
+
 enroll (0.1.5) unstable; urgency=medium
 
   * Consolidate logrotate and cron files into their main service/package roles if they exist.
