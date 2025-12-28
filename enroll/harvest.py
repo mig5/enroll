@@ -292,9 +292,26 @@ def _hint_names(unit: str, pkgs: Set[str]) -> Set[str]:
 def _add_pkgs_from_etc_topdirs(
     hints: Set[str], topdir_to_pkgs: Dict[str, Set[str]], pkgs: Set[str]
 ) -> None:
+    """Expand a service's package set using dpkg-owned /etc top-level dirs.
+
+    This is a heuristic: many Debian packages split a service across multiple
+    packages (e.g. nginx + nginx-common) while sharing a single /etc/<name>
+    tree.
+
+    We intentionally *avoid* using shared trees (e.g. /etc/cron.d, /etc/ssl,
+    /etc/apparmor.d) to expand package sets, because many unrelated packages
+    legitimately install files there.
+
+    We also consider the common ".d" variant (e.g. hint "apparmor" ->
+    topdir "apparmor.d") so we can explicitly skip known shared trees.
+    """
+
     for h in hints:
-        for p in topdir_to_pkgs.get(h, set()):
-            pkgs.add(p)
+        for top in (h, f"{h}.d"):
+            if top in SHARED_ETC_TOPDIRS:
+                continue
+            for p in topdir_to_pkgs.get(top, set()):
+                pkgs.add(p)
 
 
 def _maybe_add_specific_paths(hints: Set[str]) -> List[str]:
@@ -1132,10 +1149,27 @@ def harvest(
 
         pkg = dpkg_owner(path)
         if pkg:
-            svc_roles = pkg_to_service_roles.get(pkg)
+            svc_roles = sorted(set(pkg_to_service_roles.get(pkg, [])))
             if svc_roles:
-                # Deterministic tie-break: lowest role name.
-                return (sorted(set(svc_roles))[0], tag)
+                # If multiple service roles reference the same package, prefer
+                # the role that most closely matches the snippet name (basename
+                # or stem). This avoids surprising attributions such as an
+                # AppArmor loader role "claiming" a cron/logrotate snippet
+                # that is clearly named after another package/service.
+                if len(svc_roles) > 1:
+                    # Direct role-name matches first.
+                    for c in [pkg, *uniq]:
+                        rn = _safe_name(c)
+                        if rn in svc_roles:
+                            return (rn, tag)
+                    # Next, use the alias map if it points at one of the roles.
+                    for c in [pkg, *uniq]:
+                        hit = alias_ranked.get(_safe_name(c))
+                        if hit is not None and hit[1] in svc_roles:
+                            return (hit[1], tag)
+
+                # Deterministic fallback: lowest role name.
+                return (svc_roles[0], tag)
             pkg_role = pkg_name_to_role.get(pkg)
             if pkg_role:
                 return (pkg_role, tag)

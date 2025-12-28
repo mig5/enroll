@@ -1,3 +1,9 @@
+enroll (0.1.7) unstable; urgency=medium
+
+  * Fix an attribution bug for certain files ending up in the wrong package/role.
+
+ -- Miguel Jacq <mig@mig5.net>  Sun, 28 Dec 2025 18:30:00 +1100
+
 enroll (0.1.6) unstable; urgency=medium
 
   * DRY up some code logic

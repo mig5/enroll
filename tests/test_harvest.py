@@ -176,3 +176,110 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     assert any(mf["path"] == "/usr/local/etc/myapp.conf" for mf in ul["managed_files"])
     assert any(mf["path"] == "/usr/local/bin/myscript" for mf in ul["managed_files"])
     assert all(mf["path"] != "/usr/local/bin/readme.txt" for mf in ul["managed_files"])
+
+
+def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
+    monkeypatch, tmp_path: Path
+):
+    """Regression test for shared snippet routing.
+
+    When multiple service roles reference the same owning package, we prefer the
+    role whose name matches the snippet/package (e.g. ntpsec) rather than a
+    lexicographic tie-break that could incorrectly pick another role.
+    """
+
+    bundle = tmp_path / "bundle"
+
+    files = {"/etc/cron.d/ntpsec": b"# cron\n"}
+    dirs = {"/etc", "/etc/cron.d"}
+
+    monkeypatch.setattr(h.os.path, "isfile", lambda p: p in files)
+    monkeypatch.setattr(h.os.path, "islink", lambda p: False)
+    monkeypatch.setattr(h.os.path, "isdir", lambda p: p in dirs)
+    monkeypatch.setattr(h.os.path, "exists", lambda p: p in files or p in dirs)
+    monkeypatch.setattr(h.os, "walk", lambda root: [("/etc/cron.d", [], ["ntpsec"])])
+
+    # Only include the cron snippet in the system capture set.
+    monkeypatch.setattr(
+        h, "_iter_system_capture_paths", lambda: [("/etc/cron.d/ntpsec", "system_cron")]
+    )
+
+    monkeypatch.setattr(
+        h, "list_enabled_services", lambda: ["apparmor.service", "ntpsec.service"]
+    )
+
+    def fake_unit_info(unit: str) -> UnitInfo:
+        if unit == "apparmor.service":
+            return UnitInfo(
+                name=unit,
+                fragment_path="/lib/systemd/system/apparmor.service",
+                dropin_paths=[],
+                env_files=[],
+                exec_paths=["/usr/sbin/apparmor"],
+                active_state="active",
+                sub_state="running",
+                unit_file_state="enabled",
+                condition_result=None,
+            )
+        return UnitInfo(
+            name=unit,
+            fragment_path="/lib/systemd/system/ntpsec.service",
+            dropin_paths=[],
+            env_files=[],
+            exec_paths=["/usr/sbin/ntpd"],
+            active_state="active",
+            sub_state="running",
+            unit_file_state="enabled",
+            condition_result=None,
+        )
+
+    monkeypatch.setattr(h, "get_unit_info", fake_unit_info)
+
+    # Dpkg /etc index: no owned /etc paths needed for this test.
+    monkeypatch.setattr(
+        h,
+        "build_dpkg_etc_index",
+        lambda: (set(), {}, {}, {}),
+    )
+    monkeypatch.setattr(h, "parse_status_conffiles", lambda: {})
+    monkeypatch.setattr(h, "read_pkg_md5sums", lambda pkg: {})
+    monkeypatch.setattr(h, "file_md5", lambda path: "x")
+    monkeypatch.setattr(h, "list_manual_packages", lambda: [])
+    monkeypatch.setattr(h, "collect_non_system_users", lambda: [])
+
+    # Make apparmor *also* claim the ntpsec package (simulates overly-broad
+    # package inference). The snippet routing should still prefer role 'ntpsec'.
+    def fake_dpkg_owner(p: str):
+        if p == "/etc/cron.d/ntpsec":
+            return "ntpsec"
+        if "apparmor" in p:
+            return "ntpsec"  # intentionally misleading
+        if "ntpsec" in p or "ntpd" in p:
+            return "ntpsec"
+        return None
+
+    monkeypatch.setattr(h, "dpkg_owner", fake_dpkg_owner)
+    monkeypatch.setattr(h, "stat_triplet", lambda p: ("root", "root", "0644"))
+
+    def fake_copy(bundle_dir: str, role_name: str, abs_path: str, src_rel: str):
+        dst = Path(bundle_dir) / "artifacts" / role_name / src_rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(files[abs_path])
+
+    monkeypatch.setattr(h, "_copy_into_bundle", fake_copy)
+
+    class AllowAll:
+        def deny_reason(self, path: str):
+            return None
+
+    state_path = h.harvest(str(bundle), policy=AllowAll())
+    st = json.loads(Path(state_path).read_text(encoding="utf-8"))
+
+    # Cron snippet should end up attached to the ntpsec role, not apparmor.
+    svc_ntpsec = next(s for s in st["services"] if s["role_name"] == "ntpsec")
+    assert any(mf["path"] == "/etc/cron.d/ntpsec" for mf in svc_ntpsec["managed_files"])
+
+    svc_apparmor = next(s for s in st["services"] if s["role_name"] == "apparmor")
+    assert all(
+        mf["path"] != "/etc/cron.d/ntpsec" for mf in svc_apparmor["managed_files"]
+    )

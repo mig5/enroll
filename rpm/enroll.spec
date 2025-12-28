@@ -1,4 +1,4 @@
-%global upstream_version 0.1.6
+%global upstream_version 0.1.7
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,8 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sun Dec 28 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Fix an attribution bug for certain files ending up in the wrong package/role.
 * Sun Dec 28 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - DRY up some code logic
 - More test coverage
