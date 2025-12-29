@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Set
 
@@ -1481,9 +1482,60 @@ def harvest(
         notes=extra_notes,
     )
 
+    # -------------------------
+    # Inventory: packages (SBOM-ish)
+    # -------------------------
+    installed = backend.installed_packages() or {}
+
+    manual_set: Set[str] = set(manual_pkgs or [])
+
+    pkg_units: Dict[str, Set[str]] = {}
+    pkg_roles_map: Dict[str, Set[str]] = {}
+
+    for svc in service_snaps:
+        for p in svc.packages:
+            pkg_units.setdefault(p, set()).add(svc.unit)
+            pkg_roles_map.setdefault(p, set()).add(svc.role_name)
+
+    pkg_role_names: Dict[str, List[str]] = {}
+    for ps in pkg_snaps:
+        pkg_roles_map.setdefault(ps.package, set()).add(ps.role_name)
+        pkg_role_names.setdefault(ps.package, []).append(ps.role_name)
+
+    pkg_names: Set[str] = set()
+    pkg_names |= manual_set
+    pkg_names |= set(pkg_units.keys())
+    pkg_names |= {ps.package for ps in pkg_snaps}
+
+    packages_inventory: Dict[str, Dict[str, object]] = {}
+    for pkg in sorted(pkg_names):
+        installs = installed.get(pkg, []) or []
+        arches = sorted({i.get("arch") for i in installs if i.get("arch")})
+        vers = sorted({i.get("version") for i in installs if i.get("version")})
+        version: Optional[str] = vers[0] if len(vers) == 1 else None
+
+        observed: List[Dict[str, str]] = []
+        if pkg in manual_set:
+            observed.append({"kind": "user_installed"})
+        for unit in sorted(pkg_units.get(pkg, set())):
+            observed.append({"kind": "systemd_unit", "ref": unit})
+        for rn in sorted(set(pkg_role_names.get(pkg, []))):
+            observed.append({"kind": "package_role", "ref": rn})
+
+        roles = sorted(pkg_roles_map.get(pkg, set()))
+
+        packages_inventory[pkg] = {
+            "version": version,
+            "arches": arches,
+            "installations": installs,
+            "observed_via": observed,
+            "roles": roles,
+        }
+
     state = {
         "enroll": {
             "version": get_enroll_version(),
+            "harvest_time": time.time_ns(),
         },
         "host": {
             "hostname": os.uname().nodename,
@@ -1491,16 +1543,19 @@ def harvest(
             "pkg_backend": backend.name,
             "os_release": platform.os_release,
         },
-        "users": asdict(users_snapshot),
-        "services": [asdict(s) for s in service_snaps],
-        "manual_packages": manual_pkgs,
-        "manual_packages_skipped": manual_pkgs_skipped,
-        "package_roles": [asdict(p) for p in pkg_snaps],
-        "apt_config": asdict(apt_config_snapshot),
-        "dnf_config": asdict(dnf_config_snapshot),
-        "etc_custom": asdict(etc_custom_snapshot),
-        "usr_local_custom": asdict(usr_local_custom_snapshot),
-        "extra_paths": asdict(extra_paths_snapshot),
+        "inventory": {
+            "packages": packages_inventory,
+        },
+        "roles": {
+            "users": asdict(users_snapshot),
+            "services": [asdict(s) for s in service_snaps],
+            "packages": [asdict(p) for p in pkg_snaps],
+            "apt_config": asdict(apt_config_snapshot),
+            "dnf_config": asdict(dnf_config_snapshot),
+            "etc_custom": asdict(etc_custom_snapshot),
+            "usr_local_custom": asdict(usr_local_custom_snapshot),
+            "extra_paths": asdict(extra_paths_snapshot),
+        },
     }
 
     state_path = os.path.join(bundle_dir, "state.json")

@@ -126,18 +126,62 @@ def _load_state(bundle_dir: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
+def _packages_inventory(state: Dict[str, Any]) -> Dict[str, Any]:
+    return (state.get("inventory") or {}).get("packages") or {}
+
+
 def _all_packages(state: Dict[str, Any]) -> List[str]:
-    pkgs = set(state.get("manual_packages", []) or [])
-    pkgs |= set(state.get("manual_packages_skipped", []) or [])
-    for s in state.get("services", []) or []:
-        for p in s.get("packages", []) or []:
-            pkgs.add(p)
-    return sorted(pkgs)
+    return sorted(_packages_inventory(state).keys())
+
+
+def _roles(state: Dict[str, Any]) -> Dict[str, Any]:
+    return state.get("roles") or {}
+
+
+def _pkg_version_key(entry: Dict[str, Any]) -> Optional[str]:
+    """Return a stable string used for version comparison."""
+    installs = entry.get("installations") or []
+    if isinstance(installs, list) and installs:
+        parts: List[str] = []
+        for inst in installs:
+            if not isinstance(inst, dict):
+                continue
+            arch = str(inst.get("arch") or "")
+            ver = str(inst.get("version") or "")
+            if not ver:
+                continue
+            parts.append(f"{arch}:{ver}" if arch else ver)
+        if parts:
+            return "|".join(sorted(parts))
+    v = entry.get("version")
+    if v:
+        return str(v)
+    return None
+
+
+def _pkg_version_display(entry: Dict[str, Any]) -> Optional[str]:
+    v = entry.get("version")
+    if v:
+        return str(v)
+    installs = entry.get("installations") or []
+    if isinstance(installs, list) and installs:
+        parts: List[str] = []
+        for inst in installs:
+            if not isinstance(inst, dict):
+                continue
+            arch = str(inst.get("arch") or "")
+            ver = str(inst.get("version") or "")
+            if not ver:
+                continue
+            parts.append(f"{ver} ({arch})" if arch else ver)
+        if parts:
+            return ", ".join(sorted(parts))
+    return None
 
 
 def _service_units(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
-    for s in state.get("services", []) or []:
+    for s in _roles(state).get("services") or []:
         unit = s.get("unit")
         if unit:
             out[str(unit)] = s
@@ -145,7 +189,7 @@ def _service_units(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _users_by_name(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    users = (state.get("users") or {}).get("users") or []
+    users = (_roles(state).get("users") or {}).get("users") or []
     out: Dict[str, Dict[str, Any]] = {}
     for u in users:
         name = u.get("name")
@@ -167,43 +211,43 @@ class FileRec:
 
 def _iter_managed_files(state: Dict[str, Any]) -> Iterable[Tuple[str, Dict[str, Any]]]:
     # Services
-    for s in state.get("services", []) or []:
+    for s in _roles(state).get("services") or []:
         role = s.get("role_name") or "unknown"
         for mf in s.get("managed_files", []) or []:
             yield str(role), mf
 
     # Package roles
-    for p in state.get("package_roles", []) or []:
+    for p in _roles(state).get("packages") or []:
         role = p.get("role_name") or "unknown"
         for mf in p.get("managed_files", []) or []:
             yield str(role), mf
 
     # Users
-    u = state.get("users") or {}
+    u = _roles(state).get("users") or {}
     u_role = u.get("role_name") or "users"
     for mf in u.get("managed_files", []) or []:
         yield str(u_role), mf
 
     # apt_config
-    ac = state.get("apt_config") or {}
+    ac = _roles(state).get("apt_config") or {}
     ac_role = ac.get("role_name") or "apt_config"
     for mf in ac.get("managed_files", []) or []:
         yield str(ac_role), mf
 
     # etc_custom
-    ec = state.get("etc_custom") or {}
+    ec = _roles(state).get("etc_custom") or {}
     ec_role = ec.get("role_name") or "etc_custom"
     for mf in ec.get("managed_files", []) or []:
         yield str(ec_role), mf
 
     # usr_local_custom
-    ul = state.get("usr_local_custom") or {}
+    ul = _roles(state).get("usr_local_custom") or {}
     ul_role = ul.get("role_name") or "usr_local_custom"
     for mf in ul.get("managed_files", []) or []:
         yield str(ul_role), mf
 
     # extra_paths
-    xp = state.get("extra_paths") or {}
+    xp = _roles(state).get("extra_paths") or {}
     xp_role = xp.get("role_name") or "extra_paths"
     for mf in xp.get("managed_files", []) or []:
         yield str(xp_role), mf
@@ -261,11 +305,27 @@ def compare_harvests(
         old_state = _load_state(old_b.dir)
         new_state = _load_state(new_b.dir)
 
-        old_pkgs = set(_all_packages(old_state))
-        new_pkgs = set(_all_packages(new_state))
+        old_inv = _packages_inventory(old_state)
+        new_inv = _packages_inventory(new_state)
+
+        old_pkgs = set(old_inv.keys())
+        new_pkgs = set(new_inv.keys())
 
         pkgs_added = sorted(new_pkgs - old_pkgs)
         pkgs_removed = sorted(old_pkgs - new_pkgs)
+
+        pkgs_version_changed: List[Dict[str, Any]] = []
+        for pkg in sorted(old_pkgs & new_pkgs):
+            a = old_inv.get(pkg) or {}
+            b = new_inv.get(pkg) or {}
+            if _pkg_version_key(a) != _pkg_version_key(b):
+                pkgs_version_changed.append(
+                    {
+                        "package": pkg,
+                        "old": _pkg_version_display(a),
+                        "new": _pkg_version_display(b),
+                    }
+                )
 
         old_units = _service_units(old_state)
         new_units = _service_units(new_state)
@@ -380,6 +440,7 @@ def compare_harvests(
             [
                 pkgs_added,
                 pkgs_removed,
+                pkgs_version_changed,
                 units_added,
                 units_removed,
                 units_changed,
@@ -413,7 +474,11 @@ def compare_harvests(
                 "state_mtime": _mtime_iso(new_b.state_path),
                 "host": (new_state.get("host") or {}).get("hostname"),
             },
-            "packages": {"added": pkgs_added, "removed": pkgs_removed},
+            "packages": {
+                "added": pkgs_added,
+                "removed": pkgs_removed,
+                "version_changed": pkgs_version_changed,
+            },
             "services": {
                 "enabled_added": units_added,
                 "enabled_removed": units_removed,
@@ -471,10 +536,13 @@ def _report_text(report: Dict[str, Any]) -> str:
     lines.append("\nPackages")
     lines.append(f"  added:   {len(pk.get('added', []) or [])}")
     lines.append(f"  removed: {len(pk.get('removed', []) or [])}")
+    lines.append(f"  version_changed: {len(pk.get('version_changed', []) or [])}")
     for p in pk.get("added", []) or []:
         lines.append(f"    + {p}")
     for p in pk.get("removed", []) or []:
         lines.append(f"    - {p}")
+    for ch in pk.get("version_changed", []) or []:
+        lines.append(f"    ~ {ch.get('package')}: {ch.get('old')} -> {ch.get('new')}")
 
     sv = report.get("services", {})
     lines.append("\nServices (enabled systemd units)")
@@ -542,6 +610,7 @@ def _report_text(report: Dict[str, Any]) -> str:
         [
             (pk.get("added") or []),
             (pk.get("removed") or []),
+            (pk.get("version_changed") or []),
             (sv.get("enabled_added") or []),
             (sv.get("enabled_removed") or []),
             (sv.get("changed") or []),
@@ -577,6 +646,12 @@ def _report_markdown(report: Dict[str, Any]) -> str:
     out.append(f"- Removed: {len(pk.get('removed', []) or [])}\n")
     for p in pk.get("removed", []) or []:
         out.append(f"  - `- {p}`\n")
+
+    out.append(f"- Version changed: {len(pk.get('version_changed', []) or [])}\n")
+    for ch in pk.get("version_changed", []) or []:
+        out.append(
+            f"  - `~ {ch.get('package')}`: `{ch.get('old')}` → `{ch.get('new')}`\n"
+        )
 
     sv = report.get("services", {})
     out.append("## Services (enabled systemd units)\n")
@@ -672,6 +747,7 @@ def _report_markdown(report: Dict[str, Any]) -> str:
         [
             (pk.get("added") or []),
             (pk.get("removed") or []),
+            (pk.get("version_changed") or []),
             (sv.get("enabled_added") or []),
             (sv.get("enabled_removed") or []),
             (sv.get("changed") or []),

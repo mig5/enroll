@@ -142,6 +142,63 @@ def list_manual_packages() -> List[str]:
     return []
 
 
+def list_installed_packages() -> Dict[str, List[Dict[str, str]]]:
+    """Return mapping of installed package name -> installed instances.
+
+    Uses `rpm -qa` and is expected to work on RHEL/Fedora-like systems.
+
+    Output format:
+      {"pkg": [{"version": "...", "arch": "..."}, ...], ...}
+
+    The version string is formatted as:
+      - "<version>-<release>" for typical packages
+      - "<epoch>:<version>-<release>" if a non-zero epoch is present
+    """
+
+    try:
+        _, out = _run(
+            [
+                "rpm",
+                "-qa",
+                "--qf",
+                "%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n",
+            ],
+            allow_fail=False,
+            merge_err=True,
+        )
+    except Exception:
+        return {}
+
+    pkgs: Dict[str, List[Dict[str, str]]] = {}
+    for raw in (out or "").splitlines():
+        line = raw.strip("\n")
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        name, epoch, ver, rel, arch = [p.strip() for p in parts[:5]]
+        if not name or not ver:
+            continue
+
+        # Normalise epoch.
+        epoch = epoch.strip()
+        if epoch.lower() in ("(none)", "none", ""):
+            epoch = "0"
+
+        v = f"{ver}-{rel}" if rel else ver
+        if epoch and epoch.isdigit() and epoch != "0":
+            v = f"{epoch}:{v}"
+
+        pkgs.setdefault(name, []).append({"version": v, "arch": arch})
+
+    for k in list(pkgs.keys()):
+        pkgs[k] = sorted(
+            pkgs[k], key=lambda x: (x.get("arch") or "", x.get("version") or "")
+        )
+    return pkgs
+
+
 def _walk_etc_files() -> List[str]:
     out: List[str] = []
     for dirpath, _, filenames in os.walk("/etc"):

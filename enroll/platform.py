@@ -81,6 +81,17 @@ class PackageBackend:
     def list_manual_packages(self) -> List[str]:  # pragma: no cover
         raise NotImplementedError
 
+    def installed_packages(self) -> Dict[str, List[Dict[str, str]]]:  # pragma: no cover
+        """Return mapping of package name -> installed instances.
+
+        Each instance is a dict with at least:
+          - version: package version string
+          - arch: architecture string
+
+        Backends should be best-effort and return an empty mapping on failure.
+        """
+        raise NotImplementedError
+
     def build_etc_index(
         self,
     ) -> Tuple[
@@ -120,6 +131,11 @@ class DpkgBackend(PackageBackend):
         from .debian import list_manual_packages
 
         return list_manual_packages()
+
+    def installed_packages(self) -> Dict[str, List[Dict[str, str]]]:
+        from .debian import list_installed_packages
+
+        return list_installed_packages()
 
     def build_etc_index(self):
         from .debian import build_dpkg_etc_index
@@ -193,6 +209,11 @@ class RpmBackend(PackageBackend):
         from .rpm import list_manual_packages
 
         return list_manual_packages()
+
+    def installed_packages(self) -> Dict[str, List[Dict[str, str]]]:
+        from .rpm import list_installed_packages
+
+        return list_installed_packages()
 
     def build_etc_index(self):
         from .rpm import build_rpm_etc_index

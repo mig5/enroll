@@ -63,6 +63,50 @@ def list_manual_packages() -> List[str]:
     return sorted(set(pkgs))
 
 
+def list_installed_packages() -> Dict[str, List[Dict[str, str]]]:
+    """Return mapping of installed package name -> installed instances.
+
+    Uses dpkg-query and is expected to work on Debian/Ubuntu-like systems.
+
+    Output format:
+      {"pkg": [{"version": "...", "arch": "..."}, ...], ...}
+    """
+
+    try:
+        p = subprocess.run(
+            [
+                "dpkg-query",
+                "-W",
+                "-f=${Package}\t${Version}\t${Architecture}\n",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )  # nosec
+    except Exception:
+        return {}
+
+    out: Dict[str, List[Dict[str, str]]] = {}
+    for raw in (p.stdout or "").splitlines():
+        line = raw.strip("\n")
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        name, ver, arch = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if not name:
+            continue
+        out.setdefault(name, []).append({"version": ver, "arch": arch})
+
+    # Stable ordering for deterministic JSON dumps.
+    for k in list(out.keys()):
+        out[k] = sorted(
+            out[k], key=lambda x: (x.get("arch") or "", x.get("version") or "")
+        )
+    return out
+
+
 def build_dpkg_etc_index(
     info_dir: str = "/var/lib/dpkg/info",
 ) -> Tuple[Set[str], Dict[str, str], Dict[str, Set[str]], Dict[str, List[str]]]:
