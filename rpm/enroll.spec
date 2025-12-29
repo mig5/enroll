@@ -1,4 +1,4 @@
-%global upstream_version 0.1.7
+%global upstream_version 0.2.0
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,10 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Mon Dec 29 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Add version CLI arg
+- Add ability to enroll RH-style systems (DNF5/DNF/RPM)
+- Refactor harvest state to track package versions
 * Sun Dec 28 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Fix an attribution bug for certain files ending up in the wrong package/role.
 * Sun Dec 28 2025 Miguel Jacq <mig@mig5.net> - %{version}-%{release}

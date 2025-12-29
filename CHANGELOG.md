@@ -2,6 +2,7 @@
 
  * Add version CLI arg
  * Add ability to enroll RH-style systems (DNF5/DNF/RPM)
+ * Refactor harvest state to track package versions
 
 # 0.1.7
 

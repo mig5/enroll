@@ -1,5 +1,12 @@
-enroll (0.1.7) unstable; urgency=medium
+enroll (0.2.0) unstable; urgency=medium
 
+  * Add version CLI arg
+  * Add ability to enroll RH-style systems (DNF5/DNF/RPM)
+  * Refactor harvest state to track package versions
+
+ -- Miguel Jacq <mig@mig5.net>  Mon, 29 Dec 2025 17:30:00 +1100
+
+enroll (0.1.7) unstable; urgency=medium
   * Fix an attribution bug for certain files ending up in the wrong package/role.
 
  -- Miguel Jacq <mig@mig5.net>  Sun, 28 Dec 2025 18:30:00 +1100
