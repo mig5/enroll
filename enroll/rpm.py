@@ -104,7 +104,7 @@ def list_manual_packages() -> List[str]:
                 if pkgs:
                     return _dedupe(pkgs)
 
-        # Fallback: human-oriented output.
+        # Fallback
         rc, out = _run(
             ["dnf", "-q", "history", "userinstalled"], allow_fail=True, merge_err=True
         )

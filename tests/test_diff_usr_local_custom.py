@@ -18,65 +18,106 @@ def test_diff_includes_usr_local_custom_files(tmp_path: Path):
     new = tmp_path / "new"
 
     old_state = {
-        "host": {"hostname": "h1", "os": "debian"},
-        "users": {
-            "role_name": "users",
-            "users": [],
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
-        },
-        "services": [],
-        "package_roles": [],
-        "manual_packages": ["curl"],
-        "manual_packages_skipped": [],
-        "etc_custom": {
-            "role_name": "etc_custom",
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
-        },
-        "usr_local_custom": {
-            "role_name": "usr_local_custom",
-            "managed_files": [
-                {
-                    "path": "/usr/local/etc/myapp.conf",
-                    "src_rel": "usr/local/etc/myapp.conf",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0644",
-                    "reason": "usr_local_etc_custom",
+        "schema_version": 3,
+        "host": {"hostname": "h1", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {
+            "packages": {
+                "curl": {
+                    "version": "1.0",
+                    "arches": [],
+                    "installations": [{"version": "1.0", "arch": "amd64"}],
+                    "observed_via": [{"kind": "user_installed"}],
+                    "roles": [],
                 }
-            ],
-            "excluded": [],
-            "notes": [],
+            }
+        },
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [
+                    {
+                        "path": "/usr/local/etc/myapp.conf",
+                        "src_rel": "usr/local/etc/myapp.conf",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0644",
+                        "reason": "usr_local_etc_custom",
+                    }
+                ],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
         },
     }
+
     new_state = {
         **old_state,
-        "manual_packages": ["curl", "htop"],
-        "usr_local_custom": {
-            "role_name": "usr_local_custom",
-            "managed_files": [
-                {
-                    "path": "/usr/local/etc/myapp.conf",
-                    "src_rel": "usr/local/etc/myapp.conf",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0644",
-                    "reason": "usr_local_etc_custom",
+        "inventory": {
+            "packages": {
+                **old_state["inventory"]["packages"],
+                "htop": {
+                    "version": "3.0",
+                    "arches": [],
+                    "installations": [{"version": "3.0", "arch": "amd64"}],
+                    "observed_via": [{"kind": "user_installed"}],
+                    "roles": [],
                 },
-                {
-                    "path": "/usr/local/bin/myscript",
-                    "src_rel": "usr/local/bin/myscript",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0755",
-                    "reason": "usr_local_bin_script",
-                },
-            ],
-            "excluded": [],
-            "notes": [],
+            }
+        },
+        "roles": {
+            **old_state["roles"],
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [
+                    {
+                        "path": "/usr/local/etc/myapp.conf",
+                        "src_rel": "usr/local/etc/myapp.conf",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0644",
+                        "reason": "usr_local_etc_custom",
+                    },
+                    {
+                        "path": "/usr/local/bin/myscript",
+                        "src_rel": "usr/local/bin/myscript",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0755",
+                        "reason": "usr_local_bin_script",
+                    },
+                ],
+                "excluded": [],
+                "notes": [],
+            },
         },
     }
 

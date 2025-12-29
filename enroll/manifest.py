@@ -390,9 +390,7 @@ def _render_generic_files_tasks(
     # Using first_found makes roles work in both modes:
     # - site-mode: inventory/host_vars/<host>/<role>/.files/...
     # - non-site: roles/<role>/files/...
-    return f"""
-
-- name: Deploy any systemd unit files (templates)
+    return f"""- name: Deploy any systemd unit files (templates)
   ansible.builtin.template:
     src: "{{{{ item.src_rel }}}}.j2"
     dest: "{{{{ item.dest }}}}"
@@ -475,9 +473,7 @@ def _render_install_packages_tasks(role: str, var_prefix: str) -> str:
     generic `package` module. This keeps generated roles usable on both
     Debian-like and RPM-like systems.
     """
-    return f"""
-
-- name: Install packages for {role} (APT)
+    return f"""- name: Install packages for {role} (APT)
   ansible.builtin.apt:
     name: "{{{{ {var_prefix}_packages | default([]) }}}}"
     state: present
@@ -995,7 +991,7 @@ Generated non-system user accounts and SSH public material.
         else:
             _write_role_defaults(role_dir, vars_map)
 
-        tasks = """---\n""" + _render_generic_files_tasks(
+        tasks = "---\n" + _render_generic_files_tasks(
             var_prefix, include_restart_notify=False
         )
         with open(
@@ -1297,7 +1293,7 @@ DNF/YUM configuration harvested from the system (repos, config files, and RPM GP
         else:
             _write_role_defaults(role_dir, vars_map)
 
-        tasks = """---\n""" + _render_generic_files_tasks(
+        tasks = "---\n" + _render_generic_files_tasks(
             var_prefix, include_restart_notify=False
         )
         with open(
@@ -1663,8 +1659,7 @@ User-requested extra file harvesting.
         )
 
         task_parts.append(
-            f"""
-- name: Probe whether systemd unit exists and is manageable
+            f"""- name: Probe whether systemd unit exists and is manageable
   ansible.builtin.systemd:
     name: "{{{{ {var_prefix}_unit_name }}}}"
   check_mode: true

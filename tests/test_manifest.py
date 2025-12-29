@@ -13,95 +13,136 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     )
 
     state = {
-        "host": {"hostname": "test", "os": "debian"},
-        "users": {
-            "role_name": "users",
-            "users": [
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {
+            "packages": {
+                "foo": {
+                    "version": "1.0",
+                    "arches": [],
+                    "installations": [{"version": "1.0", "arch": "amd64"}],
+                    "observed_via": [{"kind": "systemd_unit", "ref": "foo.service"}],
+                    "roles": ["foo"],
+                },
+                "curl": {
+                    "version": "8.0",
+                    "arches": [],
+                    "installations": [{"version": "8.0", "arch": "amd64"}],
+                    "observed_via": [{"kind": "package_role", "ref": "curl"}],
+                    "roles": ["curl"],
+                },
+            }
+        },
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [
+                    {
+                        "name": "alice",
+                        "uid": 1000,
+                        "gid": 1000,
+                        "gecos": "Alice",
+                        "home": "/home/alice",
+                        "shell": "/bin/bash",
+                        "primary_group": "alice",
+                        "supplementary_groups": ["docker", "qubes"],
+                    }
+                ],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [
                 {
-                    "name": "alice",
-                    "uid": 1000,
-                    "gid": 1000,
-                    "gecos": "Alice",
-                    "home": "/home/alice",
-                    "shell": "/bin/bash",
-                    "primary_group": "alice",
-                    "supplementary_groups": ["docker", "qubes"],
+                    "unit": "foo.service",
+                    "role_name": "foo",
+                    "packages": ["foo"],
+                    "active_state": "inactive",
+                    "sub_state": "dead",
+                    "unit_file_state": "enabled",
+                    "condition_result": "no",
+                    "managed_files": [
+                        {
+                            "path": "/etc/foo.conf",
+                            "src_rel": "etc/foo.conf",
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                            "reason": "modified_conffile",
+                        }
+                    ],
+                    "excluded": [],
+                    "notes": [],
                 }
             ],
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
-        },
-        "etc_custom": {
-            "role_name": "etc_custom",
-            "managed_files": [
+            "packages": [
                 {
-                    "path": "/etc/default/keyboard",
-                    "src_rel": "etc/default/keyboard",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0644",
-                    "reason": "custom_unowned",
+                    "package": "curl",
+                    "role_name": "curl",
+                    "managed_files": [],
+                    "excluded": [],
+                    "notes": [],
                 }
             ],
-            "excluded": [],
-            "notes": [],
-        },
-        "usr_local_custom": {
-            "role_name": "usr_local_custom",
-            "managed_files": [
-                {
-                    "path": "/usr/local/etc/myapp.conf",
-                    "src_rel": "usr/local/etc/myapp.conf",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0644",
-                    "reason": "usr_local_etc_custom",
-                },
-                {
-                    "path": "/usr/local/bin/myscript",
-                    "src_rel": "usr/local/bin/myscript",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0755",
-                    "reason": "usr_local_bin_script",
-                },
-            ],
-            "excluded": [],
-            "notes": [],
-        },
-        "services": [
-            {
-                "unit": "foo.service",
-                "role_name": "foo",
-                "packages": ["foo"],
-                "active_state": "inactive",
-                "sub_state": "dead",
-                "unit_file_state": "enabled",
-                "condition_result": "no",
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
                 "managed_files": [
                     {
-                        "path": "/etc/foo.conf",
-                        "src_rel": "etc/foo.conf",
+                        "path": "/etc/default/keyboard",
+                        "src_rel": "etc/default/keyboard",
                         "owner": "root",
                         "group": "root",
                         "mode": "0644",
-                        "reason": "modified_conffile",
+                        "reason": "custom_unowned",
                     }
                 ],
                 "excluded": [],
                 "notes": [],
-            }
-        ],
-        "package_roles": [
-            {
-                "package": "curl",
-                "role_name": "curl",
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [
+                    {
+                        "path": "/usr/local/etc/myapp.conf",
+                        "src_rel": "usr/local/etc/myapp.conf",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0644",
+                        "reason": "usr_local_etc_custom",
+                    },
+                    {
+                        "path": "/usr/local/bin/myscript",
+                        "src_rel": "usr/local/bin/myscript",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0755",
+                        "reason": "usr_local_bin_script",
+                    },
+                ],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
                 "managed_files": [],
                 "excluded": [],
                 "notes": [],
-            }
-        ],
+            },
+        },
     }
 
     bundle.mkdir(parents=True, exist_ok=True)
@@ -189,68 +230,102 @@ def test_manifest_site_mode_creates_host_inventory_and_raw_files(tmp_path: Path)
     )
 
     state = {
-        "host": {"hostname": "test", "os": "debian"},
-        "users": {
-            "role_name": "users",
-            "users": [],
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {
+            "packages": {
+                "foo": {
+                    "version": "1.0",
+                    "arches": [],
+                    "installations": [{"version": "1.0", "arch": "amd64"}],
+                    "observed_via": [{"kind": "systemd_unit", "ref": "foo.service"}],
+                    "roles": ["foo"],
+                }
+            }
         },
-        "etc_custom": {
-            "role_name": "etc_custom",
-            "managed_files": [
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [
                 {
-                    "path": "/etc/default/keyboard",
-                    "src_rel": "etc/default/keyboard",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0644",
-                    "reason": "custom_unowned",
+                    "unit": "foo.service",
+                    "role_name": "foo",
+                    "packages": ["foo"],
+                    "active_state": "active",
+                    "sub_state": "running",
+                    "unit_file_state": "enabled",
+                    "condition_result": "yes",
+                    "managed_files": [
+                        {
+                            "path": "/etc/foo.conf",
+                            "src_rel": "etc/foo.conf",
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                            "reason": "modified_conffile",
+                        }
+                    ],
+                    "excluded": [],
+                    "notes": [],
                 }
             ],
-            "excluded": [],
-            "notes": [],
-        },
-        "usr_local_custom": {
-            "role_name": "usr_local_custom",
-            "managed_files": [
-                {
-                    "path": "/usr/local/etc/myapp.conf",
-                    "src_rel": "usr/local/etc/myapp.conf",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0644",
-                    "reason": "usr_local_etc_custom",
-                }
-            ],
-            "excluded": [],
-            "notes": [],
-        },
-        "services": [
-            {
-                "unit": "foo.service",
-                "role_name": "foo",
-                "packages": ["foo"],
-                "active_state": "active",
-                "sub_state": "running",
-                "unit_file_state": "enabled",
-                "condition_result": "yes",
+            "packages": [],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
                 "managed_files": [
                     {
-                        "path": "/etc/foo.conf",
-                        "src_rel": "etc/foo.conf",
+                        "path": "/etc/default/keyboard",
+                        "src_rel": "etc/default/keyboard",
                         "owner": "root",
                         "group": "root",
                         "mode": "0644",
-                        "reason": "modified_conffile",
+                        "reason": "custom_unowned",
                     }
                 ],
                 "excluded": [],
                 "notes": [],
-            }
-        ],
-        "package_roles": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [
+                    {
+                        "path": "/usr/local/etc/myapp.conf",
+                        "src_rel": "usr/local/etc/myapp.conf",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0644",
+                        "reason": "usr_local_etc_custom",
+                    }
+                ],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+        },
     }
 
     bundle.mkdir(parents=True, exist_ok=True)
@@ -337,58 +412,70 @@ def test_manifest_includes_dnf_config_role_when_present(tmp_path: Path):
     )
 
     state = {
+        "schema_version": 3,
         "host": {"hostname": "test", "os": "redhat", "pkg_backend": "rpm"},
-        "users": {
-            "role_name": "users",
-            "users": [],
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
-        },
-        "services": [],
-        "package_roles": [],
-        "manual_packages": [],
-        "manual_packages_skipped": [],
-        "apt_config": {
-            "role_name": "apt_config",
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
-        },
-        "dnf_config": {
-            "role_name": "dnf_config",
-            "managed_files": [
-                {
-                    "path": "/etc/dnf/dnf.conf",
-                    "src_rel": "etc/dnf/dnf.conf",
-                    "owner": "root",
-                    "group": "root",
-                    "mode": "0644",
-                    "reason": "dnf_config",
+        "inventory": {
+            "packages": {
+                "dnf": {
+                    "version": "4.0",
+                    "arches": [],
+                    "installations": [{"version": "4.0", "arch": "x86_64"}],
+                    "observed_via": [{"kind": "dnf_config"}],
+                    "roles": [],
                 }
-            ],
-            "excluded": [],
-            "notes": [],
+            }
         },
-        "etc_custom": {
-            "role_name": "etc_custom",
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
-        },
-        "usr_local_custom": {
-            "role_name": "usr_local_custom",
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
-        },
-        "extra_paths": {
-            "role_name": "extra_paths",
-            "include_patterns": [],
-            "exclude_patterns": [],
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [
+                    {
+                        "path": "/etc/dnf/dnf.conf",
+                        "src_rel": "etc/dnf/dnf.conf",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0644",
+                        "reason": "dnf_config",
+                    }
+                ],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
         },
     }
 

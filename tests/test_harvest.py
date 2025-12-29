@@ -30,6 +30,7 @@ class FakeBackend:
         owner_fn,
         modified_by_pkg: dict[str, dict[str, str]] | None = None,
         pkg_config_prefixes: tuple[str, ...] = ("/etc/apt/",),
+        installed: dict[str, list[dict[str, str]]] | None = None,
     ):
         self.name = name
         self.pkg_config_prefixes = pkg_config_prefixes
@@ -40,6 +41,7 @@ class FakeBackend:
         self._manual = manual_pkgs
         self._owner_fn = owner_fn
         self._modified_by_pkg = modified_by_pkg or {}
+        self._installed = installed or {}
 
     def build_etc_index(self):
         return (
@@ -54,6 +56,14 @@ class FakeBackend:
 
     def list_manual_packages(self):
         return list(self._manual)
+
+    def installed_packages(self):
+        """Return mapping package -> installations.
+
+        The real backends return:
+          {"pkg": [{"version": "...", "arch": "..."}, ...]}
+        """
+        return dict(self._installed)
 
     def specific_paths_for_hints(self, hints: set[str]):
         return []
@@ -214,26 +224,36 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     state_path = h.harvest(str(bundle), policy=AllowAllPolicy())
     st = json.loads(Path(state_path).read_text(encoding="utf-8"))
 
-    assert "openvpn" in st["manual_packages"]
-    assert "curl" in st["manual_packages"]
-    assert "openvpn" in st["manual_packages_skipped"]
-    assert all(pr["package"] != "openvpn" for pr in st["package_roles"])
-    assert any(pr["package"] == "curl" for pr in st["package_roles"])
+    inv = st["inventory"]["packages"]
+    assert "openvpn" in inv
+    assert "curl" in inv
+
+    # openvpn is managed by the service role, so it should NOT appear as a package role.
+    pkg_roles = st["roles"]["packages"]
+    assert all(pr["package"] != "openvpn" for pr in pkg_roles)
+    assert any(pr["package"] == "curl" for pr in pkg_roles)
+
+    # Inventory provenance: openvpn should be observed via systemd unit.
+    openvpn_obs = inv["openvpn"]["observed_via"]
+    assert any(
+        o.get("kind") == "systemd_unit" and o.get("ref") == "openvpn.service"
+        for o in openvpn_obs
+    )
 
     # Service role captured modified conffile
-    svc = st["services"][0]
+    svc = st["roles"]["services"][0]
     assert svc["unit"] == "openvpn.service"
     assert "openvpn" in svc["packages"]
     assert any(mf["path"] == "/etc/openvpn/server.conf" for mf in svc["managed_files"])
 
     # Unowned /etc/default/keyboard is attributed to etc_custom only
-    etc_custom = st["etc_custom"]
+    etc_custom = st["roles"]["etc_custom"]
     assert any(
         mf["path"] == "/etc/default/keyboard" for mf in etc_custom["managed_files"]
     )
 
     # /usr/local content is attributed to usr_local_custom
-    ul = st["usr_local_custom"]
+    ul = st["roles"]["usr_local_custom"]
     assert any(mf["path"] == "/usr/local/etc/myapp.conf" for mf in ul["managed_files"])
     assert any(mf["path"] == "/usr/local/bin/myscript" for mf in ul["managed_files"])
     assert all(mf["path"] != "/usr/local/bin/readme.txt" for mf in ul["managed_files"])
@@ -338,10 +358,12 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
     st = json.loads(Path(state_path).read_text(encoding="utf-8"))
 
     # Cron snippet should end up attached to the ntpsec role, not apparmor.
-    svc_ntpsec = next(s for s in st["services"] if s["role_name"] == "ntpsec")
+    svc_ntpsec = next(s for s in st["roles"]["services"] if s["role_name"] == "ntpsec")
     assert any(mf["path"] == "/etc/cron.d/ntpsec" for mf in svc_ntpsec["managed_files"])
 
-    svc_apparmor = next(s for s in st["services"] if s["role_name"] == "apparmor")
+    svc_apparmor = next(
+        s for s in st["roles"]["services"] if s["role_name"] == "apparmor"
+    )
     assert all(
         mf["path"] != "/etc/cron.d/ntpsec" for mf in svc_apparmor["managed_files"]
     )

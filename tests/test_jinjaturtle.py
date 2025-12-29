@@ -24,44 +24,78 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
     )
 
     state = {
-        "host": {"hostname": "test", "os": "debian"},
-        "users": {
-            "role_name": "users",
-            "users": [],
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {
+            "packages": {
+                "foo": {
+                    "version": "1.0",
+                    "arches": [],
+                    "installations": [{"version": "1.0", "arch": "amd64"}],
+                    "observed_via": [{"kind": "systemd_unit", "ref": "foo.service"}],
+                    "roles": ["foo"],
+                }
+            }
         },
-        "etc_custom": {
-            "role_name": "etc_custom",
-            "managed_files": [],
-            "excluded": [],
-            "notes": [],
-        },
-        "services": [
-            {
-                "unit": "foo.service",
-                "role_name": "foo",
-                "packages": ["foo"],
-                "active_state": "inactive",
-                "sub_state": "dead",
-                "unit_file_state": "disabled",
-                "condition_result": "no",
-                "managed_files": [
-                    {
-                        "path": "/etc/foo.ini",
-                        "src_rel": "etc/foo.ini",
-                        "owner": "root",
-                        "group": "root",
-                        "mode": "0644",
-                        "reason": "modified_conffile",
-                    }
-                ],
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
                 "excluded": [],
                 "notes": [],
-            }
-        ],
-        "package_roles": [],
+            },
+            "services": [
+                {
+                    "unit": "foo.service",
+                    "role_name": "foo",
+                    "packages": ["foo"],
+                    "active_state": "inactive",
+                    "sub_state": "dead",
+                    "unit_file_state": "disabled",
+                    "condition_result": "no",
+                    "managed_files": [
+                        {
+                            "path": "/etc/foo.ini",
+                            "src_rel": "etc/foo.ini",
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                            "reason": "modified_conffile",
+                        }
+                    ],
+                    "excluded": [],
+                    "notes": [],
+                }
+            ],
+            "packages": [],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+        },
     }
 
     bundle.mkdir(parents=True, exist_ok=True)
