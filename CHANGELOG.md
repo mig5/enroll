@@ -1,3 +1,7 @@
+# 0.2.0
+
+ * Add version CLI arg
+
 # 0.1.7
 
  * Fix an attribution bug for certain files ending up in the wrong package/role.

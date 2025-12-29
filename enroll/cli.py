@@ -15,6 +15,7 @@ from .harvest import harvest
 from .manifest import manifest
 from .remote import remote_harvest
 from .sopsutil import SopsError, encrypt_file_binary
+from .version import get_enroll_version
 
 
 def _discover_config_path(argv: list[str]) -> Optional[Path]:
@@ -318,13 +319,6 @@ def _jt_mode(args: argparse.Namespace) -> str:
     return "auto"
 
 
-def _add_remote_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--remote-host",
-        help="SSH host to run harvesting on (if set, harvest runs remotely and is pulled locally).",
-    )
-
-
 def _add_config_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "-c",
@@ -338,6 +332,13 @@ def _add_config_args(p: argparse.ArgumentParser) -> None:
         "--no-config",
         action="store_true",
         help="Do not load any INI config file (even if one would be auto-discovered).",
+    )
+
+
+def _add_remote_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--remote-host",
+        help="SSH host to run harvesting on (if set, harvest runs remotely and is pulled locally).",
     )
     p.add_argument(
         "--remote-port",
@@ -354,11 +355,18 @@ def _add_config_args(p: argparse.ArgumentParser) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="enroll")
+    ap.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"{get_enroll_version()}",
+    )
     _add_config_args(ap)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     h = sub.add_parser("harvest", help="Harvest service/package/config state")
     _add_config_args(h)
+    _add_remote_args(h)
     h.add_argument(
         "--out",
         help=(
@@ -406,7 +414,6 @@ def main() -> None:
         action="store_true",
         help="Don't use sudo on the remote host (when using --remote options). This may result in a limited harvest due to permission restrictions.",
     )
-    _add_remote_args(h)
 
     m = sub.add_parser("manifest", help="Render Ansible roles from a harvest")
     _add_config_args(m)
@@ -443,6 +450,7 @@ def main() -> None:
         "single-shot", help="Harvest state, then manifest Ansible code, in one shot"
     )
     _add_config_args(s)
+    _add_remote_args(s)
     s.add_argument(
         "--harvest",
         help=(
@@ -500,7 +508,6 @@ def main() -> None:
         ),
     )
     _add_common_manifest_args(s)
-    _add_remote_args(s)
 
     d = sub.add_parser("diff", help="Compare two harvests and report differences")
     _add_config_args(d)
@@ -602,14 +609,12 @@ def main() -> None:
     )
     args = ap.parse_args(argv)
 
-    remote_host: Optional[str] = getattr(args, "remote_host", None)
-
     try:
         if args.cmd == "harvest":
             sops_fps = getattr(args, "sops", None)
-            if remote_host:
+            if args.remote_host:
                 if sops_fps:
-                    out_file = _resolve_sops_out_file(args.out, hint=remote_host)
+                    out_file = _resolve_sops_out_file(args.out, hint=args.remote_host)
                     with tempfile.TemporaryDirectory(prefix="enroll-harvest-") as td:
                         tmp_bundle = Path(td) / "bundle"
                         tmp_bundle.mkdir(parents=True, exist_ok=True)
@@ -619,7 +624,7 @@ def main() -> None:
                             pass
                         remote_harvest(
                             local_out_dir=tmp_bundle,
-                            remote_host=remote_host,
+                            remote_host=args.remote_host,
                             remote_port=int(args.remote_port),
                             remote_user=args.remote_user,
                             dangerous=bool(args.dangerous),
@@ -635,11 +640,11 @@ def main() -> None:
                     out_dir = (
                         Path(args.out)
                         if args.out
-                        else new_harvest_cache_dir(hint=remote_host).dir
+                        else new_harvest_cache_dir(hint=args.remote_host).dir
                     )
                     state = remote_harvest(
                         local_out_dir=out_dir,
-                        remote_host=remote_host,
+                        remote_host=args.remote_host,
                         remote_port=int(args.remote_port),
                         remote_user=args.remote_user,
                         dangerous=bool(args.dangerous),
@@ -669,12 +674,16 @@ def main() -> None:
                         )
                     print(str(out_file))
                 else:
-                    if not args.out:
-                        raise SystemExit(
-                            "error: --out is required unless --remote-host is set"
+                    if args.out:
+                        out_dir = args.out
+                    else:
+                        out_dir = (
+                            Path(args.out)
+                            if args.out
+                            else new_harvest_cache_dir(hint=args.remote_host).dir
                         )
                     path = harvest(
-                        args.out,
+                        out_dir,
                         dangerous=bool(args.dangerous),
                         include_paths=list(getattr(args, "include_path", []) or []),
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
@@ -747,9 +756,11 @@ def main() -> None:
                 raise SystemExit(2)
         elif args.cmd == "single-shot":
             sops_fps = getattr(args, "sops", None)
-            if remote_host:
+            if args.remote_host:
                 if sops_fps:
-                    out_file = _resolve_sops_out_file(args.harvest, hint=remote_host)
+                    out_file = _resolve_sops_out_file(
+                        args.harvest, hint=args.remote_host
+                    )
                     with tempfile.TemporaryDirectory(prefix="enroll-harvest-") as td:
                         tmp_bundle = Path(td) / "bundle"
                         tmp_bundle.mkdir(parents=True, exist_ok=True)
@@ -759,7 +770,7 @@ def main() -> None:
                             pass
                         remote_harvest(
                             local_out_dir=tmp_bundle,
-                            remote_host=remote_host,
+                            remote_host=args.remote_host,
                             remote_port=int(args.remote_port),
                             remote_user=args.remote_user,
                             dangerous=bool(args.dangerous),
@@ -784,11 +795,11 @@ def main() -> None:
                     harvest_dir = (
                         Path(args.harvest)
                         if args.harvest
-                        else new_harvest_cache_dir(hint=remote_host).dir
+                        else new_harvest_cache_dir(hint=args.remote_host).dir
                     )
                     remote_harvest(
                         local_out_dir=harvest_dir,
-                        remote_host=remote_host,
+                        remote_host=args.remote_host,
                         remote_port=int(args.remote_port),
                         remote_user=args.remote_user,
                         dangerous=bool(args.dangerous),
