@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import glob
-import hashlib
 import os
 import subprocess  # nosec
 from typing import Dict, List, Optional, Set, Tuple
@@ -180,28 +179,3 @@ def read_pkg_md5sums(pkg: str) -> Dict[str, str]:
             md5, rel = line.split(None, 1)
             m[rel.strip()] = md5.strip()
     return m
-
-
-def file_md5(path: str) -> str:
-    h = hashlib.md5()  # nosec
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def stat_triplet(path: str) -> Tuple[str, str, str]:
-    st = os.stat(path, follow_symlinks=True)
-    mode = oct(st.st_mode & 0o777)[2:].zfill(4)
-
-    import pwd, grp
-
-    try:
-        owner = pwd.getpwuid(st.st_uid).pw_name
-    except KeyError:
-        owner = str(st.st_uid)
-    try:
-        group = grp.getgrgid(st.st_gid).gr_name
-    except KeyError:
-        group = str(st.st_gid)
-    return owner, group, mode

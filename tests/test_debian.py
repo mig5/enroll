@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 
@@ -97,58 +96,3 @@ def test_parse_status_conffiles_handles_continuations(tmp_path: Path):
     assert m["nginx"]["/etc/nginx/nginx.conf"] == "abcdef"
     assert m["nginx"]["/etc/nginx/mime.types"] == "123456"
     assert "other" not in m
-
-
-def test_read_pkg_md5sums_and_file_md5(tmp_path: Path, monkeypatch):
-    import enroll.debian as d
-
-    # Patch /var/lib/dpkg/info/<pkg>.md5sums lookup to a tmp file.
-    md5_file = tmp_path / "pkg.md5sums"
-    md5_file.write_text("0123456789abcdef  etc/foo.conf\n", encoding="utf-8")
-
-    def fake_exists(path: str) -> bool:
-        return path.endswith("/var/lib/dpkg/info/p1.md5sums")
-
-    real_open = open
-
-    def fake_open(path: str, *args, **kwargs):
-        if path.endswith("/var/lib/dpkg/info/p1.md5sums"):
-            return real_open(md5_file, *args, **kwargs)
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(d.os.path, "exists", fake_exists)
-    monkeypatch.setattr("builtins.open", fake_open)
-
-    m = d.read_pkg_md5sums("p1")
-    assert m == {"etc/foo.conf": "0123456789abcdef"}
-
-    content = b"hello world\n"
-    p = tmp_path / "x"
-    p.write_bytes(content)
-    assert d.file_md5(str(p)) == hashlib.md5(content).hexdigest()
-
-
-def test_stat_triplet_fallbacks(tmp_path: Path, monkeypatch):
-    import enroll.debian as d
-    import sys
-
-    p = tmp_path / "f"
-    p.write_text("x", encoding="utf-8")
-
-    class FakePwdMod:
-        @staticmethod
-        def getpwuid(_):  # pragma: no cover
-            raise KeyError
-
-    class FakeGrpMod:
-        @staticmethod
-        def getgrgid(_):  # pragma: no cover
-            raise KeyError
-
-    # stat_triplet imports pwd/grp inside the function, so patch sys.modules.
-    monkeypatch.setitem(sys.modules, "pwd", FakePwdMod)
-    monkeypatch.setitem(sys.modules, "grp", FakeGrpMod)
-    owner, group, mode = d.stat_triplet(str(p))
-    assert owner.isdigit()
-    assert group.isdigit()
-    assert mode.isdigit() and len(mode) == 4

@@ -4,15 +4,15 @@
   <img src="https://git.mig5.net/mig5/enroll/raw/branch/main/enroll.svg" alt="Enroll logo" width="240" />
 </div>
 
-**enroll** inspects a Linux machine (currently Debian-only) and generates Ansible roles/playbooks (and optionally inventory) for what it finds.
+**enroll** inspects a Linux machine (Debian-like or RedHat-like) and generates Ansible roles/playbooks (and optionally inventory) for what it finds.
 
 - Detects packages that have been installed.
-- Detects Debian package ownership of `/etc` files using dpkg’s local database.
-- Captures config that has **changed from packaged defaults** (dpkg conffile hashes + package md5sums when available).
+- Detects package ownership of `/etc` files where possible
+- Captures config that has **changed from packaged defaults** where possible (e.g dpkg conffile hashes + package md5sums when available).
 - Also captures **service-relevant custom/unowned files** under `/etc/<service>/...` (e.g. drop-in config includes).
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
 - Captures non-system users and their SSH public keys.
-- Captures miscellaneous `/etc` files it can’t attribute to a package and installs them in an `etc_custom` role.
+- Captures miscellaneous `/etc` files it can't attribute to a package and installs them in an `etc_custom` role.
 - Ditto for /usr/local/bin (for non-binary files) and /usr/local/etc
 - Avoids trying to start systemd services that were detected as inactive during harvest.
 
@@ -41,8 +41,8 @@ Use when enrolling **one server** (or generating a “golden” role set you int
 
 **Characteristics**
 - Roles are more self-contained.
-- Raw config files live in the role’s `files/`.
-- Template variables live in the role’s `defaults/main.yml`.
+- Raw config files live in the role's `files/`.
+- Template variables live in the role's `defaults/main.yml`.
 
 ### Multi-site mode (`--fqdn`)
 Use when enrolling **several existing servers** quickly, especially if they differ.
@@ -68,13 +68,13 @@ Harvest state about a host and write a harvest bundle.
 - “Manual” packages
 - Changed-from-default config (plus related custom/unowned files under service dirs)
 - Non-system users + SSH public keys
-- Misc `/etc` that can’t be attributed to a package (`etc_custom` role)
+- Misc `/etc` that can't be attributed to a package (`etc_custom` role)
 - Optional user-specified extra files/dirs via `--include-path` (emitted as an `extra_paths` role at manifest time)
 
 **Common flags**
 - Remote harvesting:
   - `--remote-host`, `--remote-user`, `--remote-port`
-  - `--no-sudo` (if you don’t want/need sudo)
+  - `--no-sudo` (if you don't want/need sudo)
 - Sensitive-data behaviour:
   - default: tries to avoid likely secrets
   - `--dangerous`: disables secret-safety checks (see “Sensitive data” below)
@@ -233,7 +233,7 @@ poetry run enroll --help
 
 ## Found a bug / have a suggestion?
 
-My Forgejo doesn’t currently support federation, so I haven’t opened registration/login for issues.
+My Forgejo doesn't currently support federation, so I haven't opened registration/login for issues.
 
 Instead, email me (see `pyproject.toml`) or contact me on the Fediverse:
 

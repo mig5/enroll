@@ -322,3 +322,96 @@ def test_copy2_replace_overwrites_readonly_destination(tmp_path: Path):
     assert dst.read_text(encoding="utf-8") == "new"
     mode = stat.S_IMODE(dst.stat().st_mode)
     assert mode & stat.S_IWUSR  # destination should remain mergeable
+
+
+def test_manifest_includes_dnf_config_role_when_present(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+
+    # Create a dnf_config artifact.
+    (bundle / "artifacts" / "dnf_config" / "etc" / "dnf").mkdir(
+        parents=True, exist_ok=True
+    )
+    (bundle / "artifacts" / "dnf_config" / "etc" / "dnf" / "dnf.conf").write_text(
+        "[main]\n", encoding="utf-8"
+    )
+
+    state = {
+        "host": {"hostname": "test", "os": "redhat", "pkg_backend": "rpm"},
+        "users": {
+            "role_name": "users",
+            "users": [],
+            "managed_files": [],
+            "excluded": [],
+            "notes": [],
+        },
+        "services": [],
+        "package_roles": [],
+        "manual_packages": [],
+        "manual_packages_skipped": [],
+        "apt_config": {
+            "role_name": "apt_config",
+            "managed_files": [],
+            "excluded": [],
+            "notes": [],
+        },
+        "dnf_config": {
+            "role_name": "dnf_config",
+            "managed_files": [
+                {
+                    "path": "/etc/dnf/dnf.conf",
+                    "src_rel": "etc/dnf/dnf.conf",
+                    "owner": "root",
+                    "group": "root",
+                    "mode": "0644",
+                    "reason": "dnf_config",
+                }
+            ],
+            "excluded": [],
+            "notes": [],
+        },
+        "etc_custom": {
+            "role_name": "etc_custom",
+            "managed_files": [],
+            "excluded": [],
+            "notes": [],
+        },
+        "usr_local_custom": {
+            "role_name": "usr_local_custom",
+            "managed_files": [],
+            "excluded": [],
+            "notes": [],
+        },
+        "extra_paths": {
+            "role_name": "extra_paths",
+            "include_patterns": [],
+            "exclude_patterns": [],
+            "managed_files": [],
+            "excluded": [],
+            "notes": [],
+        },
+    }
+
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest(str(bundle), str(out))
+
+    pb = (out / "playbook.yml").read_text(encoding="utf-8")
+    assert "- dnf_config" in pb
+
+    tasks = (out / "roles" / "dnf_config" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    # Ensure the role exists and contains some file deployment logic.
+    assert "Deploy any other managed files" in tasks
+
+
+def test_render_install_packages_tasks_contains_dnf_branch():
+    from enroll.manifest import _render_install_packages_tasks
+
+    txt = _render_install_packages_tasks("role", "role")
+    assert "ansible.builtin.apt" in txt
+    assert "ansible.builtin.dnf" in txt
+    assert "ansible.builtin.package" in txt
+    assert "pkg_mgr" in txt

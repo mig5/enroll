@@ -15,18 +15,12 @@ from .systemd import (
     get_timer_info,
     UnitQueryError,
 )
-from .debian import (
-    build_dpkg_etc_index,
-    dpkg_owner,
-    file_md5,
-    list_manual_packages,
-    parse_status_conffiles,
-    read_pkg_md5sums,
-    stat_triplet,
-)
+from .fsutil import stat_triplet
+from .platform import detect_platform, get_backend
 from .ignore import IgnorePolicy
 from .pathfilter import PathFilter, expand_includes
 from .accounts import collect_non_system_users
+from .version import get_enroll_version
 
 
 @dataclass
@@ -79,6 +73,14 @@ class UsersSnapshot:
 
 @dataclass
 class AptConfigSnapshot:
+    role_name: str
+    managed_files: List[ManagedFile]
+    excluded: List[ExcludedFile]
+    notes: List[str]
+
+
+@dataclass
+class DnfConfigSnapshot:
     role_name: str
     managed_files: List[ManagedFile]
     excluded: List[ExcludedFile]
@@ -158,6 +160,13 @@ SHARED_ETC_TOPDIRS = {
     "sudoers.d",
     "sysctl.d",
     "systemd",
+    # RPM-family shared trees
+    "dnf",
+    "yum",
+    "yum.repos.d",
+    "sysconfig",
+    "pki",
+    "firewalld",
 }
 
 
@@ -314,17 +323,23 @@ def _add_pkgs_from_etc_topdirs(
                 pkgs.add(p)
 
 
-def _maybe_add_specific_paths(hints: Set[str]) -> List[str]:
-    paths: List[str] = []
-    for h in hints:
-        paths.extend(
-            [
-                f"/etc/default/{h}",
-                f"/etc/init.d/{h}",
-                f"/etc/sysctl.d/{h}.conf",
-            ]
-        )
-    return paths
+def _maybe_add_specific_paths(hints: Set[str], backend) -> List[str]:
+    # Delegate to backend-specific conventions (e.g. /etc/default on Debian,
+    # /etc/sysconfig on Fedora/RHEL). Always include sysctl.d.
+    try:
+        return backend.specific_paths_for_hints(hints)
+    except Exception:
+        # Best-effort fallback (Debian-ish).
+        paths: List[str] = []
+        for h in hints:
+            paths.extend(
+                [
+                    f"/etc/default/{h}",
+                    f"/etc/init.d/{h}",
+                    f"/etc/sysctl.d/{h}.conf",
+                ]
+            )
+        return paths
 
 
 def _scan_unowned_under_roots(
@@ -408,6 +423,7 @@ _SYSTEM_CAPTURE_GLOBS: List[tuple[str, str]] = [
     ("/etc/anacron/*", "system_cron"),
     ("/var/spool/cron/crontabs/*", "system_cron"),
     ("/var/spool/crontabs/*", "system_cron"),
+    ("/var/spool/cron/*", "system_cron"),
     # network
     ("/etc/netplan/*", "system_network"),
     ("/etc/systemd/network/*", "system_network"),
@@ -415,6 +431,9 @@ _SYSTEM_CAPTURE_GLOBS: List[tuple[str, str]] = [
     ("/etc/network/interfaces.d/*", "system_network"),
     ("/etc/resolvconf.conf", "system_network"),
     ("/etc/resolvconf/resolv.conf.d/*", "system_network"),
+    ("/etc/NetworkManager/system-connections/*", "system_network"),
+    ("/etc/sysconfig/network*", "system_network"),
+    ("/etc/sysconfig/network-scripts/*", "system_network"),
     # firewall
     ("/etc/nftables.conf", "system_firewall"),
     ("/etc/nftables.d/*", "system_firewall"),
@@ -422,6 +441,10 @@ _SYSTEM_CAPTURE_GLOBS: List[tuple[str, str]] = [
     ("/etc/iptables/rules.v6", "system_firewall"),
     ("/etc/ufw/*", "system_firewall"),
     ("/etc/default/ufw", "system_firewall"),
+    ("/etc/firewalld/*", "system_firewall"),
+    ("/etc/firewalld/zones/*", "system_firewall"),
+    # SELinux
+    ("/etc/selinux/config", "system_security"),
     # other
     ("/etc/rc.local", "system_rc"),
 ]
@@ -553,6 +576,51 @@ def _iter_apt_capture_paths() -> List[tuple[str, str]]:
     return uniq
 
 
+def _iter_dnf_capture_paths() -> List[tuple[str, str]]:
+    """Return (path, reason) pairs for DNF/YUM configuration on RPM systems.
+
+    Captures:
+      - /etc/dnf/* (dnf.conf, vars, plugins, modules, automatic)
+      - /etc/yum.conf (legacy)
+      - /etc/yum.repos.d/*.repo
+      - /etc/pki/rpm-gpg/* (GPG key files)
+    """
+    reasons: Dict[str, str] = {}
+
+    for root, tag in (
+        ("/etc/dnf", "dnf_config"),
+        ("/etc/yum", "yum_config"),
+    ):
+        if os.path.isdir(root):
+            for dirpath, _, filenames in os.walk(root):
+                for fn in filenames:
+                    p = os.path.join(dirpath, fn)
+                    if os.path.islink(p) or not os.path.isfile(p):
+                        continue
+                    reasons.setdefault(p, tag)
+
+    # Legacy yum.conf.
+    if os.path.isfile("/etc/yum.conf") and not os.path.islink("/etc/yum.conf"):
+        reasons.setdefault("/etc/yum.conf", "yum_conf")
+
+    # Repositories.
+    if os.path.isdir("/etc/yum.repos.d"):
+        for p in _iter_matching_files("/etc/yum.repos.d/*.repo"):
+            reasons[p] = "yum_repo"
+
+    # RPM GPG keys.
+    if os.path.isdir("/etc/pki/rpm-gpg"):
+        for dirpath, _, filenames in os.walk("/etc/pki/rpm-gpg"):
+            for fn in filenames:
+                p = os.path.join(dirpath, fn)
+                if os.path.islink(p) or not os.path.isfile(p):
+                    continue
+                reasons.setdefault(p, "rpm_gpg_key")
+
+    # Stable ordering.
+    return [(p, reasons[p]) for p in sorted(reasons.keys())]
+
+
 def _iter_system_capture_paths() -> List[tuple[str, str]]:
     """Return (path, reason) pairs for essential system config/state (non-APT)."""
     out: List[tuple[str, str]] = []
@@ -600,8 +668,12 @@ def harvest(
             flush=True,
         )
 
-    owned_etc, etc_owner_map, topdir_to_pkgs, pkg_to_etc_paths = build_dpkg_etc_index()
-    conffiles_by_pkg = parse_status_conffiles()
+    platform = detect_platform()
+    backend = get_backend(platform)
+
+    owned_etc, etc_owner_map, topdir_to_pkgs, pkg_to_etc_paths = (
+        backend.build_etc_index()
+    )
 
     # -------------------------
     # Service roles
@@ -645,12 +717,12 @@ def harvest(
         candidates: Dict[str, str] = {}
 
         if ui.fragment_path:
-            p = dpkg_owner(ui.fragment_path)
+            p = backend.owner_of_path(ui.fragment_path)
             if p:
                 pkgs.add(p)
 
         for exe in ui.exec_paths:
-            p = dpkg_owner(exe)
+            p = backend.owner_of_path(exe)
             if p:
                 pkgs.add(p)
 
@@ -675,7 +747,7 @@ def harvest(
         # logrotate.d entries) can still be attributed back to this service.
         service_role_aliases[role] = set(hints) | set(pkgs) | {role}
 
-        for sp in _maybe_add_specific_paths(hints):
+        for sp in _maybe_add_specific_paths(hints, backend):
             if not os.path.exists(sp):
                 continue
             if sp in etc_owner_map:
@@ -684,31 +756,13 @@ def harvest(
                 candidates.setdefault(sp, "custom_specific_path")
 
         for pkg in sorted(pkgs):
-            conff = conffiles_by_pkg.get(pkg, {})
-            md5sums = read_pkg_md5sums(pkg)
-            for path in pkg_to_etc_paths.get(pkg, []):
+            etc_paths = pkg_to_etc_paths.get(pkg, [])
+            for path, reason in backend.modified_paths(pkg, etc_paths).items():
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
-                if path.startswith("/etc/apt/"):
+                if backend.is_pkg_config_path(path):
                     continue
-                if path in conff:
-                    # Only capture conffiles when they differ from the package default.
-                    try:
-                        current = file_md5(path)
-                    except OSError:
-                        continue
-                    if current != conff[path]:
-                        candidates.setdefault(path, "modified_conffile")
-                    continue
-                rel = path.lstrip("/")
-                baseline = md5sums.get(rel)
-                if baseline:
-                    try:
-                        current = file_md5(path)
-                    except OSError:
-                        continue
-                    if current != baseline:
-                        candidates.setdefault(path, "modified_packaged_file")
+                candidates.setdefault(path, reason)
 
         # Capture custom/unowned files living under /etc/<name> for this service.
         #
@@ -847,18 +901,18 @@ def harvest(
         # (useful when a timer triggers a service that isn't enabled).
         pkgs: Set[str] = set()
         if ti.fragment_path:
-            p = dpkg_owner(ti.fragment_path)
+            p = backend.owner_of_path(ti.fragment_path)
             if p:
                 pkgs.add(p)
         if ti.trigger_unit and ti.trigger_unit.endswith(".service"):
             try:
                 ui = get_unit_info(ti.trigger_unit)
                 if ui.fragment_path:
-                    p = dpkg_owner(ui.fragment_path)
+                    p = backend.owner_of_path(ui.fragment_path)
                     if p:
                         pkgs.add(p)
                 for exe in ui.exec_paths:
-                    p = dpkg_owner(exe)
+                    p = backend.owner_of_path(exe)
                     if p:
                         pkgs.add(p)
             except Exception:  # nosec
@@ -870,7 +924,7 @@ def harvest(
     # -------------------------
     # Manually installed package roles
     # -------------------------
-    manual_pkgs = list_manual_packages()
+    manual_pkgs = backend.list_manual_packages()
     # Avoid duplicate roles: if a manual package is already managed by any service role, skip its pkg_<name> role.
     covered_by_services: Set[str] = set()
     for s in service_snaps:
@@ -893,41 +947,26 @@ def harvest(
         for tpath in timer_extra_by_pkg.get(pkg, []):
             candidates.setdefault(tpath, "related_timer")
 
-        conff = conffiles_by_pkg.get(pkg, {})
-        md5sums = read_pkg_md5sums(pkg)
-
-        for path in pkg_to_etc_paths.get(pkg, []):
+        etc_paths = pkg_to_etc_paths.get(pkg, [])
+        for path, reason in backend.modified_paths(pkg, etc_paths).items():
             if not os.path.isfile(path) or os.path.islink(path):
                 continue
-            if path.startswith("/etc/apt/"):
+            if backend.is_pkg_config_path(path):
                 continue
-            if path in conff:
-                try:
-                    current = file_md5(path)
-                except OSError:
-                    continue
-                if current != conff[path]:
-                    candidates.setdefault(path, "modified_conffile")
-                continue
-            rel = path.lstrip("/")
-            baseline = md5sums.get(rel)
-            if baseline:
-                try:
-                    current = file_md5(path)
-                except OSError:
-                    continue
-                if current != baseline:
-                    candidates.setdefault(path, "modified_packaged_file")
+            candidates.setdefault(path, reason)
 
         topdirs = _topdirs_for_package(pkg, pkg_to_etc_paths)
         roots: List[str] = []
+        # Collect candidate directories plus backend-specific common files.
         for td in sorted(topdirs):
             if td in SHARED_ETC_TOPDIRS:
                 continue
+            if backend.is_pkg_config_path(f"/etc/{td}/") or backend.is_pkg_config_path(
+                f"/etc/{td}"
+            ):
+                continue
             roots.extend([f"/etc/{td}", f"/etc/{td}.d"])
-            roots.extend([f"/etc/default/{td}"])
-            roots.extend([f"/etc/init.d/{td}"])
-            roots.extend([f"/etc/sysctl.d/{td}.conf"])
+        roots.extend(_maybe_add_specific_paths(set(topdirs), backend))
 
         # Capture any custom/unowned files under /etc/<topdir> for this
         # manually-installed package. This may include runtime-generated
@@ -1031,32 +1070,60 @@ def harvest(
     )
 
     # -------------------------
-    # apt_config role (APT configuration and keyrings)
+    # Package manager config role
+    #   - Debian: apt_config
+    #   - Fedora/RHEL-like: dnf_config
     # -------------------------
     apt_notes: List[str] = []
     apt_excluded: List[ExcludedFile] = []
     apt_managed: List[ManagedFile] = []
-    apt_role_name = "apt_config"
-    apt_role_seen = seen_by_role.setdefault(apt_role_name, set())
+    dnf_notes: List[str] = []
+    dnf_excluded: List[ExcludedFile] = []
+    dnf_managed: List[ManagedFile] = []
 
-    for path, reason in _iter_apt_capture_paths():
-        _capture_file(
-            bundle_dir=bundle_dir,
-            role_name=apt_role_name,
-            abs_path=path,
-            reason=reason,
-            policy=policy,
-            path_filter=path_filter,
-            managed_out=apt_managed,
-            excluded_out=apt_excluded,
-            seen_role=apt_role_seen,
-        )
+    apt_role_name = "apt_config"
+    dnf_role_name = "dnf_config"
+
+    if backend.name == "dpkg":
+        apt_role_seen = seen_by_role.setdefault(apt_role_name, set())
+        for path, reason in _iter_apt_capture_paths():
+            _capture_file(
+                bundle_dir=bundle_dir,
+                role_name=apt_role_name,
+                abs_path=path,
+                reason=reason,
+                policy=policy,
+                path_filter=path_filter,
+                managed_out=apt_managed,
+                excluded_out=apt_excluded,
+                seen_role=apt_role_seen,
+            )
+    elif backend.name == "rpm":
+        dnf_role_seen = seen_by_role.setdefault(dnf_role_name, set())
+        for path, reason in _iter_dnf_capture_paths():
+            _capture_file(
+                bundle_dir=bundle_dir,
+                role_name=dnf_role_name,
+                abs_path=path,
+                reason=reason,
+                policy=policy,
+                path_filter=path_filter,
+                managed_out=dnf_managed,
+                excluded_out=dnf_excluded,
+                seen_role=dnf_role_seen,
+            )
 
     apt_config_snapshot = AptConfigSnapshot(
         role_name=apt_role_name,
         managed_files=apt_managed,
         excluded=apt_excluded,
         notes=apt_notes,
+    )
+    dnf_config_snapshot = DnfConfigSnapshot(
+        role_name=dnf_role_name,
+        managed_files=dnf_managed,
+        excluded=dnf_excluded,
+        notes=dnf_notes,
     )
 
     # -------------------------
@@ -1079,6 +1146,8 @@ def harvest(
         already.add(mf.path)
     for mf in apt_managed:
         already.add(mf.path)
+    for mf in dnf_managed:
+        already.add(mf.path)
 
     # Maps for re-attributing shared snippets (cron.d/logrotate.d) to existing roles.
     svc_by_role: Dict[str, ServiceSnapshot] = {s.role_name: s for s in service_snaps}
@@ -1093,7 +1162,7 @@ def harvest(
         for pkg in s.packages:
             pkg_to_service_roles.setdefault(pkg, []).append(s.role_name)
 
-    # Alias -> role mapping used as a fallback when dpkg ownership is missing.
+    # Alias -> role mapping used as a fallback when package ownership is missing.
     # Prefer service roles over package roles when both would match.
     alias_ranked: Dict[str, tuple[int, str]] = {}
 
@@ -1124,8 +1193,8 @@ def harvest(
         per service.
 
         Resolution order:
-        1) dpkg owner -> service role (if any service references the package)
-        2) dpkg owner -> package role (manual package role exists)
+        1) package owner -> service role (if any service references the package)
+        2) package owner -> package role (manual package role exists)
         3) basename/stem alias match -> preferred role
         """
         if path.startswith("/etc/logrotate.d/"):
@@ -1147,7 +1216,7 @@ def harvest(
                 seen.add(c)
                 uniq.append(c)
 
-        pkg = dpkg_owner(path)
+        pkg = backend.owner_of_path(path)
         if pkg:
             svc_roles = sorted(set(pkg_to_service_roles.get(pkg, [])))
             if svc_roles:
@@ -1226,7 +1295,7 @@ def harvest(
     for dirpath, _, filenames in os.walk("/etc"):
         for fn in filenames:
             path = os.path.join(dirpath, fn)
-            if path.startswith("/etc/apt/"):
+            if backend.is_pkg_config_path(path):
                 continue
             if path in already:
                 continue
@@ -1413,13 +1482,22 @@ def harvest(
     )
 
     state = {
-        "host": {"hostname": os.uname().nodename, "os": "debian"},
+        "enroll": {
+            "version": get_enroll_version(),
+        },
+        "host": {
+            "hostname": os.uname().nodename,
+            "os": platform.os_family,
+            "pkg_backend": backend.name,
+            "os_release": platform.os_release,
+        },
         "users": asdict(users_snapshot),
         "services": [asdict(s) for s in service_snaps],
         "manual_packages": manual_pkgs,
         "manual_packages_skipped": manual_pkgs_skipped,
         "package_roles": [asdict(p) for p in pkg_snaps],
         "apt_config": asdict(apt_config_snapshot),
+        "dnf_config": asdict(dnf_config_snapshot),
         "etc_custom": asdict(etc_custom_snapshot),
         "usr_local_custom": asdict(usr_local_custom_snapshot),
         "extra_paths": asdict(extra_paths_snapshot),

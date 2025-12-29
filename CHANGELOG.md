@@ -1,6 +1,7 @@
 # 0.2.0
 
  * Add version CLI arg
+ * Add ability to enroll RH-style systems (DNF5/DNF/RPM)
 
 # 0.1.7
 

@@ -43,6 +43,7 @@ DEFAULT_ALLOW_BINARY_GLOBS = [
     "/usr/share/keyrings/*.gpg",
     "/usr/share/keyrings/*.pgp",
     "/usr/share/keyrings/*.asc",
+    "/etc/pki/rpm-gpg/*",
 ]
 
 SENSITIVE_CONTENT_PATTERNS = [

@@ -2,12 +2,71 @@ import json
 from pathlib import Path
 
 import enroll.harvest as h
+from enroll.platform import PlatformInfo
 from enroll.systemd import UnitInfo
 
 
 class AllowAllPolicy:
     def deny_reason(self, path: str):
         return None
+
+
+class FakeBackend:
+    """Minimal backend stub for harvest tests.
+
+    The real backends (dpkg/rpm) enumerate the live system (dpkg status, rpm
+    databases, etc). These tests instead control all backend behaviour.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        owned_etc: set[str],
+        etc_owner_map: dict[str, str],
+        topdir_to_pkgs: dict[str, set[str]],
+        pkg_to_etc_paths: dict[str, list[str]],
+        manual_pkgs: list[str],
+        owner_fn,
+        modified_by_pkg: dict[str, dict[str, str]] | None = None,
+        pkg_config_prefixes: tuple[str, ...] = ("/etc/apt/",),
+    ):
+        self.name = name
+        self.pkg_config_prefixes = pkg_config_prefixes
+        self._owned_etc = owned_etc
+        self._etc_owner_map = etc_owner_map
+        self._topdir_to_pkgs = topdir_to_pkgs
+        self._pkg_to_etc_paths = pkg_to_etc_paths
+        self._manual = manual_pkgs
+        self._owner_fn = owner_fn
+        self._modified_by_pkg = modified_by_pkg or {}
+
+    def build_etc_index(self):
+        return (
+            self._owned_etc,
+            self._etc_owner_map,
+            self._topdir_to_pkgs,
+            self._pkg_to_etc_paths,
+        )
+
+    def owner_of_path(self, path: str):
+        return self._owner_fn(path)
+
+    def list_manual_packages(self):
+        return list(self._manual)
+
+    def specific_paths_for_hints(self, hints: set[str]):
+        return []
+
+    def is_pkg_config_path(self, path: str) -> bool:
+        for pfx in self.pkg_config_prefixes:
+            if path == pfx or path.startswith(pfx):
+                return True
+        return False
+
+    def modified_paths(self, pkg: str, etc_paths: list[str]):
+        # Test-controlled; ignore etc_paths.
+        return dict(self._modified_by_pkg.get(pkg, {}))
 
 
 def test_harvest_dedup_manual_packages_and_builds_etc_custom(
@@ -22,7 +81,7 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     real_exists = os.path.exists
     real_islink = os.path.islink
 
-    # Fake filesystem: two /etc files exist, only one is dpkg-owned.
+    # Fake filesystem: two /etc files exist, only one is package-owned.
     # Also include some /usr/local files to populate usr_local_custom.
     files = {
         "/etc/openvpn/server.conf": b"server",
@@ -93,6 +152,7 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
 
     # Avoid real system access
     monkeypatch.setattr(h, "list_enabled_services", lambda: ["openvpn.service"])
+    monkeypatch.setattr(h, "list_enabled_timers", lambda: [])
     monkeypatch.setattr(
         h,
         "get_unit_info",
@@ -109,29 +169,30 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
         ),
     )
 
-    # Debian package index: openvpn owns /etc/openvpn/server.conf; keyboard is unowned.
-    def fake_build_index():
-        owned_etc = {"/etc/openvpn/server.conf"}
-        etc_owner_map = {"/etc/openvpn/server.conf": "openvpn"}
-        topdir_to_pkgs = {"openvpn": {"openvpn"}}
-        pkg_to_etc_paths = {"openvpn": ["/etc/openvpn/server.conf"], "curl": []}
-        return owned_etc, etc_owner_map, topdir_to_pkgs, pkg_to_etc_paths
+    # Package index: openvpn owns /etc/openvpn/server.conf; keyboard is unowned.
+    owned_etc = {"/etc/openvpn/server.conf"}
+    etc_owner_map = {"/etc/openvpn/server.conf": "openvpn"}
+    topdir_to_pkgs = {"openvpn": {"openvpn"}}
+    pkg_to_etc_paths = {"openvpn": ["/etc/openvpn/server.conf"], "curl": []}
 
-    monkeypatch.setattr(h, "build_dpkg_etc_index", fake_build_index)
-
-    # openvpn conffile hash mismatch => should be captured under service role
-    monkeypatch.setattr(
-        h,
-        "parse_status_conffiles",
-        lambda: {"openvpn": {"/etc/openvpn/server.conf": "old"}},
+    backend = FakeBackend(
+        name="dpkg",
+        owned_etc=owned_etc,
+        etc_owner_map=etc_owner_map,
+        topdir_to_pkgs=topdir_to_pkgs,
+        pkg_to_etc_paths=pkg_to_etc_paths,
+        manual_pkgs=["openvpn", "curl"],
+        owner_fn=lambda p: "openvpn" if "openvpn" in (p or "") else None,
+        modified_by_pkg={
+            "openvpn": {"/etc/openvpn/server.conf": "modified_conffile"},
+        },
     )
-    monkeypatch.setattr(h, "read_pkg_md5sums", lambda pkg: {})
-    monkeypatch.setattr(h, "file_md5", lambda path: "new")
 
     monkeypatch.setattr(
-        h, "dpkg_owner", lambda p: "openvpn" if "openvpn" in p else None
+        h, "detect_platform", lambda: PlatformInfo("debian", "dpkg", {})
     )
-    monkeypatch.setattr(h, "list_manual_packages", lambda: ["openvpn", "curl"])
+    monkeypatch.setattr(h, "get_backend", lambda info=None: backend)
+
     monkeypatch.setattr(h, "collect_non_system_users", lambda: [])
 
     def fake_stat_triplet(p: str):
@@ -207,6 +268,7 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
     monkeypatch.setattr(
         h, "list_enabled_services", lambda: ["apparmor.service", "ntpsec.service"]
     )
+    monkeypatch.setattr(h, "list_enabled_timers", lambda: [])
 
     def fake_unit_info(unit: str) -> UnitInfo:
         if unit == "apparmor.service":
@@ -235,31 +297,35 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
 
     monkeypatch.setattr(h, "get_unit_info", fake_unit_info)
 
-    # Dpkg /etc index: no owned /etc paths needed for this test.
-    monkeypatch.setattr(
-        h,
-        "build_dpkg_etc_index",
-        lambda: (set(), {}, {}, {}),
-    )
-    monkeypatch.setattr(h, "parse_status_conffiles", lambda: {})
-    monkeypatch.setattr(h, "read_pkg_md5sums", lambda pkg: {})
-    monkeypatch.setattr(h, "file_md5", lambda path: "x")
-    monkeypatch.setattr(h, "list_manual_packages", lambda: [])
-    monkeypatch.setattr(h, "collect_non_system_users", lambda: [])
-
     # Make apparmor *also* claim the ntpsec package (simulates overly-broad
     # package inference). The snippet routing should still prefer role 'ntpsec'.
-    def fake_dpkg_owner(p: str):
+    def fake_owner(p: str):
         if p == "/etc/cron.d/ntpsec":
             return "ntpsec"
-        if "apparmor" in p:
+        if "apparmor" in (p or ""):
             return "ntpsec"  # intentionally misleading
-        if "ntpsec" in p or "ntpd" in p:
+        if "ntpsec" in (p or "") or "ntpd" in (p or ""):
             return "ntpsec"
         return None
 
-    monkeypatch.setattr(h, "dpkg_owner", fake_dpkg_owner)
+    backend = FakeBackend(
+        name="dpkg",
+        owned_etc=set(),
+        etc_owner_map={},
+        topdir_to_pkgs={},
+        pkg_to_etc_paths={},
+        manual_pkgs=[],
+        owner_fn=fake_owner,
+        modified_by_pkg={},
+    )
+
+    monkeypatch.setattr(
+        h, "detect_platform", lambda: PlatformInfo("debian", "dpkg", {})
+    )
+    monkeypatch.setattr(h, "get_backend", lambda info=None: backend)
+
     monkeypatch.setattr(h, "stat_triplet", lambda p: ("root", "root", "0644"))
+    monkeypatch.setattr(h, "collect_non_system_users", lambda: [])
 
     def fake_copy(bundle_dir: str, role_name: str, abs_path: str, src_rel: str):
         dst = Path(bundle_dir) / "artifacts" / role_name / src_rel
@@ -268,11 +334,7 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
 
     monkeypatch.setattr(h, "_copy_into_bundle", fake_copy)
 
-    class AllowAll:
-        def deny_reason(self, path: str):
-            return None
-
-    state_path = h.harvest(str(bundle), policy=AllowAll())
+    state_path = h.harvest(str(bundle), policy=AllowAllPolicy())
     st = json.loads(Path(state_path).read_text(encoding="utf-8"))
 
     # Cron snippet should end up attached to the ntpsec role, not apparmor.
