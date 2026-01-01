@@ -191,7 +191,7 @@ sudo apt update
 sudo apt install enroll
 ```
 
-### Fedora 42
+## Fedora
 
 ```bash
 sudo rpm --import https://mig5.net/static/mig5.asc
