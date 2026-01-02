@@ -1551,8 +1551,6 @@ User-requested extra file harvesting.
 
         manifested_extra_paths_roles.append(role)
 
-        manifested_usr_local_custom_roles.append(role)
-
     # -------------------------
     # Service roles
     # -------------------------

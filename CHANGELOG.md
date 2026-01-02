@@ -1,3 +1,7 @@
+# 0.2.1
+
+ * Don't accidentally add extra_paths role to usr_local_custom list, resulting in extra_paths appearing twice in manifested playbook
+
 # 0.2.0
 
  * Add version CLI arg
