@@ -344,6 +344,29 @@ def _write_role_defaults(role_dir: str, mapping: Dict[str, Any]) -> None:
         f.write(out)
 
 
+def _build_managed_dirs_var(
+    managed_dirs: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Convert enroll managed_dirs into an Ansible-friendly list of dicts.
+
+    Each dict drives a role task loop and is safe across hosts.
+    """
+    out: List[Dict[str, Any]] = []
+    for d in managed_dirs:
+        dest = d.get("path") or ""
+        if not dest:
+            continue
+        out.append(
+            {
+                "dest": dest,
+                "owner": d.get("owner") or "root",
+                "group": d.get("group") or "root",
+                "mode": d.get("mode") or "0755",
+            }
+        )
+    return out
+
+
 def _build_managed_files_var(
     managed_files: List[Dict[str, Any]],
     templated_src_rels: Set[str],
@@ -390,7 +413,22 @@ def _render_generic_files_tasks(
     # Using first_found makes roles work in both modes:
     # - site-mode: inventory/host_vars/<host>/<role>/.files/...
     # - non-site: roles/<role>/files/...
-    return f"""- name: Deploy any systemd unit files (templates)
+    return f"""- name: Ensure managed directories exist (preserve owner/group/mode)
+  ansible.builtin.file:
+    path: "{{{{ item.dest }}}}"
+    state: directory
+    owner: "{{{{ item.owner }}}}"
+    group: "{{{{ item.group }}}}"
+    mode: "{{{{ item.mode }}}}"
+  loop: "{{{{ {var_prefix}_managed_dirs | default([]) }}}}"
+
+- name: Ensure destination directories exist
+  ansible.builtin.file:
+    path: "{{{{ item.dest | dirname }}}}"
+    state: directory
+  loop: "{{{{ {var_prefix}_managed_files | default([]) }}}}"
+
+- name: Deploy any systemd unit files (templates)
   ansible.builtin.template:
     src: "{{{{ item.src_rel }}}}.j2"
     dest: "{{{{ item.dest }}}}"
@@ -1444,13 +1482,17 @@ Unowned /etc config files not attributed to packages or services.
     # -------------------------
     # extra_paths role (user-requested includes)
     # -------------------------
-    if extra_paths_snapshot and extra_paths_snapshot.get("managed_files"):
+    if extra_paths_snapshot and (
+        extra_paths_snapshot.get("managed_files")
+        or extra_paths_snapshot.get("managed_dirs")
+    ):
         role = extra_paths_snapshot.get("role_name", "extra_paths")
         role_dir = os.path.join(roles_root, role)
         _write_role_scaffold(role_dir)
 
         var_prefix = role
 
+        managed_dirs = extra_paths_snapshot.get("managed_dirs", []) or []
         managed_files = extra_paths_snapshot.get("managed_files", [])
         excluded = extra_paths_snapshot.get("excluded", [])
         notes = extra_paths_snapshot.get("notes", [])
@@ -1489,12 +1531,23 @@ Unowned /etc config files not attributed to packages or services.
             notify_systemd=None,
         )
 
+        dirs_var = _build_managed_dirs_var(managed_dirs)
+
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
-        vars_map: Dict[str, Any] = {f"{var_prefix}_managed_files": files_var}
+        vars_map: Dict[str, Any] = {
+            f"{var_prefix}_managed_dirs": dirs_var,
+            f"{var_prefix}_managed_files": files_var,
+        }
         vars_map = _merge_mappings_overwrite(vars_map, jt_map)
 
         if site_mode:
-            _write_role_defaults(role_dir, {f"{var_prefix}_managed_files": []})
+            _write_role_defaults(
+                role_dir,
+                {
+                    f"{var_prefix}_managed_dirs": [],
+                    f"{var_prefix}_managed_files": [],
+                },
+            )
             _write_hostvars(out_dir, fqdn or "", role, vars_map)
         else:
             _write_role_defaults(role_dir, vars_map)
@@ -1529,6 +1582,10 @@ User-requested extra file harvesting.
 ## Exclude patterns
 """
             + ("\n".join([f"- {p}" for p in exclude_pats]) or "- (none)")
+            + """\n
+## Managed directories
+"""
+            + ("\n".join([f"- {d.get('path')}" for d in managed_dirs]) or "- (none)")
             + """\n
 ## Managed files
 """

@@ -137,3 +137,33 @@ class IgnorePolicy:
                         return "sensitive_content"
 
         return None
+
+    def deny_reason_dir(self, path: str) -> Optional[str]:
+        """Directory-specific deny logic.
+
+        deny_reason() is file-oriented (it rejects directories as "not_regular_file").
+        For directory metadata capture (so roles can recreate directory trees), we need
+        a lighter-weight check:
+          - apply deny_globs (unless dangerous)
+          - require the path to be a real directory (no symlink)
+          - ensure it's stat'able/readable
+
+        No size checks or content scanning are performed for directories.
+        """
+        if not self.dangerous:
+            for g in self.deny_globs or []:
+                if fnmatch.fnmatch(path, g):
+                    return "denied_path"
+
+        try:
+            os.stat(path, follow_symlinks=True)
+        except OSError:
+            return "unreadable"
+
+        if os.path.islink(path):
+            return "symlink"
+
+        if not os.path.isdir(path):
+            return "not_directory"
+
+        return None

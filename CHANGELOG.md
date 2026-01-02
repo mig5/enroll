@@ -1,6 +1,7 @@
 # 0.2.1
 
  * Don't accidentally add extra_paths role to usr_local_custom list, resulting in extra_paths appearing twice in manifested playbook
+ * Ensure directories in the tree of anything included with --include are defined in the state and manifest so we make dirs before we try to create files
 
 # 0.2.0
 

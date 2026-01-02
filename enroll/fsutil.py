@@ -24,7 +24,7 @@ def stat_triplet(path: str) -> Tuple[str, str, str]:
     mode is a zero-padded octal string (e.g. "0644").
     """
     st = os.stat(path, follow_symlinks=True)
-    mode = oct(st.st_mode & 0o777)[2:].zfill(4)
+    mode = oct(st.st_mode & 0o7777)[2:].zfill(4)
 
     import grp
     import pwd

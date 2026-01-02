@@ -35,6 +35,15 @@ class ManagedFile:
 
 
 @dataclass
+class ManagedDir:
+    path: str
+    owner: str
+    group: str
+    mode: str
+    reason: str
+
+
+@dataclass
 class ExcludedFile:
     path: str
     reason: str
@@ -109,6 +118,7 @@ class ExtraPathsSnapshot:
     role_name: str
     include_patterns: List[str]
     exclude_patterns: List[str]
+    managed_dirs: List[ManagedDir]
     managed_files: List[ManagedFile]
     excluded: List[ExcludedFile]
     notes: List[str]
@@ -1484,11 +1494,77 @@ def harvest(
     extra_notes: List[str] = []
     extra_excluded: List[ExcludedFile] = []
     extra_managed: List[ManagedFile] = []
+    extra_managed_dirs: List[ManagedDir] = []
+    extra_dir_seen: Set[str] = set()
+
+    def _walk_and_capture_dirs(root: str) -> None:
+        root = os.path.normpath(root)
+        if not root.startswith("/"):
+            root = "/" + root
+        if not os.path.isdir(root) or os.path.islink(root):
+            return
+        for dirpath, dirnames, _ in os.walk(root, followlinks=False):
+            if len(extra_managed_dirs) >= MAX_FILES_CAP:
+                extra_notes.append(
+                    f"Reached directory cap ({MAX_FILES_CAP}) while scanning {root}."
+                )
+                return
+            dirpath = os.path.normpath(dirpath)
+            if not dirpath.startswith("/"):
+                dirpath = "/" + dirpath
+            if path_filter.is_excluded(dirpath):
+                # Prune excluded subtrees.
+                dirnames[:] = []
+                continue
+            if os.path.islink(dirpath) or not os.path.isdir(dirpath):
+                dirnames[:] = []
+                continue
+
+            if dirpath not in extra_dir_seen:
+                deny = policy.deny_reason_dir(dirpath)
+                if not deny:
+                    try:
+                        owner, group, mode = stat_triplet(dirpath)
+                        extra_managed_dirs.append(
+                            ManagedDir(
+                                path=dirpath,
+                                owner=owner,
+                                group=group,
+                                mode=mode,
+                                reason="user_include_dir",
+                            )
+                        )
+                    except OSError:
+                        pass
+                extra_dir_seen.add(dirpath)
+
+            # Prune excluded dirs and symlinks early.
+            pruned: List[str] = []
+            for d in dirnames:
+                p = os.path.join(dirpath, d)
+                if os.path.islink(p) or path_filter.is_excluded(p):
+                    continue
+                pruned.append(d)
+            dirnames[:] = pruned
+
     extra_role_name = "extra_paths"
     extra_role_seen = seen_by_role.setdefault(extra_role_name, set())
 
     include_specs = list(include_paths or [])
     exclude_specs = list(exclude_paths or [])
+
+    # If any include pattern points at a directory, capture that directory tree's
+    # ownership/mode so the manifest can recreate it accurately.
+    include_pats = path_filter.iter_include_patterns()
+    for pat in include_pats:
+        if pat.kind == "prefix":
+            p = pat.value
+            if os.path.isdir(p) and not os.path.islink(p):
+                _walk_and_capture_dirs(p)
+        elif pat.kind == "glob":
+            for h in glob.glob(pat.value, recursive=True):
+                if os.path.isdir(h) and not os.path.islink(h):
+                    _walk_and_capture_dirs(h)
 
     if include_specs:
         extra_notes.append("User include patterns:")
@@ -1529,6 +1605,7 @@ def harvest(
         role_name=extra_role_name,
         include_patterns=include_specs,
         exclude_patterns=exclude_specs,
+        managed_dirs=extra_managed_dirs,
         managed_files=extra_managed,
         excluded=extra_excluded,
         notes=extra_notes,
