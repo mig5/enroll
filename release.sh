@@ -57,7 +57,7 @@ DISTS=(
 
 for dist in ${DISTS[@]}; do
   release=$(echo ${dist} | cut -d: -f2)
-  REPO_RELEASE_ROOT="${REPO_ROOT}/fc${release}"
+  REPO_RELEASE_ROOT="${REPO_ROOT}/${release}"
   RPM_REPO="${REPO_RELEASE_ROOT}/rpm/x86_64"
   mkdir -p "$RPM_REPO"
 
