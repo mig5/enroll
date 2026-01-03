@@ -49,7 +49,7 @@ def test_safe_extract_tar_rejects_symlinks(tmp_path: Path):
             _safe_extract_tar(tf, tmp_path)
 
 
-def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
+def test_remote_harvest_happy_path_requests_pty_for_sudo(tmp_path: Path, monkeypatch):
     import sys
 
     import enroll.remote as r
@@ -65,7 +65,7 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     # Prepare a tiny harvest bundle tar stream from the "remote".
     tgz = _make_tgz_bytes({"state.json": b'{"ok": true}\n'})
 
-    calls: list[str] = []
+    calls: list[tuple[str, bool]] = []
 
     class _Chan:
         def __init__(self, rc: int = 0):
@@ -116,8 +116,9 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
         def open_sftp(self):
             return self._sftp
 
-        def exec_command(self, cmd: str):
-            calls.append(cmd)
+        def exec_command(self, cmd: str, get_pty: bool = False):
+            calls.append((cmd, bool(get_pty)))
+
             # The tar stream uses exec_command directly.
             if cmd.startswith("tar -cz -C"):
                 return (None, _Stdout(tgz, rc=0), _Stderr(b""))
@@ -168,8 +169,15 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     assert b"ok" in state_path.read_bytes()
 
     # Ensure we attempted remote harvest with sudo and passed include/exclude and dangerous.
-    joined = "\n".join(calls)
+    joined = "\n".join([c for c, _ in calls])
     assert "sudo" in joined
     assert "--dangerous" in joined
     assert "--include-path" in joined
     assert "--exclude-path" in joined
+
+    # Assert PTY is requested for sudo commands (harvest & chown), not for tar streaming.
+    sudo_cmds = [(c, pty) for c, pty in calls if c.startswith("sudo ")]
+    assert sudo_cmds, "expected at least one sudo command"
+    assert all(pty for _, pty in sudo_cmds)
+    tar_cmds = [(c, pty) for c, pty in calls if c.startswith("tar -cz -C")]
+    assert tar_cmds and all(not pty for _, pty in tar_cmds)
