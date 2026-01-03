@@ -16,7 +16,6 @@ def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
 
     Protects against path traversal (e.g. entries containing ../).
     """
-
     # Note: tar member names use POSIX separators regardless of platform.
     dest = dest.resolve()
 
@@ -80,9 +79,18 @@ def _build_enroll_pyz(tmpdir: Path) -> Path:
     return pyz_path
 
 
-def _ssh_run(ssh, cmd: str) -> tuple[int, str, str]:
-    """Run a command over a Paramiko SSHClient."""
-    _stdin, stdout, stderr = ssh.exec_command(cmd)
+def _ssh_run(ssh, cmd: str, *, get_pty: bool = False) -> tuple[int, str, str]:
+    """Run a command over a Paramiko SSHClient.
+
+    Paramiko's exec_command runs commands without a TTY by default.
+    Some hosts have sudoers "requiretty" enabled, which causes sudo to
+    fail even when passwordless sudo is configured. For those commands,
+    request a PTY.
+
+    We do not request a PTY for commands that stream binary data
+    (e.g. tar/gzip output), as a PTY can corrupt the byte stream.
+    """
+    _stdin, stdout, stderr = ssh.exec_command(cmd, get_pty=get_pty)
     out = stdout.read().decode("utf-8", errors="replace")
     err = stderr.read().decode("utf-8", errors="replace")
     rc = stdout.channel.recv_exit_status()
@@ -105,7 +113,6 @@ def remote_harvest(
 
     Returns the local path to state.json inside local_out_dir.
     """
-
     try:
         import paramiko  # type: ignore
     except Exception as e:
@@ -182,34 +189,35 @@ def remote_harvest(
             for p in exclude_paths or []:
                 argv.extend(["--exclude-path", str(p)])
 
-            _cmd = " ".join(shlex.quote(a) for a in argv)
-            if not no_sudo:
-                cmd = f"sudo {_cmd}"
-            else:
-                cmd = _cmd
-            rc, out, err = _ssh_run(ssh, cmd)
+            _cmd = " ".join(map(shlex.quote, argv))
+            cmd = f"sudo {_cmd}" if not no_sudo else _cmd
+
+            # PTY for sudo commands (helps sudoers requiretty).
+            rc, out, err = _ssh_run(ssh, cmd, get_pty=(not no_sudo))
             if rc != 0:
                 raise RuntimeError(
                     "Remote harvest failed.\n"
                     f"Command: {cmd}\n"
                     f"Exit code: {rc}\n"
+                    f"Stdout: {out.strip()}\n"
                     f"Stderr: {err.strip()}"
                 )
 
             if not no_sudo:
-                # Ensure user can read the files, before we tar it
+                # Ensure user can read the files, before we tar it.
                 if not resolved_user:
                     raise RuntimeError(
                         "Unable to determine remote username for chown. "
                         "Pass --remote-user explicitly or use --no-sudo."
                     )
                 cmd = f"sudo chown -R {resolved_user} {rbundle}"
-                rc, out, err = _ssh_run(ssh, cmd)
+                rc, out, err = _ssh_run(ssh, cmd, get_pty=True)
                 if rc != 0:
                     raise RuntimeError(
                         "chown of harvest failed.\n"
                         f"Command: {cmd}\n"
                         f"Exit code: {rc}\n"
+                        f"Stdout: {out.strip()}\n"
                         f"Stderr: {err.strip()}"
                     )
 

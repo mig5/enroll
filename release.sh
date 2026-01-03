@@ -44,14 +44,11 @@ for dist in ${DISTS[@]}; do
 done
 
 # RPM
-REPO_ROOT="${HOME}/git/repo_rpm"
-RPM_REPO="${REPO_ROOT}/rpm/x86_64"
-BUILD_OUTPUT="${HOME}/git/enroll/dist"
-REMOTE="letessier.mig5.net:/opt/repo_rpm"
-KEYID="00AE817C24A10C2540461A9C1D7CDE0234DB458D"
-
-mkdir -p "$RPM_REPO"
 sudo apt-get -y install createrepo-c rpm
+BUILD_OUTPUT="${HOME}/git/enroll/dist"
+KEYID="00AE817C24A10C2540461A9C1D7CDE0234DB458D"
+REPO_ROOT="${HOME}/git/repo_rpm"
+REMOTE="letessier.mig5.net:/opt/repo_rpm"
 
 DISTS=(
   fedora:43
@@ -60,6 +57,10 @@ DISTS=(
 
 for dist in ${DISTS[@]}; do
   release=$(echo ${dist} | cut -d: -f2)
+  REPO_RELEASE_ROOT="${REPO_ROOT}/fc${release}"
+  RPM_REPO="${REPO_RELEASE_ROOT}/rpm/x86_64"
+  mkdir -p "$RPM_REPO"
+
   docker build \
     --no-cache \
     -f Dockerfile.rpmbuild \
@@ -71,7 +72,6 @@ for dist in ${DISTS[@]}; do
   docker run --rm -v "$PWD":/src -v "$PWD/dist/rpm":/out -v "$HOME/git/jinjaturtle/dist/rpm":/deps:ro enroll-rpm:${release}
   sudo chown -R "${USER}" "$PWD/dist"
 
-  echo "==> Updating RPM repo..."
   for file in `ls -1 "${BUILD_OUTPUT}/rpm"`; do
     rpmsign --addsign "${BUILD_OUTPUT}/rpm/$file"
   done

@@ -1,4 +1,4 @@
-%global upstream_version 0.2.1
+%global upstream_version 0.2.2
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,9 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sat Jan 02 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Fix stat() of parent directory so that we set directory perms correct on --include paths.
+- Set pty for remote calls when sudo is required, to help systems with limits on sudo without pty
 * Fri Jan 01 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Don't accidentally add extra_paths role to usr_local_custom list, resulting in extra_paths appearing twice in manifested playbook
 - Ensure directories in the tree of anything included with --include are defined in the state and manifest so we make dirs before we try to create files

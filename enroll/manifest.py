@@ -422,12 +422,6 @@ def _render_generic_files_tasks(
     mode: "{{{{ item.mode }}}}"
   loop: "{{{{ {var_prefix}_managed_dirs | default([]) }}}}"
 
-- name: Ensure destination directories exist
-  ansible.builtin.file:
-    path: "{{{{ item.dest | dirname }}}}"
-    state: directory
-  loop: "{{{{ {var_prefix}_managed_files | default([]) }}}}"
-
 - name: Deploy any systemd unit files (templates)
   ansible.builtin.template:
     src: "{{{{ item.src_rel }}}}.j2"
@@ -983,6 +977,7 @@ Generated non-system user accounts and SSH public material.
         var_prefix = role
 
         managed_files = apt_config_snapshot.get("managed_files", [])
+        managed_dirs = apt_config_snapshot.get("managed_dirs", []) or []
         excluded = apt_config_snapshot.get("excluded", [])
         notes = apt_config_snapshot.get("notes", [])
 
@@ -1019,12 +1014,20 @@ Generated non-system user accounts and SSH public material.
             notify_systemd=None,
         )
 
+        dirs_var = _build_managed_dirs_var(managed_dirs)
+
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
-        vars_map: Dict[str, Any] = {f"{var_prefix}_managed_files": files_var}
+        vars_map: Dict[str, Any] = {
+            f"{var_prefix}_managed_files": files_var,
+            f"{var_prefix}_managed_dirs": dirs_var,
+        }
         vars_map = _merge_mappings_overwrite(vars_map, jt_map)
 
         if site_mode:
-            _write_role_defaults(role_dir, {f"{var_prefix}_managed_files": []})
+            _write_role_defaults(
+                role_dir,
+                {f"{var_prefix}_managed_files": [], f"{var_prefix}_managed_dirs": []},
+            )
             _write_hostvars(out_dir, fqdn or "", role, vars_map)
         else:
             _write_role_defaults(role_dir, vars_map)
@@ -1134,6 +1137,7 @@ APT configuration harvested from the system (sources, pinning, and keyrings).
         var_prefix = role
 
         managed_files = dnf_config_snapshot.get("managed_files", [])
+        managed_dirs = dnf_config_snapshot.get("managed_dirs", []) or []
         excluded = dnf_config_snapshot.get("excluded", [])
         notes = dnf_config_snapshot.get("notes", [])
 
@@ -1169,12 +1173,20 @@ APT configuration harvested from the system (sources, pinning, and keyrings).
             notify_systemd=None,
         )
 
+        dirs_var = _build_managed_dirs_var(managed_dirs)
+
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
-        vars_map: Dict[str, Any] = {f"{var_prefix}_managed_files": files_var}
+        vars_map: Dict[str, Any] = {
+            f"{var_prefix}_managed_files": files_var,
+            f"{var_prefix}_managed_dirs": dirs_var,
+        }
         vars_map = _merge_mappings_overwrite(vars_map, jt_map)
 
         if site_mode:
-            _write_role_defaults(role_dir, {f"{var_prefix}_managed_files": []})
+            _write_role_defaults(
+                role_dir,
+                {f"{var_prefix}_managed_files": [], f"{var_prefix}_managed_dirs": []},
+            )
             _write_hostvars(out_dir, fqdn or "", role, vars_map)
         else:
             _write_role_defaults(role_dir, vars_map)
@@ -1285,6 +1297,7 @@ DNF/YUM configuration harvested from the system (repos, config files, and RPM GP
         var_prefix = role
 
         managed_files = etc_custom_snapshot.get("managed_files", [])
+        managed_dirs = etc_custom_snapshot.get("managed_dirs", []) or []
         excluded = etc_custom_snapshot.get("excluded", [])
         notes = etc_custom_snapshot.get("notes", [])
 
@@ -1321,12 +1334,20 @@ DNF/YUM configuration harvested from the system (repos, config files, and RPM GP
             notify_systemd="Run systemd daemon-reload",
         )
 
+        dirs_var = _build_managed_dirs_var(managed_dirs)
+
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
-        vars_map: Dict[str, Any] = {f"{var_prefix}_managed_files": files_var}
+        vars_map: Dict[str, Any] = {
+            f"{var_prefix}_managed_files": files_var,
+            f"{var_prefix}_managed_dirs": dirs_var,
+        }
         vars_map = _merge_mappings_overwrite(vars_map, jt_map)
 
         if site_mode:
-            _write_role_defaults(role_dir, {f"{var_prefix}_managed_files": []})
+            _write_role_defaults(
+                role_dir,
+                {f"{var_prefix}_managed_files": [], f"{var_prefix}_managed_dirs": []},
+            )
             _write_hostvars(out_dir, fqdn or "", role, vars_map)
         else:
             _write_role_defaults(role_dir, vars_map)
@@ -1395,6 +1416,7 @@ Unowned /etc config files not attributed to packages or services.
         var_prefix = role
 
         managed_files = usr_local_custom_snapshot.get("managed_files", [])
+        managed_dirs = usr_local_custom_snapshot.get("managed_dirs", []) or []
         excluded = usr_local_custom_snapshot.get("excluded", [])
         notes = usr_local_custom_snapshot.get("notes", [])
 
@@ -1431,12 +1453,20 @@ Unowned /etc config files not attributed to packages or services.
             notify_systemd=None,
         )
 
+        dirs_var = _build_managed_dirs_var(managed_dirs)
+
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
-        vars_map: Dict[str, Any] = {f"{var_prefix}_managed_files": files_var}
+        vars_map: Dict[str, Any] = {
+            f"{var_prefix}_managed_files": files_var,
+            f"{var_prefix}_managed_dirs": dirs_var,
+        }
         vars_map = _merge_mappings_overwrite(vars_map, jt_map)
 
         if site_mode:
-            _write_role_defaults(role_dir, {f"{var_prefix}_managed_files": []})
+            _write_role_defaults(
+                role_dir,
+                {f"{var_prefix}_managed_files": [], f"{var_prefix}_managed_dirs": []},
+            )
             _write_hostvars(out_dir, fqdn or "", role, vars_map)
         else:
             _write_role_defaults(role_dir, vars_map)
@@ -1616,6 +1646,7 @@ User-requested extra file harvesting.
         unit = svc["unit"]
         pkgs = svc.get("packages", []) or []
         managed_files = svc.get("managed_files", []) or []
+        managed_dirs = svc.get("managed_dirs", []) or []
 
         role_dir = os.path.join(roles_root, role)
         _write_role_scaffold(role_dir)
@@ -1660,11 +1691,14 @@ User-requested extra file harvesting.
             notify_systemd="Run systemd daemon-reload",
         )
 
+        dirs_var = _build_managed_dirs_var(managed_dirs)
+
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
         base_vars: Dict[str, Any] = {
             f"{var_prefix}_unit_name": unit,
             f"{var_prefix}_packages": pkgs,
             f"{var_prefix}_managed_files": files_var,
+            f"{var_prefix}_managed_dirs": dirs_var,
             f"{var_prefix}_manage_unit": True,
             f"{var_prefix}_systemd_enabled": bool(enabled_at_harvest),
             f"{var_prefix}_systemd_state": desired_state,
@@ -1679,6 +1713,7 @@ User-requested extra file harvesting.
                     f"{var_prefix}_unit_name": unit,
                     f"{var_prefix}_packages": [],
                     f"{var_prefix}_managed_files": [],
+                    f"{var_prefix}_managed_dirs": [],
                     f"{var_prefix}_manage_unit": False,
                     f"{var_prefix}_systemd_enabled": False,
                     f"{var_prefix}_systemd_state": "stopped",
@@ -1782,6 +1817,7 @@ Generated from `{unit}`.
         role = pr["role_name"]
         pkg = pr.get("package") or ""
         managed_files = pr.get("managed_files", []) or []
+        managed_dirs = pr.get("managed_dirs", []) or []
 
         role_dir = os.path.join(roles_root, role)
         _write_role_scaffold(role_dir)
@@ -1823,10 +1859,13 @@ Generated from `{unit}`.
             notify_systemd="Run systemd daemon-reload",
         )
 
+        dirs_var = _build_managed_dirs_var(managed_dirs)
+
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
         base_vars: Dict[str, Any] = {
             f"{var_prefix}_packages": pkgs,
             f"{var_prefix}_managed_files": files_var,
+            f"{var_prefix}_managed_dirs": dirs_var,
         }
         base_vars = _merge_mappings_overwrite(base_vars, jt_map)
 
@@ -1836,6 +1875,7 @@ Generated from `{unit}`.
                 {
                     f"{var_prefix}_packages": [],
                     f"{var_prefix}_managed_files": [],
+                    f"{var_prefix}_managed_dirs": [],
                 },
             )
             _write_hostvars(out_dir, fqdn or "", role, base_vars)

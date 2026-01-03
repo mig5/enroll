@@ -1,3 +1,8 @@
+# 0.2.2
+
+ * Fix stat() of parent directory so that we set directory perms correct on --include paths.
+ * Set pty for remote calls when sudo is required, to help systems with limits on sudo without pty
+
 # 0.2.1
 
  * Don't accidentally add extra_paths role to usr_local_custom list, resulting in extra_paths appearing twice in manifested playbook
