@@ -13,7 +13,7 @@ from .cache import new_harvest_cache_dir
 from .diff import compare_harvests, format_report, post_webhook, send_email
 from .harvest import harvest
 from .manifest import manifest
-from .remote import remote_harvest
+from .remote import remote_harvest, RemoteSudoPasswordRequired
 from .sopsutil import SopsError, encrypt_file_binary
 from .version import get_enroll_version
 
@@ -352,6 +352,17 @@ def _add_remote_args(p: argparse.ArgumentParser) -> None:
         help="SSH username for --remote-host (default: local $USER).",
     )
 
+    # Align terminology with Ansible: "become" == sudo.
+    p.add_argument(
+        "--ask-become-pass",
+        "-K",
+        action="store_true",
+        help=(
+            "Prompt for the remote sudo (become) password when using --remote-host "
+            "(similar to ansible --ask-become-pass)."
+        ),
+    )
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="enroll")
@@ -623,6 +634,7 @@ def main() -> None:
                         except OSError:
                             pass
                         remote_harvest(
+                            ask_become_pass=args.ask_become_pass,
                             local_out_dir=tmp_bundle,
                             remote_host=args.remote_host,
                             remote_port=int(args.remote_port),
@@ -643,6 +655,7 @@ def main() -> None:
                         else new_harvest_cache_dir(hint=args.remote_host).dir
                     )
                     state = remote_harvest(
+                        ask_become_pass=args.ask_become_pass,
                         local_out_dir=out_dir,
                         remote_host=args.remote_host,
                         remote_port=int(args.remote_port),
@@ -769,6 +782,7 @@ def main() -> None:
                         except OSError:
                             pass
                         remote_harvest(
+                            ask_become_pass=args.ask_become_pass,
                             local_out_dir=tmp_bundle,
                             remote_host=args.remote_host,
                             remote_port=int(args.remote_port),
@@ -798,6 +812,7 @@ def main() -> None:
                         else new_harvest_cache_dir(hint=args.remote_host).dir
                     )
                     remote_harvest(
+                        ask_become_pass=args.ask_become_pass,
                         local_out_dir=harvest_dir,
                         remote_host=args.remote_host,
                         remote_port=int(args.remote_port),
@@ -912,5 +927,11 @@ def main() -> None:
 
             if getattr(args, "exit_code", False) and has_changes:
                 raise SystemExit(2)
+    except RemoteSudoPasswordRequired:
+        raise SystemExit(
+            "error: remote sudo requires a password. Re-run with --ask-become-pass."
+        ) from None
+    except RuntimeError as e:
+        raise SystemExit(f"error: {e}") from None
     except SopsError as e:
-        raise SystemExit(f"error: {e}")
+        raise SystemExit(f"error: {e}") from None
