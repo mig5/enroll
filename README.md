@@ -88,6 +88,8 @@ Harvest state about a host and write a harvest bundle.
     - glob (default): supports `*` and `**` (prefix with `glob:` to force)
     - regex: prefix with `re:` or `regex:`
   - Precedence: excludes win over includes.
+* Using remote mode and sudo requires password?
+  - `--ask-become-pass` (or `-K`) will prompt for the password. If you forget, and remote requires password for sudo, it'll still fall back to prompting for a password, but will be a bit slower to do so.
 
 ---
 
