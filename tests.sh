@@ -22,7 +22,7 @@ poetry run \
         enroll explain "${BUNDLE_DIR}" --format json | jq
 
 # Install something, harvest again and diff the harvests
-sudo apt-get -y install cowsay
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cowsay
 poetry run \
 	enroll harvest --out "${BUNDLE_DIR}2"
 poetry run \

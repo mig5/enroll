@@ -154,51 +154,6 @@ Provide either the path to the harvest or the path to its state.json. It can als
 
 Output can be provided in plaintext or json.
 
-**Examples**:
-
-```
-enroll explain /path/to/state.json
-enroll explain /path/to/bundle_dir
-enroll explain /path/to/harvest.tar.gz
-enroll explain /path/to/harvest.tar.gz.sops --sops
-enroll explain /path/to/state.json --format json --max-examples 5
-```
-
-**Example output**:
-
-```
-❯ poetry run enroll explain /tmp/syrah.harvest
-Enroll explain: /tmp/syrah.harvest
-Host: syrah.mig5.net (os: debian, pkg: dpkg)
-Enroll: 0.2.3
-
-Inventory
-- Packages: 254
-- Why packages were included (observed_via):
-  - user_installed: 248 – Package appears explicitly installed (as opposed to only pulled in as a dependency).
-  - package_role: 232 – Package was referenced by an enroll packages snapshot/role. (e.g. acl, acpid, adduser)
-  - systemd_unit: 22 – Package is associated with a systemd unit that was harvested. (e.g. postfix.service, tor.service, apparmor.service)
-
-Roles collected
-- users: 1 user(s), 1 file(s), 0 excluded
-- services: 19 unit(s), 111 file(s), 6 excluded
-- packages: 232 package snapshot(s), 41 file(s), 0 excluded
-- apt_config: 26 file(s), 7 dir(s), 10 excluded
-- dnf_config: 0 file(s), 0 dir(s), 0 excluded
-- etc_custom: 70 file(s), 20 dir(s), 0 excluded
-- usr_local_custom: 35 file(s), 1 dir(s), 0 excluded
-- extra_paths: 0 file(s), 0 dir(s), 0 excluded
-
-Why files were included (managed_files.reason)
-- custom_unowned (179): A file not owned by any package (often custom/operator-managed).. Examples: /etc/apparmor.d/local/lsb_release, /etc/apparmor.d/local/nvidia_modprobe, /etc/apparmor.d/local/sbin.dhclient
-- usr_local_bin_script (35): Executable scripts under /usr/local/bin (often operator-installed).. Examples: /usr/local/bin/check_firewall, /usr/local/bin/awslogs
-- apt_keyring (13): Repository signing key material used by APT.. Examples: /etc/apt/keyrings/openvpn-repo-public.asc, /etc/apt/trusted.gpg, /etc/apt/trusted.gpg.d/deb.torproject.org-keyring.gpg
-- modified_conffile (10): A package-managed conffile differs from the packaged/default version.. Examples: /etc/dnsmasq.conf, /etc/ssh/moduli, /etc/tor/torrc
-- logrotate_snippet (9): logrotate snippets/configs referenced in system configuration.. Examples: /etc/logrotate.d/rsyslog, /etc/logrotate.d/tor, /etc/logrotate.d/apt
-- apt_config (7): APT configuration affecting package installation and repository behavior.. Examples: /etc/apt/apt.conf.d/01autoremove, /etc/apt/apt.conf.d/20listchanges, /etc/apt/apt.conf.d/70debconf
-[...]
-```
-
 ---
 
 ## Sensitive data
@@ -399,6 +354,67 @@ enroll diff   --old /path/to/golden/harvest   --new /path/to/new/harvest   --web
 ```
 
 `diff` mode also supports email sending and text or markdown format, as well as `--exit-code` mode to trigger a return code of 2 (useful for crons or CI)
+
+---
+
+## Explain
+
+### Explain a harvest
+
+All of these do the same thing:
+
+```bash
+enroll explain /path/to/state.json
+enroll explain /path/to/bundle_dir
+enroll explain /path/to/harvest.tar.gz
+```
+
+### Explain a SOPS-encrypted harvest
+
+```bash
+enroll explain /path/to/harvest.tar.gz.sops --sops
+```
+
+### Explain with JSON output and more examples
+
+```bash
+enroll explain /path/to/state.json --format json --max-examples 25
+```
+
+### Example output
+
+```
+❯ enroll explain /tmp/syrah.harvest
+Enroll explain: /tmp/syrah.harvest
+Host: syrah.mig5.net (os: debian, pkg: dpkg)
+Enroll: 0.2.3
+
+Inventory
+- Packages: 254
+- Why packages were included (observed_via):
+  - user_installed: 248 – Package appears explicitly installed (as opposed to only pulled in as a dependency).
+  - package_role: 232 – Package was referenced by an enroll packages snapshot/role. (e.g. acl, acpid, adduser)
+  - systemd_unit: 22 – Package is associated with a systemd unit that was harvested. (e.g. postfix.service, tor.service, apparmor.service)
+
+Roles collected
+- users: 1 user(s), 1 file(s), 0 excluded
+- services: 19 unit(s), 111 file(s), 6 excluded
+- packages: 232 package snapshot(s), 41 file(s), 0 excluded
+- apt_config: 26 file(s), 7 dir(s), 10 excluded
+- dnf_config: 0 file(s), 0 dir(s), 0 excluded
+- etc_custom: 70 file(s), 20 dir(s), 0 excluded
+- usr_local_custom: 35 file(s), 1 dir(s), 0 excluded
+- extra_paths: 0 file(s), 0 dir(s), 0 excluded
+
+Why files were included (managed_files.reason)
+- custom_unowned (179): A file not owned by any package (often custom/operator-managed).. Examples: /etc/apparmor.d/local/lsb_release, /etc/apparmor.d/local/nvidia_modprobe, /etc/apparmor.d/local/sbin.dhclient
+- usr_local_bin_script (35): Executable scripts under /usr/local/bin (often operator-installed).. Examples: /usr/local/bin/check_firewall, /usr/local/bin/awslogs
+- apt_keyring (13): Repository signing key material used by APT.. Examples: /etc/apt/keyrings/openvpn-repo-public.asc, /etc/apt/trusted.gpg, /etc/apt/trusted.gpg.d/deb.torproject.org-keyring.gpg
+- modified_conffile (10): A package-managed conffile differs from the packaged/default version.. Examples: /etc/dnsmasq.conf, /etc/ssh/moduli, /etc/tor/torrc
+- logrotate_snippet (9): logrotate snippets/configs referenced in system configuration.. Examples: /etc/logrotate.d/rsyslog, /etc/logrotate.d/tor, /etc/logrotate.d/apt
+- apt_config (7): APT configuration affecting package installation and repository behavior.. Examples: /etc/apt/apt.conf.d/01autoremove, /etc/apt/apt.conf.d/20listchanges, /etc/apt/apt.conf.d/70debconf
+[...]
+```
 
 ---
 
