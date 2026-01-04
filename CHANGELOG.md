@@ -1,3 +1,7 @@
+# 0.3.0
+
+ * Introduce `enroll explain` - a tool to analyze and explain what's in (or not in) a harvest and why.
+
 # 0.2.3
 
  * Introduce --ask-become-pass or -K to support password-required sudo on remote hosts, just like Ansible. It will also fall back to this prompt if a password is required but the arg wasn't passed in.

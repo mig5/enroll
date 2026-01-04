@@ -11,6 +11,7 @@ from typing import Optional
 
 from .cache import new_harvest_cache_dir
 from .diff import compare_harvests, format_report, post_webhook, send_email
+from .explain import explain_state
 from .harvest import harvest
 from .manifest import manifest
 from .remote import remote_harvest, RemoteSudoPasswordRequired
@@ -605,6 +606,32 @@ def main() -> None:
         help="Environment variable containing SMTP password (optional).",
     )
 
+    e = sub.add_parser("explain", help="Explain a harvest state.json")
+    _add_config_args(e)
+    e.add_argument(
+        "harvest",
+        help=(
+            "Harvest input (directory, a path to state.json, a tarball, or a SOPS-encrypted bundle)."
+        ),
+    )
+    e.add_argument(
+        "--sops",
+        action="store_true",
+        help="Treat the input as a SOPS-encrypted bundle (auto-detected if the filename ends with .sops).",
+    )
+    e.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format.",
+    )
+    e.add_argument(
+        "--max-examples",
+        type=int,
+        default=3,
+        help="How many example paths/refs to show per reason.",
+    )
+
     argv = sys.argv[1:]
     cfg_path = _discover_config_path(argv)
     argv = _inject_config_argv(
@@ -616,6 +643,7 @@ def main() -> None:
             "manifest": m,
             "single-shot": s,
             "diff": d,
+            "explain": e,
         },
     )
     args = ap.parse_args(argv)
@@ -702,6 +730,15 @@ def main() -> None:
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
                     )
                     print(path)
+        elif args.cmd == "explain":
+            out = explain_state(
+                args.harvest,
+                sops_mode=bool(getattr(args, "sops", False)),
+                fmt=str(getattr(args, "format", "text")),
+                max_examples=int(getattr(args, "max_examples", 3)),
+            )
+            sys.stdout.write(out)
+
         elif args.cmd == "manifest":
             out_enc = manifest(
                 args.harvest,
