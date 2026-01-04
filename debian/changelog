@@ -1,3 +1,9 @@
+enroll (0.2.3) unstable; urgency=medium
+
+  * Introduce --ask-become-pass or -K to support password-required sudo on remote hosts, just like Ansible. It will also fall back to this prompt if a password is required but the arg wasn't passed in.
+
+ -- Miguel Jacq <mig@mig5.net>  Sun, 04 Jan 2026 20:38:00 +1100
+
 enroll (0.2.2) unstable; urgency=medium
 
   * Fix stat() of parent directory so that we set directory perms correct on --include paths.

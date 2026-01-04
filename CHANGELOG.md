@@ -1,3 +1,7 @@
+# 0.2.3
+
+ * Introduce --ask-become-pass or -K to support password-required sudo on remote hosts, just like Ansible. It will also fall back to this prompt if a password is required but the arg wasn't passed in.
+
 # 0.2.2
 
  * Fix stat() of parent directory so that we set directory perms correct on --include paths.

@@ -1,4 +1,4 @@
-%global upstream_version 0.2.2
+%global upstream_version 0.2.3
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,8 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sun Jan 04 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Introduce --ask-become-pass or -K to support password-required sudo on remote hosts, just like Ansible. It will also fall back to this prompt if a password is required but the arg wasn't passed in.
 * Sat Jan 03 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Fix stat() of parent directory so that we set directory perms correct on --include paths.
 - Set pty for remote calls when sudo is required, to help systems with limits on sudo without pty
