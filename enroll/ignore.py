@@ -100,6 +100,9 @@ class IgnorePolicy:
         # Always ignore plain *.log files (rarely useful as config, often noisy).
         if path.endswith(".log"):
             return "log_file"
+        # Ignore editor/backup files that end with a trailing tilde.
+        if path.endswith("~"):
+            return "tilde_backup"
 
         if not self.dangerous:
             for g in self.deny_globs or []:
