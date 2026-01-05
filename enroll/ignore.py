@@ -173,3 +173,45 @@ class IgnorePolicy:
             return "not_directory"
 
         return None
+
+    def deny_reason_link(self, path: str) -> Optional[str]:
+        """Symlink-specific deny logic.
+
+        Symlinks are meaningful configuration state (e.g. Debian-style
+        *-enabled directories). deny_reason() is file-oriented and rejects
+        symlinks as "not_regular_file".
+
+        For symlinks we:
+          - apply the usual deny_globs (unless dangerous)
+          - ensure the path is a symlink and we can readlink() it
+
+        No size checks or content scanning are performed for symlinks.
+        """
+
+        # Keep the same fast-path filename ignores as deny_reason().
+        if path.endswith(".log"):
+            return "log_file"
+        if path.endswith("~"):
+            return "backup_file"
+        if path.startswith("/etc/") and path.endswith("-"):
+            return "backup_file"
+
+        if not self.dangerous:
+            for g in self.deny_globs or []:
+                if fnmatch.fnmatch(path, g):
+                    return "denied_path"
+
+        try:
+            os.lstat(path)
+        except OSError:
+            return "unreadable"
+
+        if not os.path.islink(path):
+            return "not_symlink"
+
+        try:
+            os.readlink(path)
+        except OSError:
+            return "unreadable"
+
+        return None

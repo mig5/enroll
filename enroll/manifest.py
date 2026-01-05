@@ -406,6 +406,20 @@ def _build_managed_files_var(
     return out
 
 
+def _build_managed_links_var(
+    managed_links: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Convert enroll managed_links into an Ansible-friendly list of dicts."""
+    out: List[Dict[str, Any]] = []
+    for ml in managed_links or []:
+        dest = ml.get("path") or ""
+        src = ml.get("target") or ""
+        if not dest or not src:
+            continue
+        out.append({"dest": dest, "src": src})
+    return out
+
+
 def _render_generic_files_tasks(
     var_prefix: str, *, include_restart_notify: bool
 ) -> str:
@@ -495,6 +509,14 @@ def _render_generic_files_tasks(
       | selectattr('kind', 'equalto', 'copy')
       | list }}}}
   notify: "{{{{ item.notify | default([]) }}}}"
+
+- name: Ensure managed symlinks exist
+  ansible.builtin.file:
+    src: "{{{{ item.src }}}}"
+    dest: "{{{{ item.dest }}}}"
+    state: link
+    force: true
+  loop: "{{{{ {var_prefix}_managed_links | default([]) }}}}"
 """
 
 
@@ -1652,6 +1674,7 @@ User-requested extra file harvesting.
         pkgs = svc.get("packages", []) or []
         managed_files = svc.get("managed_files", []) or []
         managed_dirs = svc.get("managed_dirs", []) or []
+        managed_links = svc.get("managed_links", []) or []
 
         role_dir = os.path.join(roles_root, role)
         _write_role_scaffold(role_dir)
@@ -1696,6 +1719,8 @@ User-requested extra file harvesting.
             notify_systemd="Run systemd daemon-reload",
         )
 
+        links_var = _build_managed_links_var(managed_links)
+
         dirs_var = _build_managed_dirs_var(managed_dirs)
 
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
@@ -1704,6 +1729,7 @@ User-requested extra file harvesting.
             f"{var_prefix}_packages": pkgs,
             f"{var_prefix}_managed_files": files_var,
             f"{var_prefix}_managed_dirs": dirs_var,
+            f"{var_prefix}_managed_links": links_var,
             f"{var_prefix}_manage_unit": True,
             f"{var_prefix}_systemd_enabled": bool(enabled_at_harvest),
             f"{var_prefix}_systemd_state": desired_state,
@@ -1719,6 +1745,7 @@ User-requested extra file harvesting.
                     f"{var_prefix}_packages": [],
                     f"{var_prefix}_managed_files": [],
                     f"{var_prefix}_managed_dirs": [],
+                    f"{var_prefix}_managed_links": [],
                     f"{var_prefix}_manage_unit": False,
                     f"{var_prefix}_systemd_enabled": False,
                     f"{var_prefix}_systemd_state": "stopped",
@@ -1804,6 +1831,9 @@ Generated from `{unit}`.
 ## Managed files
 {os.linesep.join("- " + mf["path"] + " (" + mf["reason"] + ")" for mf in managed_files) or "- (none)"}
 
+## Managed symlinks
+{os.linesep.join("- " + ml["path"] + " -> " + ml["target"] + " (" + ml.get("reason", "") + ")" for ml in managed_links) or "- (none)"}
+
 ## Excluded (possible secrets / unsafe)
 {os.linesep.join("- " + e["path"] + " (" + e["reason"] + ")" for e in excluded) or "- (none)"}
 
@@ -1823,6 +1853,7 @@ Generated from `{unit}`.
         pkg = pr.get("package") or ""
         managed_files = pr.get("managed_files", []) or []
         managed_dirs = pr.get("managed_dirs", []) or []
+        managed_links = pr.get("managed_links", []) or []
 
         role_dir = os.path.join(roles_root, role)
         _write_role_scaffold(role_dir)
@@ -1864,6 +1895,8 @@ Generated from `{unit}`.
             notify_systemd="Run systemd daemon-reload",
         )
 
+        links_var = _build_managed_links_var(managed_links)
+
         dirs_var = _build_managed_dirs_var(managed_dirs)
 
         jt_map = _yaml_load_mapping(jt_vars) if jt_vars.strip() else {}
@@ -1871,6 +1904,7 @@ Generated from `{unit}`.
             f"{var_prefix}_packages": pkgs,
             f"{var_prefix}_managed_files": files_var,
             f"{var_prefix}_managed_dirs": dirs_var,
+            f"{var_prefix}_managed_links": links_var,
         }
         base_vars = _merge_mappings_overwrite(base_vars, jt_map)
 
@@ -1881,6 +1915,7 @@ Generated from `{unit}`.
                     f"{var_prefix}_packages": [],
                     f"{var_prefix}_managed_files": [],
                     f"{var_prefix}_managed_dirs": [],
+                    f"{var_prefix}_managed_links": [],
                 },
             )
             _write_hostvars(out_dir, fqdn or "", role, base_vars)
@@ -1922,6 +1957,9 @@ Generated for package `{pkg}`.
 
 ## Managed files
 {os.linesep.join("- " + mf["path"] + " (" + mf["reason"] + ")" for mf in managed_files) or "- (none)"}
+
+## Managed symlinks
+{os.linesep.join("- " + ml["path"] + " -> " + ml["target"] + " (" + ml.get("reason", "") + ")" for ml in managed_links) or "- (none)"}
 
 ## Excluded (possible secrets / unsafe)
 {os.linesep.join("- " + e["path"] + " (" + e["reason"] + ")" for e in excluded) or "- (none)"}

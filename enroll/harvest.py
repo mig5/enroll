@@ -36,6 +36,19 @@ class ManagedFile:
 
 
 @dataclass
+class ManagedLink:
+    """A symlink we want to materialise on the target host.
+
+    For configuration enablement patterns (e.g. sites-enabled), the symlink is
+    meaningful state even when the link target is captured elsewhere.
+    """
+
+    path: str
+    target: str
+    reason: str
+
+
+@dataclass
 class ManagedDir:
     path: str
     owner: str
@@ -61,6 +74,7 @@ class ServiceSnapshot:
     condition_result: Optional[str]
     managed_dirs: List[ManagedDir] = field(default_factory=list)
     managed_files: List[ManagedFile] = field(default_factory=list)
+    managed_links: List[ManagedLink] = field(default_factory=list)
     excluded: List[ExcludedFile] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
@@ -71,6 +85,7 @@ class PackageSnapshot:
     role_name: str
     managed_dirs: List[ManagedDir] = field(default_factory=list)
     managed_files: List[ManagedFile] = field(default_factory=list)
+    managed_links: List[ManagedLink] = field(default_factory=list)
     excluded: List[ExcludedFile] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
@@ -124,12 +139,13 @@ class UsrLocalCustomSnapshot:
 @dataclass
 class ExtraPathsSnapshot:
     role_name: str
-    include_patterns: List[str]
-    exclude_patterns: List[str]
-    managed_dirs: List[ManagedDir]
-    managed_files: List[ManagedFile]
-    excluded: List[ExcludedFile]
-    notes: List[str]
+    include_patterns: List[str] = field(default_factory=list)
+    exclude_patterns: List[str] = field(default_factory=list)
+    managed_dirs: List[ManagedDir] = field(default_factory=list)
+    managed_files: List[ManagedFile] = field(default_factory=list)
+    managed_links: List[ManagedLink] = field(default_factory=list)
+    excluded: List[ExcludedFile] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
 
 
 ALLOWED_UNOWNED_EXTS = {
@@ -211,6 +227,7 @@ def _merge_parent_dirs(
     managed_files: List[ManagedFile],
     *,
     policy: IgnorePolicy,
+    extra_paths: Optional[List[str]] = None,
 ) -> List[ManagedDir]:
     """Ensure parent directories for managed_files are present in managed_dirs.
 
@@ -226,8 +243,18 @@ def _merge_parent_dirs(
         d.path: d for d in (existing_dirs or []) if d.path
     }
 
-    for mf in managed_files or []:
-        p = str(mf.path or "").rstrip("/")
+    def _iter_paths() -> List[str]:
+        paths: List[str] = []
+        for mf in managed_files or []:
+            if mf and mf.path:
+                paths.append(str(mf.path))
+        for p in extra_paths or []:
+            if p:
+                paths.append(str(p))
+        return paths
+
+    for p0 in _iter_paths():
+        p = str(p0 or "").rstrip("/")
         if not p:
             continue
         dpath = os.path.dirname(p)
@@ -410,6 +437,72 @@ def _capture_file(
             reason=reason,
         )
     )
+    _mark_seen()
+    return True
+
+
+def _capture_link(
+    *,
+    role_name: str,
+    abs_path: str,
+    reason: str,
+    policy: IgnorePolicy,
+    path_filter: PathFilter,
+    managed_out: List[ManagedLink],
+    excluded_out: List[ExcludedFile],
+    seen_role: Optional[Set[str]] = None,
+    seen_global: Optional[Set[str]] = None,
+) -> bool:
+    """Try to capture a symlink into the manifest.
+
+    NOTE: Symlinks are *not* copied into artifacts; we record their link target
+    and materialise them via ansible.builtin.file state=link.
+    """
+
+    if seen_global is not None and abs_path in seen_global:
+        return False
+    if seen_role is not None and abs_path in seen_role:
+        return False
+
+    def _mark_seen() -> None:
+        if seen_role is not None:
+            seen_role.add(abs_path)
+        if seen_global is not None:
+            seen_global.add(abs_path)
+
+    if path_filter.is_excluded(abs_path):
+        excluded_out.append(ExcludedFile(path=abs_path, reason="user_excluded"))
+        _mark_seen()
+        return False
+
+    deny_link = getattr(policy, "deny_reason_link", None)
+    if callable(deny_link):
+        deny = deny_link(abs_path)
+    else:
+        # Fallback: apply deny_reason() but treat "not_regular_file" as acceptable
+        # for symlinks.
+        deny = policy.deny_reason(abs_path)
+        if deny in ("not_regular_file", "not_file", "not_regular"):
+            deny = None
+
+    if deny:
+        excluded_out.append(ExcludedFile(path=abs_path, reason=deny))
+        _mark_seen()
+        return False
+
+    if not os.path.islink(abs_path):
+        excluded_out.append(ExcludedFile(path=abs_path, reason="not_symlink"))
+        _mark_seen()
+        return False
+
+    try:
+        target = os.readlink(abs_path)
+    except OSError:
+        excluded_out.append(ExcludedFile(path=abs_path, reason="unreadable"))
+        _mark_seen()
+        return False
+
+    managed_out.append(ManagedLink(path=abs_path, target=target, reason=reason))
     _mark_seen()
     return True
 
@@ -1346,10 +1439,71 @@ def harvest(
                 package=pkg,
                 role_name=role,
                 managed_files=managed,
+                managed_links=[],
                 excluded=excluded,
                 notes=notes,
             )
         )
+
+    # -------------------------
+    # Web server enablement symlinks (nginx/apache2)
+    #
+    # Debian-style nginx/apache2 configurations often use *-enabled directories
+    # populated with symlinks pointing back into *-available. The symlinks
+    # represent the enablement state and are important to reproduce.
+    #
+    # We only harvest these when the relevant service/package has already been
+    # detected in this run (i.e. we have a role that will manage nginx/apache2).
+    # -------------------------
+
+    def _find_role_snapshot(role_name: str):
+        for s in service_snaps:
+            if s.role_name == role_name:
+                return s
+        for p in pkg_snaps:
+            if p.role_name == role_name:
+                return p
+        return None
+
+    def _capture_enabled_symlinks(role_name: str, dirs: List[str]) -> None:
+        snap = _find_role_snapshot(role_name)
+        if snap is None:
+            return
+
+        role_seen = seen_by_role.setdefault(role_name, set())
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue
+            for pth in sorted(glob.glob(os.path.join(d, "*"))):
+                if not os.path.islink(pth):
+                    continue
+                _capture_link(
+                    role_name=role_name,
+                    abs_path=pth,
+                    reason="enabled_symlink",
+                    policy=policy,
+                    path_filter=path_filter,
+                    managed_out=snap.managed_links,
+                    excluded_out=snap.excluded,
+                    seen_role=role_seen,
+                    seen_global=captured_global,
+                )
+
+    _capture_enabled_symlinks(
+        "nginx",
+        [
+            "/etc/nginx/modules-enabled",
+            "/etc/nginx/sites-enabled",
+        ],
+    )
+    _capture_enabled_symlinks(
+        "apache2",
+        [
+            "/etc/apache2/conf-enabled",
+            "/etc/apache2/mods-enabled",
+            "/etc/apache2/sites-enabled",
+        ],
+    )
 
     # -------------------------
     # Users role (non-system users)
@@ -2001,11 +2155,17 @@ def harvest(
     )
     for s in service_snaps:
         s.managed_dirs = _merge_parent_dirs(
-            s.managed_dirs, s.managed_files, policy=policy
+            s.managed_dirs,
+            s.managed_files,
+            policy=policy,
+            extra_paths=[ml.path for ml in (s.managed_links or [])],
         )
     for p in pkg_snaps:
         p.managed_dirs = _merge_parent_dirs(
-            p.managed_dirs, p.managed_files, policy=policy
+            p.managed_dirs,
+            p.managed_files,
+            policy=policy,
+            extra_paths=[ml.path for ml in (p.managed_links or [])],
         )
 
     if apt_config_snapshot:

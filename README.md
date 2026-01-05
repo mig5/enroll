@@ -11,8 +11,9 @@
 - Captures config that has **changed from packaged defaults** where possible (e.g dpkg conffile hashes + package md5sums when available).
 - Also captures **service-relevant custom/unowned files** under `/etc/<service>/...` (e.g. drop-in config includes).
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
-- Captures non-system users and their SSH public keys.
+- Captures non-system users and their SSH public keys and any .bashrc or .bash_aliases or .profile files that deviate from the skel defaults.
 - Captures miscellaneous `/etc` files it can't attribute to a package and installs them in an `etc_custom` role.
+- Captures symlinks in common applications that rely on them, e.g apache2/nginx 'sites-enabled'
 - Ditto for /usr/local/bin (for non-binary files) and /usr/local/etc
 - Avoids trying to start systemd services that were detected as inactive during harvest.
 
