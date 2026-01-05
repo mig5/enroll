@@ -30,7 +30,7 @@ poetry run \
 	  --old "${BUNDLE_DIR}" \
 	  --new "${BUNDLE_DIR}2" \
 	  --format json | jq
-DEBIAN_FRONTEND=noninteractive apt-get remove --purge cowsay
+DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge cowsay
 
 # Ansible test
 builtin cd "${ANSIBLE_DIR}"
