@@ -9,6 +9,10 @@ BUNDLE_DIR="/tmp/bundle"
 ANSIBLE_DIR="/tmp/ansible"
 rm -rf "${BUNDLE_DIR}" "${ANSIBLE_DIR}"
 
+# Install something that has symlinks like apache2,
+# to extend the manifests that will be linted later
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2
+
 # Generate data
 poetry run \
 	enroll single-shot \
@@ -21,8 +25,10 @@ poetry run \
 poetry run \
         enroll explain "${BUNDLE_DIR}" --format json | jq
 
-# Install something, harvest again and diff the harvests
+# Install/remove something, harvest again and diff the harvests
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cowsay
+DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y apache2
+
 poetry run \
 	enroll harvest --out "${BUNDLE_DIR}2"
 poetry run \
