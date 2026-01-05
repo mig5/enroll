@@ -819,7 +819,12 @@ def _manifest_from_bundle_dir(
                     group = str(u.get("primary_group") or owner)
                     break
 
-            mode = "0600" if mf.get("reason") == "authorized_keys" else "0644"
+            # Prefer the harvested file mode so we preserve any deliberate
+            # permissions (e.g. 0600 for certain dotfiles). For authorized_keys,
+            # enforce 0600 regardless.
+            mode = mf.get("mode") or "0644"
+            if mf.get("reason") == "authorized_keys":
+                mode = "0600"
             ssh_files.append(
                 {
                     "dest": dest,

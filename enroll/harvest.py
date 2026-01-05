@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import time
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Set
@@ -155,6 +156,54 @@ ALLOWED_UNOWNED_EXTS = {
 
 MAX_FILES_CAP = 4000
 MAX_UNOWNED_FILES_PER_ROLE = 500
+
+
+def _files_differ(a: str, b: str, *, max_bytes: int = 2_000_000) -> bool:
+    """Return True if file `a` differs from file `b`.
+
+    Best-effort and conservative:
+      - If `b` (baseline) does not exist or is not a regular file, treat as
+        "different" so we err on the side of capturing user state.
+      - If we can't stat/read either file, treat as "different" (capture will
+        later be filtered via IgnorePolicy).
+      - If files are large, avoid reading them fully.
+    """
+
+    try:
+        st_a = os.stat(a, follow_symlinks=True)
+    except OSError:
+        return True
+
+    # Refuse to do content comparisons on non-regular files.
+    if not stat.S_ISREG(st_a.st_mode):
+        return True
+
+    try:
+        st_b = os.stat(b, follow_symlinks=True)
+    except OSError:
+        return True
+
+    if not stat.S_ISREG(st_b.st_mode):
+        return True
+
+    if st_a.st_size != st_b.st_size:
+        return True
+
+    # If it's unexpectedly big, treat as different to avoid expensive reads.
+    if st_a.st_size > max_bytes:
+        return True
+
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            while True:
+                ca = fa.read(1024 * 64)
+                cb = fb.read(1024 * 64)
+                if ca != cb:
+                    return True
+                if not ca:  # EOF on both
+                    return False
+    except OSError:
+        return True
 
 
 def _merge_parent_dirs(
@@ -1319,6 +1368,18 @@ def harvest(
     users_role_name = "users"
     users_role_seen = seen_by_role.setdefault(users_role_name, set())
 
+    skel_dir = "/etc/skel"
+    # Dotfiles to harvest for non-system users. For the common "skeleton"
+    # files, only capture if the user's copy differs from /etc/skel.
+    skel_dotfiles = [
+        (".bashrc", "user_shell_rc"),
+        (".profile", "user_profile"),
+        (".bash_logout", "user_shell_logout"),
+    ]
+    extra_dotfiles = [
+        (".bash_aliases", "user_shell_aliases"),
+    ]
+
     for u in user_records:
         users_list.append(
             {
@@ -1352,6 +1413,48 @@ def harvest(
                 seen_role=users_role_seen,
                 seen_global=captured_global,
             )
+
+        # Capture common per-user shell dotfiles when they differ from /etc/skel.
+        # These still go through IgnorePolicy and user path filters.
+        home = (u.home or "").rstrip("/")
+        if home and home.startswith("/"):
+            for rel, reason in skel_dotfiles:
+                upath = os.path.join(home, rel)
+                if not os.path.exists(upath):
+                    continue
+                skel_path = os.path.join(skel_dir, rel)
+                if not _files_differ(upath, skel_path, max_bytes=policy.max_file_bytes):
+                    continue
+                _capture_file(
+                    bundle_dir=bundle_dir,
+                    role_name=users_role_name,
+                    abs_path=upath,
+                    reason=reason,
+                    policy=policy,
+                    path_filter=path_filter,
+                    managed_out=users_managed,
+                    excluded_out=users_excluded,
+                    seen_role=users_role_seen,
+                    seen_global=captured_global,
+                )
+
+            # Capture other common per-user shell files unconditionally if present.
+            for rel, reason in extra_dotfiles:
+                upath = os.path.join(home, rel)
+                if not os.path.exists(upath):
+                    continue
+                _capture_file(
+                    bundle_dir=bundle_dir,
+                    role_name=users_role_name,
+                    abs_path=upath,
+                    reason=reason,
+                    policy=policy,
+                    path_filter=path_filter,
+                    managed_out=users_managed,
+                    excluded_out=users_excluded,
+                    seen_role=users_role_seen,
+                    seen_global=captured_global,
+                )
 
     users_snapshot = UsersSnapshot(
         role_name=users_role_name,
