@@ -1,17 +1,21 @@
 [tool.poetry]
 name = "enroll"
-version = "0.3.0"
+version = "0.3.1"
 description = "Enroll a server's running state retrospectively into Ansible"
 authors = ["Miguel Jacq <mig@mig5.net>"]
 license = "GPL-3.0-or-later"
 readme = "README.md"
 packages = [{ include = "enroll" }]
 repository = "https://git.mig5.net/mig5/enroll"
+include = [
+  { path = "enroll/schema/state.schema.json", format = ["sdist", "wheel"] }
+]
 
 [tool.poetry.dependencies]
 python = "^3.10"
 pyyaml = "^6"
 paramiko = ">=3.5"
+jsonschema = "^4.25.1"
 
 [tool.poetry.scripts]
 enroll = "enroll.cli:main"

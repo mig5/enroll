@@ -17,6 +17,7 @@ BuildRequires:  python3-poetry-core
 
 Requires: python3-yaml
 Requires: python3-paramiko
+Requires: python3-jsonschema
 
 # Make sure private repo dependency is pulled in by package name as well.
 Recommends:       jinjaturtle

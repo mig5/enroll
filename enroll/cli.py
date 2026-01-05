@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import json
 import os
 import sys
 import tarfile
@@ -16,6 +17,7 @@ from .harvest import harvest
 from .manifest import manifest
 from .remote import remote_harvest, RemoteSudoPasswordRequired
 from .sopsutil import SopsError, encrypt_file_binary
+from .validate import validate_harvest
 from .version import get_enroll_version
 
 
@@ -632,6 +634,49 @@ def main() -> None:
         help="How many example paths/refs to show per reason.",
     )
 
+    v = sub.add_parser(
+        "validate", help="Validate a harvest bundle (state.json + artifacts)"
+    )
+    _add_config_args(v)
+    v.add_argument(
+        "harvest",
+        help=(
+            "Harvest input (directory, a path to state.json, a tarball, or a SOPS-encrypted bundle)."
+        ),
+    )
+    v.add_argument(
+        "--sops",
+        action="store_true",
+        help="Treat the input as a SOPS-encrypted bundle (auto-detected if the filename ends with .sops).",
+    )
+    v.add_argument(
+        "--schema",
+        help=(
+            "Optional JSON schema source (file path or https:// URL). "
+            "If omitted, uses the schema vendored in the enroll codebase."
+        ),
+    )
+    v.add_argument(
+        "--no-schema",
+        action="store_true",
+        help="Skip JSON schema validation and only perform bundle consistency checks.",
+    )
+    v.add_argument(
+        "--fail-on-warnings",
+        action="store_true",
+        help="Exit non-zero if validation produces warnings.",
+    )
+    v.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format.",
+    )
+    v.add_argument(
+        "--out",
+        help="Write the report to this file instead of stdout.",
+    )
+
     argv = sys.argv[1:]
     cfg_path = _discover_config_path(argv)
     argv = _inject_config_argv(
@@ -644,6 +689,7 @@ def main() -> None:
             "single-shot": s,
             "diff": d,
             "explain": e,
+            "validate": v,
         },
     )
     args = ap.parse_args(argv)
@@ -738,6 +784,33 @@ def main() -> None:
                 max_examples=int(getattr(args, "max_examples", 3)),
             )
             sys.stdout.write(out)
+
+        elif args.cmd == "validate":
+            res = validate_harvest(
+                args.harvest,
+                sops_mode=bool(getattr(args, "sops", False)),
+                schema=getattr(args, "schema", None),
+                no_schema=bool(getattr(args, "no_schema", False)),
+            )
+
+            fmt = str(getattr(args, "format", "text"))
+            if fmt == "json":
+                txt = json.dumps(res.to_dict(), indent=2, sort_keys=True) + "\n"
+            else:
+                txt = res.to_text()
+
+            out_path = getattr(args, "out", None)
+            if out_path:
+                p = Path(out_path).expanduser()
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(txt, encoding="utf-8")
+            else:
+                sys.stdout.write(txt)
+
+            if res.errors:
+                raise SystemExit(1)
+            if res.warnings and bool(getattr(args, "fail_on_warnings", False)):
+                raise SystemExit(1)
 
         elif args.cmd == "manifest":
             out_enc = manifest(

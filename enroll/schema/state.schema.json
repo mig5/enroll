@@ -1,0 +1,712 @@
+{
+  "$defs": {
+    "AptConfigSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RoleCommon"
+        },
+        {
+          "properties": {
+            "role_name": {
+              "const": "apt_config"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "DnfConfigSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RoleCommon"
+        },
+        {
+          "properties": {
+            "role_name": {
+              "const": "dnf_config"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "EtcCustomSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RoleCommon"
+        },
+        {
+          "properties": {
+            "role_name": {
+              "const": "etc_custom"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ExcludedFile": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "pattern": "^/.*",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "user_excluded",
+            "unreadable",
+	    "backup_file",
+            "log_file",
+            "denied_path",
+            "too_large",
+            "not_regular_file",
+            "not_symlink",
+            "binary_like",
+            "sensitive_content"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "ExtraPathsSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RoleCommon"
+        },
+        {
+          "properties": {
+            "exclude_patterns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "include_patterns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "role_name": {
+              "const": "extra_paths"
+            }
+          },
+          "required": [
+            "include_patterns",
+            "exclude_patterns"
+          ],
+          "type": "object"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "InstalledPackageInstance": {
+      "additionalProperties": false,
+      "properties": {
+        "arch": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "arch"
+      ],
+      "type": "object"
+    },
+    "ManagedDir": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "mode": {
+          "pattern": "^[0-7]{4}$",
+          "type": "string"
+        },
+        "owner": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^/.*",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "parent_of_managed_file",
+            "user_include_dir"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "owner",
+        "group",
+        "mode",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "ManagedFile": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "mode": {
+          "pattern": "^[0-7]{4}$",
+          "type": "string"
+        },
+        "owner": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^/.*",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "apt_config",
+            "apt_keyring",
+            "apt_signed_by_keyring",
+            "apt_source",
+            "authorized_keys",
+            "cron_snippet",
+            "custom_specific_path",
+            "custom_unowned",
+            "dnf_config",
+            "logrotate_snippet",
+            "modified_conffile",
+            "modified_packaged_file",
+            "related_timer",
+            "rpm_gpg_key",
+            "ssh_public_key",
+            "system_cron",
+            "system_firewall",
+            "system_logrotate",
+            "system_modprobe",
+            "system_mounts",
+            "system_network",
+            "system_rc",
+            "system_security",
+            "system_sysctl",
+            "systemd_dropin",
+            "systemd_envfile",
+            "user_include",
+            "user_profile",
+            "user_shell_aliases",
+            "user_shell_logout",
+            "user_shell_rc",
+            "usr_local_bin_script",
+            "usr_local_etc_custom",
+            "yum_conf",
+            "yum_config",
+            "yum_repo"
+          ],
+          "type": "string"
+        },
+        "src_rel": {
+          "minLength": 1,
+          "pattern": "^[^/].*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "src_rel",
+        "owner",
+        "group",
+        "mode",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "ManagedLink": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/.*"
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "enabled_symlink"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "target",
+        "reason"
+      ]
+    },
+    "ObservedVia": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "user_installed"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "systemd_unit"
+            },
+            "ref": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "package_role"
+            },
+            "ref": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PackageInventoryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "arches": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "installations": {
+          "items": {
+            "$ref": "#/$defs/InstalledPackageInstance"
+          },
+          "type": "array"
+        },
+        "observed_via": {
+          "items": {
+            "$ref": "#/$defs/ObservedVia"
+          },
+          "type": "array"
+        },
+        "roles": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "arches",
+        "installations",
+        "observed_via",
+        "roles"
+      ],
+      "type": "object"
+    },
+    "PackageSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RoleCommon"
+        },
+        {
+          "properties": {
+            "package": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "package"
+          ],
+          "type": "object"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "RoleCommon": {
+      "properties": {
+        "excluded": {
+          "items": {
+            "$ref": "#/$defs/ExcludedFile"
+          },
+          "type": "array"
+        },
+        "managed_dirs": {
+          "items": {
+            "$ref": "#/$defs/ManagedDir"
+          },
+          "type": "array"
+        },
+        "managed_files": {
+          "items": {
+            "$ref": "#/$defs/ManagedFile"
+          },
+          "type": "array"
+        },
+        "managed_links": {
+          "items": {
+            "$ref": "#/$defs/ManagedLink"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "role_name": {
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role_name",
+        "managed_dirs",
+        "managed_files",
+        "excluded",
+        "notes"
+      ],
+      "type": "object"
+    },
+    "ServiceSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RoleCommon"
+        },
+        {
+          "properties": {
+            "active_state": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "condition_result": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packages": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "role_name": {
+              "minLength": 1,
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "type": "string"
+            },
+            "sub_state": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unit": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "unit_file_state": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "unit",
+            "packages",
+            "active_state",
+            "sub_state",
+            "unit_file_state",
+            "condition_result"
+          ],
+          "type": "object"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "UserEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "gecos": {
+          "type": "string"
+        },
+        "gid": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "home": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "primary_group": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "shell": {
+          "type": "string"
+        },
+        "supplementary_groups": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "uid": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "uid",
+        "gid",
+        "gecos",
+        "home",
+        "shell",
+        "primary_group",
+        "supplementary_groups"
+      ],
+      "type": "object"
+    },
+    "UsersSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RoleCommon"
+        },
+        {
+          "properties": {
+            "role_name": {
+              "const": "users"
+            },
+            "users": {
+              "items": {
+                "$ref": "#/$defs/UserEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "users"
+          ],
+          "type": "object"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "UsrLocalCustomSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RoleCommon"
+        },
+        {
+          "properties": {
+            "role_name": {
+              "const": "usr_local_custom"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  },
+  "$id": "https://enroll.sh/schema/state.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "enroll": {
+      "additionalProperties": false,
+      "properties": {
+        "harvest_time": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "harvest_time"
+      ],
+      "type": "object"
+    },
+    "host": {
+      "additionalProperties": false,
+      "properties": {
+        "hostname": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "os": {
+          "enum": [
+            "debian",
+            "redhat",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "os_release": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "pkg_backend": {
+          "enum": [
+            "dpkg",
+            "rpm"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "hostname",
+        "os",
+        "pkg_backend",
+        "os_release"
+      ],
+      "type": "object"
+    },
+    "inventory": {
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PackageInventoryEntry"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "packages"
+      ],
+      "type": "object"
+    },
+    "roles": {
+      "additionalProperties": false,
+      "properties": {
+        "apt_config": {
+          "$ref": "#/$defs/AptConfigSnapshot"
+        },
+        "dnf_config": {
+          "$ref": "#/$defs/DnfConfigSnapshot"
+        },
+        "etc_custom": {
+          "$ref": "#/$defs/EtcCustomSnapshot"
+        },
+        "extra_paths": {
+          "$ref": "#/$defs/ExtraPathsSnapshot"
+        },
+        "packages": {
+          "items": {
+            "$ref": "#/$defs/PackageSnapshot"
+          },
+          "type": "array"
+        },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/ServiceSnapshot"
+          },
+          "type": "array"
+        },
+        "users": {
+          "$ref": "#/$defs/UsersSnapshot"
+        },
+        "usr_local_custom": {
+          "$ref": "#/$defs/UsrLocalCustomSnapshot"
+        }
+      },
+      "required": [
+        "users",
+        "services",
+        "packages",
+        "apt_config",
+        "dnf_config",
+        "etc_custom",
+        "usr_local_custom",
+        "extra_paths"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "enroll",
+    "host",
+    "inventory",
+    "roles"
+  ],
+  "title": "Enroll harvest state.json schema (latest)",
+  "type": "object"
+}

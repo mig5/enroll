@@ -157,6 +157,62 @@ Output can be provided in plaintext or json.
 
 ---
 
+### `enroll validate`
+
+Validates a harvest by checking:
+
+ * state.json exists and is valid JSON
+ * state.json validates against a JSON Schema (by default the vendored one)
+ * Every `managed_file` entry has a corresponding artifact at: `artifacts/<role_name>/<src_rel>`
+
+It also warns if there are **unreferenced files** sitting in `artifacts/`.
+
+#### Schema location + overrides
+
+The master schema lives at: `enroll/schema/state.schema.json`.
+
+You can override with a local file or URL:
+
+```
+enroll validate /path/to/harvest --schema ./state.schema.json
+enroll validate /path/to/harvest --schema https://enroll.sh/schema/state.schema.json
+```
+
+Or skip schema checks (still does artifact consistency checks):
+
+```
+enroll validate /path/to/harvest --no-schema
+```
+
+#### CLI usage examples
+
+Validate a local harvest:
+
+```
+enroll validate ./harvest
+```
+
+Validate a harvest tarball or a sops bundle:
+
+```
+enroll validate ./harvest.tar.gz
+enroll validate ./harvest.sops --sops
+```
+
+JSON output + write to file:
+
+```
+enroll validate ./harvest --format json --out validate.json
+```
+
+Return exit code 1 for any warnings, not just errors (useful for CI):
+
+```
+enroll validate ./harvest --fail-on-warnings
+```
+
+---
+
 ## Sensitive data
 
 By default, `enroll` does **not** assume how you handle secrets in Ansible. It will attempt to avoid harvesting likely sensitive data (private keys, passwords, tokens, etc.). This can mean it skips some config files you may ultimately want to manage.

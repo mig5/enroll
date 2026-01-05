@@ -1,3 +1,7 @@
+# 0.4.0
+
+ * Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.
+
 # 0.3.0
 
  * Introduce `enroll explain` - a tool to analyze and explain what's in (or not in) a harvest and why.
@@ -17,7 +21,7 @@
 
 # 0.2.1
 
- * Don't accidentally add extra_paths role to usr_local_custom list, resulting in extra_paths appearing twice in manifested playbook
+ * Don't accidentally add `extra_paths` role to `usr_local_custom` list, resulting in `extra_paths` appearing twice in manifested playbook
  * Ensure directories in the tree of anything included with --include are defined in the state and manifest so we make dirs before we try to create files
 
 # 0.2.0
@@ -38,8 +42,8 @@
 # 0.1.5
 
  * Consolidate logrotate and cron files into their main service/package roles if they exist.
- * Standardise on MAX_FILES_CAP in one place
- * Manage apt stuff in its own role, not in etc_custom
+ * Standardise on `MAX_FILES_CAP` in one place
+ * Manage apt stuff in its own role, not in `etc_custom`
 
 # 0.1.4
 
