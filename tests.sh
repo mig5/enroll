@@ -27,9 +27,10 @@ poetry run \
 	enroll harvest --out "${BUNDLE_DIR}2"
 poetry run \
 	enroll diff \
-	--old "${BUNDLE_DIR}" \
-	--new "${BUNDLE_DIR}2" \
-	--format json | jq
+	  --old "${BUNDLE_DIR}" \
+	  --new "${BUNDLE_DIR}2" \
+	  --format json | jq
+DEBIAN_FRONTEND=noninteractive apt-get remove --purge cowsay
 
 # Ansible test
 builtin cd "${ANSIBLE_DIR}"

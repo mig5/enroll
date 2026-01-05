@@ -129,3 +129,50 @@ def test_rpm_config_files_and_modified_files_parsing(monkeypatch):
         rpm, "_run", lambda cmd, allow_fail=False, merge_err=False: (1, out)
     )
     assert rpm.rpm_modified_files("mypkg") == {"/etc/foo.conf", "/etc/bar"}
+
+
+def test_list_manual_packages_uses_yum_fallback(monkeypatch):
+    # No dnf, yum present.
+    monkeypatch.setattr(
+        rpm.shutil, "which", lambda exe: "/usr/bin/yum" if exe == "yum" else None
+    )
+
+    def fake_run(cmd, allow_fail=False, merge_err=False):
+        assert cmd[:3] == ["yum", "-q", "history"]
+        return 0, "Installed Packages\nvim-enhanced.x86_64\nhtop\n"
+
+    monkeypatch.setattr(rpm, "_run", fake_run)
+
+    assert rpm.list_manual_packages() == ["htop", "vim-enhanced"]
+
+
+def test_list_installed_packages_parses_epoch_and_sorts(monkeypatch):
+    out = (
+        "bash\t0\t5.2.26\t1.el9\tx86_64\n"
+        "bash\t1\t5.2.26\t1.el9\taarch64\n"
+        "coreutils\t(none)\t9.1\t2.el9\tx86_64\n"
+    )
+    monkeypatch.setattr(
+        rpm, "_run", lambda cmd, allow_fail=False, merge_err=False: (0, out)
+    )
+    pkgs = rpm.list_installed_packages()
+    assert pkgs["bash"][0]["arch"] == "aarch64"  # sorted by arch then version
+    assert pkgs["bash"][0]["version"].startswith("1:")
+    assert pkgs["coreutils"][0]["version"] == "9.1-2.el9"
+
+
+def test_rpm_config_files_returns_empty_on_failure(monkeypatch):
+    monkeypatch.setattr(
+        rpm, "_run", lambda cmd, allow_fail=False, merge_err=False: (1, "")
+    )
+    assert rpm.rpm_config_files("missing") == set()
+
+
+def test_rpm_owner_strips_epoch_prefix_when_present(monkeypatch):
+    # Defensive: rpm output might include epoch-like token.
+    monkeypatch.setattr(
+        rpm,
+        "_run",
+        lambda cmd, allow_fail=False, merge_err=False: (0, "1:bash\n"),
+    )
+    assert rpm.rpm_owner("/bin/bash") == "bash"

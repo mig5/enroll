@@ -914,56 +914,6 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                     )
-        elif args.cmd == "diff":
-            report, has_changes = compare_harvests(
-                args.old, args.new, sops_mode=bool(getattr(args, "sops", False))
-            )
-
-            rendered = format_report(report, fmt=str(args.format))
-            if args.out:
-                Path(args.out).expanduser().write_text(rendered, encoding="utf-8")
-            else:
-                print(rendered, end="")
-
-            do_notify = bool(has_changes or getattr(args, "notify_always", False))
-
-            if do_notify and getattr(args, "webhook", None):
-                wf = str(getattr(args, "webhook_format", "json"))
-                body = format_report(report, fmt=wf).encode("utf-8")
-                headers = {"User-Agent": "enroll"}
-                if wf == "json":
-                    headers["Content-Type"] = "application/json"
-                else:
-                    headers["Content-Type"] = "text/plain; charset=utf-8"
-                for hv in getattr(args, "webhook_header", []) or []:
-                    if ":" not in hv:
-                        raise SystemExit(
-                            "error: --webhook-header must be in the form 'K:V'"
-                        )
-                    k, v = hv.split(":", 1)
-                    headers[k.strip()] = v.strip()
-                status, _ = post_webhook(str(args.webhook), body, headers=headers)
-                if status and status >= 400:
-                    raise SystemExit(f"error: webhook returned HTTP {status}")
-
-            if do_notify and (getattr(args, "email_to", []) or []):
-                subject = getattr(args, "email_subject", None) or "enroll diff report"
-                smtp_password = None
-                pw_env = getattr(args, "smtp_password_env", None)
-                if pw_env:
-                    smtp_password = os.environ.get(str(pw_env))
-                send_email(
-                    to_addrs=list(getattr(args, "email_to", []) or []),
-                    subject=str(subject),
-                    body=rendered,
-                    from_addr=getattr(args, "email_from", None),
-                    smtp=getattr(args, "smtp", None),
-                    smtp_user=getattr(args, "smtp_user", None),
-                    smtp_password=smtp_password,
-                )
-
-            if getattr(args, "exit_code", False) and has_changes:
-                raise SystemExit(2)
     except RemoteSudoPasswordRequired:
         raise SystemExit(
             "error: remote sudo requires a password. Re-run with --ask-become-pass."
