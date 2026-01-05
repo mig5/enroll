@@ -25,11 +25,18 @@ poetry run \
 poetry run \
         enroll explain "${BUNDLE_DIR}" --format json | jq
 
+# Validate
+poetry run \
+	enroll validate --fail-on-warnings "${BUNDLE_DIR}"
+
 # Install/remove something, harvest again and diff the harvests
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cowsay
-
 poetry run \
 	enroll harvest --out "${BUNDLE_DIR}2"
+# Validate
+poetry run \
+	enroll validate --fail-on-warnings "${BUNDLE_DIR}2"
+# Diff
 poetry run \
 	enroll diff \
 	  --old "${BUNDLE_DIR}" \
