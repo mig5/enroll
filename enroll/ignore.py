@@ -102,7 +102,10 @@ class IgnorePolicy:
             return "log_file"
         # Ignore editor/backup files that end with a trailing tilde.
         if path.endswith("~"):
-            return "tilde_backup"
+            return "backup_file"
+        # Ignore backup shadow files
+        if path.startswith("/etc/") and path.endswith("-"):
+            return "backup_file"
 
         if not self.dangerous:
             for g in self.deny_globs or []:
