@@ -490,23 +490,12 @@ _SYSTEM_CAPTURE_GLOBS: List[tuple[str, str]] = [
     # mounts
     ("/etc/fstab", "system_mounts"),
     ("/etc/crypttab", "system_mounts"),
-    # logrotate
-    ("/etc/logrotate.conf", "system_logrotate"),
-    ("/etc/logrotate.d/*", "system_logrotate"),
     # sysctl / modules
     ("/etc/sysctl.conf", "system_sysctl"),
     ("/etc/sysctl.d/*", "system_sysctl"),
     ("/etc/modprobe.d/*", "system_modprobe"),
     ("/etc/modules", "system_modprobe"),
     ("/etc/modules-load.d/*", "system_modprobe"),
-    # cron
-    ("/etc/crontab", "system_cron"),
-    ("/etc/cron.d/*", "system_cron"),
-    ("/etc/anacrontab", "system_cron"),
-    ("/etc/anacron/*", "system_cron"),
-    ("/var/spool/cron/crontabs/*", "system_cron"),
-    ("/var/spool/crontabs/*", "system_cron"),
-    ("/var/spool/cron/*", "system_cron"),
     # network
     ("/etc/netplan/*", "system_network"),
     ("/etc/systemd/network/*", "system_network"),
@@ -763,6 +752,135 @@ def harvest(
     captured_global: Set[str] = set()
 
     # -------------------------
+    # Cron / logrotate unification
+    #
+    # If cron/logrotate are installed, capture all related configuration/state into
+    # dedicated package roles ("cron" and "logrotate") so the same destination path
+    # is never managed by unrelated roles.
+    #
+    # This includes user-specific crontabs under /var/spool, which means the cron role
+    # should be applied after users have been created (handled in manifest ordering).
+    # -------------------------
+
+    installed_pkgs = backend.installed_packages() or {}
+    installed_names: Set[str] = set(installed_pkgs.keys())
+
+    def _pick_installed(cands: List[str]) -> Optional[str]:
+        for c in cands:
+            if c in installed_names:
+                return c
+        return None
+
+    cron_pkg = _pick_installed(
+        ["cron", "cronie", "cronie-anacron", "vixie-cron", "fcron"]
+    )
+    logrotate_pkg = _pick_installed(["logrotate"])
+
+    cron_role_name = "cron"
+    logrotate_role_name = "logrotate"
+
+    def _is_cron_path(p: str) -> bool:
+        return (
+            p == "/etc/crontab"
+            or p == "/etc/anacrontab"
+            or p in ("/etc/cron.allow", "/etc/cron.deny")
+            or p.startswith("/etc/cron.")
+            or p.startswith("/etc/cron.d/")
+            or p.startswith("/etc/anacron/")
+            or p.startswith("/var/spool/cron/")
+            or p.startswith("/var/spool/crontabs/")
+            or p.startswith("/var/spool/anacron/")
+        )
+
+    def _is_logrotate_path(p: str) -> bool:
+        return p == "/etc/logrotate.conf" or p.startswith("/etc/logrotate.d/")
+
+    cron_snapshot: Optional[PackageSnapshot] = None
+    logrotate_snapshot: Optional[PackageSnapshot] = None
+
+    if cron_pkg:
+        cron_managed: List[ManagedFile] = []
+        cron_excluded: List[ExcludedFile] = []
+        cron_notes: List[str] = []
+        cron_seen: Set[str] = set()
+
+        cron_globs = [
+            "/etc/crontab",
+            "/etc/cron.d/*",
+            "/etc/cron.hourly/*",
+            "/etc/cron.daily/*",
+            "/etc/cron.weekly/*",
+            "/etc/cron.monthly/*",
+            "/etc/cron.allow",
+            "/etc/cron.deny",
+            "/etc/anacrontab",
+            "/etc/anacron/*",
+            # user crontabs / spool state
+            "/var/spool/cron/*",
+            "/var/spool/cron/crontabs/*",
+            "/var/spool/crontabs/*",
+            "/var/spool/anacron/*",
+        ]
+        for spec in cron_globs:
+            for path in _iter_matching_files(spec):
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+                _capture_file(
+                    bundle_dir=bundle_dir,
+                    role_name=cron_role_name,
+                    abs_path=path,
+                    reason="system_cron",
+                    policy=policy,
+                    path_filter=path_filter,
+                    managed_out=cron_managed,
+                    excluded_out=cron_excluded,
+                    seen_role=cron_seen,
+                    seen_global=captured_global,
+                )
+
+        cron_snapshot = PackageSnapshot(
+            package=cron_pkg,
+            role_name=cron_role_name,
+            managed_files=cron_managed,
+            excluded=cron_excluded,
+            notes=cron_notes,
+        )
+
+    if logrotate_pkg:
+        lr_managed: List[ManagedFile] = []
+        lr_excluded: List[ExcludedFile] = []
+        lr_notes: List[str] = []
+        lr_seen: Set[str] = set()
+
+        lr_globs = [
+            "/etc/logrotate.conf",
+            "/etc/logrotate.d/*",
+        ]
+        for spec in lr_globs:
+            for path in _iter_matching_files(spec):
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+                _capture_file(
+                    bundle_dir=bundle_dir,
+                    role_name=logrotate_role_name,
+                    abs_path=path,
+                    reason="system_logrotate",
+                    policy=policy,
+                    path_filter=path_filter,
+                    managed_out=lr_managed,
+                    excluded_out=lr_excluded,
+                    seen_role=lr_seen,
+                    seen_global=captured_global,
+                )
+
+        logrotate_snapshot = PackageSnapshot(
+            package=logrotate_pkg,
+            role_name=logrotate_role_name,
+            managed_files=lr_managed,
+            excluded=lr_excluded,
+            notes=lr_notes,
+        )
+    # -------------------------
     # Service roles
     # -------------------------
     service_snaps: List[ServiceSnapshot] = []
@@ -777,6 +895,17 @@ def harvest(
     excluded_by_role: Dict[str, List[ExcludedFile]] = {}
 
     enabled_services = list_enabled_services()
+
+    # Avoid role-name collisions with dedicated cron/logrotate package roles.
+    if cron_snapshot is not None or logrotate_snapshot is not None:
+        blocked_roles = set()
+        if cron_snapshot is not None:
+            blocked_roles.add(cron_role_name)
+        if logrotate_snapshot is not None:
+            blocked_roles.add(logrotate_role_name)
+        enabled_services = [
+            u for u in enabled_services if _role_name_from_unit(u) not in blocked_roles
+        ]
     enabled_set = set(enabled_services)
 
     def _service_sort_key(unit: str) -> tuple[int, str, str]:
@@ -885,6 +1014,10 @@ def harvest(
             etc_paths = pkg_to_etc_paths.get(pkg, [])
             for path, reason in backend.modified_paths(pkg, etc_paths).items():
                 if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+                if cron_snapshot is not None and _is_cron_path(path):
+                    continue
+                if logrotate_snapshot is not None and _is_logrotate_path(path):
                     continue
                 if backend.is_pkg_config_path(path):
                     continue
@@ -1074,7 +1207,20 @@ def harvest(
     manual_pkgs_skipped: List[str] = []
     pkg_snaps: List[PackageSnapshot] = []
 
+    # Add dedicated cron/logrotate roles (if detected) as package roles.
+    # These roles centralise all cron/logrotate managed files so they aren't scattered
+    # across unrelated roles.
+    if cron_snapshot is not None:
+        pkg_snaps.append(cron_snapshot)
+    if logrotate_snapshot is not None:
+        pkg_snaps.append(logrotate_snapshot)
     for pkg in sorted(manual_pkgs):
+        if cron_snapshot is not None and pkg == cron_pkg:
+            manual_pkgs_skipped.append(pkg)
+            continue
+        if logrotate_snapshot is not None and pkg == logrotate_pkg:
+            manual_pkgs_skipped.append(pkg)
+            continue
         if pkg in covered_by_services:
             manual_pkgs_skipped.append(pkg)
             continue
@@ -1090,6 +1236,10 @@ def harvest(
         etc_paths = pkg_to_etc_paths.get(pkg, [])
         for path, reason in backend.modified_paths(pkg, etc_paths).items():
             if not os.path.isfile(path) or os.path.islink(path):
+                continue
+            if cron_snapshot is not None and _is_cron_path(path):
+                continue
+            if logrotate_snapshot is not None and _is_logrotate_path(path):
                 continue
             if backend.is_pkg_config_path(path):
                 continue
@@ -1693,7 +1843,7 @@ def harvest(
     # -------------------------
     # Inventory: packages (SBOM-ish)
     # -------------------------
-    installed = backend.installed_packages() or {}
+    installed = installed_pkgs
 
     manual_set: Set[str] = set(manual_pkgs or [])
 

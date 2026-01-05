@@ -1,6 +1,7 @@
 # 0.3.0
 
  * Introduce `enroll explain` - a tool to analyze and explain what's in (or not in) a harvest and why.
+ * Centralise the cron and logrotate stuff into their respective roles, we had a bit of duplication between roles based on harvest discovery.
 
 # 0.2.3
 

@@ -1930,15 +1930,26 @@ Generated for package `{pkg}`.
             f.write(readme)
 
         manifested_pkg_roles.append(role)
+    # Place cron/logrotate at the end of the playbook so:
+    #   - users exist before we restore per-user crontabs in /var/spool
+    #   - most packages/services are installed/configured first
+    tail_roles: List[str] = []
+    for r in ("cron", "logrotate"):
+        if r in manifested_pkg_roles:
+            tail_roles.append(r)
+
+    main_pkg_roles = [r for r in manifested_pkg_roles if r not in set(tail_roles)]
+
     all_roles = (
         manifested_apt_config_roles
         + manifested_dnf_config_roles
-        + manifested_pkg_roles
+        + main_pkg_roles
         + manifested_service_roles
         + manifested_etc_custom_roles
         + manifested_usr_local_custom_roles
         + manifested_extra_paths_roles
         + manifested_users_roles
+        + tail_roles
     )
 
     if site_mode:
