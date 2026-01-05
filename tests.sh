@@ -27,7 +27,6 @@ poetry run \
 
 # Install/remove something, harvest again and diff the harvests
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cowsay
-DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y apache2
 
 poetry run \
 	enroll harvest --out "${BUNDLE_DIR}2"
