@@ -1,4 +1,4 @@
-# 0.4.0
+# 0.4.0 (not yet released)
 
  * Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.
 

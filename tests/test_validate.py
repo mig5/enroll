@@ -131,7 +131,7 @@ def test_validate_schema_error_is_reported(tmp_path: Path):
     assert any(e.startswith("schema /host/os") for e in res.errors)
 
 
-def test_cli_validate_exits_2_on_validation_error(monkeypatch, tmp_path: Path):
+def test_cli_validate_exits_1_on_validation_error(monkeypatch, tmp_path: Path):
     state = _base_state()
     state["roles"]["etc_custom"]["managed_files"].append(
         {
@@ -148,4 +148,35 @@ def test_cli_validate_exits_2_on_validation_error(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(sys, "argv", ["enroll", "validate", str(bundle)])
     with pytest.raises(SystemExit) as e:
         cli.main()
-    assert e.value.code == 2
+    assert e.value.code == 1
+
+
+def test_cli_validate_exits_1_on_validation_warning_with_flag(
+    monkeypatch, tmp_path: Path
+):
+    state = _base_state()
+    state["roles"]["etc_custom"]["managed_files"].append(
+        {
+            "path": "/etc/hosts",
+            "src_rel": "etc/hosts",
+            "owner": "root",
+            "group": "root",
+            "mode": "0644",
+            "reason": "custom_specific_path",
+        }
+    )
+
+    bundle = _write_bundle(tmp_path, state)
+    art = bundle / "artifacts" / "etc_custom" / "etc" / "hosts"
+    art.parent.mkdir(parents=True, exist_ok=True)
+    art.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+
+    art2 = bundle / "artifacts" / "etc_custom" / "etc" / "hosts2"
+    art2.write_text("hello\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys, "argv", ["enroll", "validate", str(bundle), "--fail-on-warnings"]
+    )
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert e.value.code == 1
