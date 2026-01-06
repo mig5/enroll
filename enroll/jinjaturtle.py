@@ -8,7 +8,45 @@ from pathlib import Path
 from typing import Optional
 
 
-SUPPORTED_EXTS = {".ini", ".json", ".toml", ".yaml", ".yml", ".xml"}
+SYSTEMD_SUFFIXES = {
+    ".service",
+    ".socket",
+    ".target",
+    ".timer",
+    ".path",
+    ".mount",
+    ".automount",
+    ".slice",
+    ".swap",
+    ".scope",
+    ".link",
+    ".netdev",
+    ".network",
+}
+
+SUPPORTED_SUFFIXES = {
+    ".ini",
+    ".cfg",
+    ".json",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".repo",
+} | SYSTEMD_SUFFIXES
+
+
+def infer_other_formats(dest_path: str) -> Optional[str]:
+    p = Path(dest_path)
+    name = p.name.lower()
+    suffix = p.suffix.lower()
+    # postfix
+    if name == "main.cf":
+        return "postfix"
+    # systemd units
+    if suffix in SYSTEMD_SUFFIXES:
+        return "systemd"
+    return None
 
 
 @dataclass(frozen=True)
@@ -22,9 +60,15 @@ def find_jinjaturtle_cmd() -> Optional[str]:
     return shutil.which("jinjaturtle")
 
 
-def can_jinjify_path(path: str) -> bool:
-    p = Path(path)
-    return p.suffix.lower() in SUPPORTED_EXTS
+def can_jinjify_path(dest_path: str) -> bool:
+    p = Path(dest_path)
+    suffix = p.suffix.lower()
+    if infer_other_formats(dest_path):
+        return True
+    # allow unambiguous structured formats
+    if suffix in SUPPORTED_SUFFIXES:
+        return True
+    return False
 
 
 def run_jinjaturtle(

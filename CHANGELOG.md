@@ -1,6 +1,7 @@
 # 0.4.0 (not yet released)
 
  * Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.
+ * Attempt to generate Jinja2 templates of systemd unit files and Postfix main.cf (now that JinjaTurtle supports it)
 
 # 0.3.0
 

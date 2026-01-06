@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .jinjaturtle import (
-    find_jinjaturtle_cmd,
     can_jinjify_path,
+    find_jinjaturtle_cmd,
+    infer_other_formats,
     run_jinjaturtle,
 )
 
@@ -309,7 +310,10 @@ def _jinjify_managed_files(
             continue
 
         try:
-            res = run_jinjaturtle(jt_exe, artifact_path, role_name=role)
+            force_fmt = infer_other_formats(dest_path)
+            res = run_jinjaturtle(
+                jt_exe, artifact_path, role_name=role, force_format=force_fmt
+            )
         except Exception:
             # If jinjaturtle cannot process a file for any reason, skip silently.
             # (Enroll's core promise is to be optimistic and non-interactive.)
