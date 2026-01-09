@@ -1,9 +1,12 @@
-# 0.4.0 (not yet released)
+# 0.4.0
 
  * Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.
  * Attempt to generate Jinja2 templates of systemd unit files and Postfix main.cf (now that JinjaTurtle supports it)
  * Update pynacl dependency to resolve CVE-2025-69277
  * Add `--exclude-path` to `enroll diff` command, so that you can ignore certain churn from the diff (stuff you still wanted to harvest as a baseline but don't care if it changes day to day)
+ * Add `--ignore-package-versions` to `enroll diff` command, to optionally ignore package upgrades (e.g due to patching) from the diff.
+ * Add tags to the playbook for each role, to allow easier targeting of specific roles during play later.
+ * Add `--enforce` mode to `enroll diff`. If there is diff detected between the two harvests, and it can enforce restoring the state from the older harvest, it will manifest the state and apply it with ansible. Only the specific roles that had diffed will be applied (via the new tags capability)
 
 # 0.3.0
 

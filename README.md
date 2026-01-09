@@ -108,6 +108,17 @@ Generate Ansible output from an existing harvest bundle.
 **Common flags**
 - `--fqdn <host>`: enables **multi-site** output style
 
+**Role tags**
+Generated playbooks tag each role so you can target just the parts you need:
+
+- Tag format: `role_<role_name>` (e.g. `role_services`, `role_users`)
+- Fallback/safe tag: `role_other`
+
+Example:
+```bash
+ansible-playbook -i "localhost," -c local /tmp/enroll-ansible/playbook.yml --tags role_services,role_users
+```
+
 ---
 
 ### `enroll single-shot`
@@ -131,7 +142,26 @@ Compare two harvest bundles and report what changed.
 **Inputs**
 - `--old <harvest>` and `--new <harvest>` (directories or `state.json` paths)
 - `--sops` when comparing SOPS-encrypted harvest bundles
-- `--exclude-path` if you want to ignore certain files that changed in the diff
+- `--exclude-path <PATTERN>` (repeatable) to ignore file/dir drift under matching paths (same pattern syntax as harvest)
+- `--ignore-package-versions` to ignore package version-only drift (upgrades/downgrades)
+- `--enforce` to apply the **old** harvest state locally (requires `ansible-playbook` on `PATH`)
+
+**Noise suppression**
+- `--exclude-path` is useful for things that change often but you still want in the harvest baseline (e.g. `/var/anacron`).
+- `--ignore-package-versions` keeps routine upgrades from alerting; package add/remove drift is still reported.
+
+**Enforcement (`--enforce`)**
+If a diff exists and `ansible-playbook` is available, Enroll will:
+1) generate a manifest from the **old** harvest into a temporary directory
+2) run `ansible-playbook -i localhost, -c local <tmp>/playbook.yml` (often with `--tags role_<...>` to limit runtime)
+3) record in the diff report that the old harvest was enforced
+
+Enforcement is intentionally “safe”:
+- reinstalls packages that were removed (`state: present`), but does **not** attempt downgrades/pinning
+- restores users, files (contents + permissions/ownership), and service enable/start state
+
+If `ansible-playbook` is not on `PATH`, Enroll returns an error and does not enforce.
+
 
 **Output formats**
 - `--format json` (default for webhooks)
@@ -417,6 +447,16 @@ enroll diff   --old /path/to/golden/harvest   --new /path/to/new/harvest   --web
 enroll diff --old /path/to/harvestA --new /path/to/harvestB --exclude-path /var/anacron
 ```
 
+### Ignore package version drift (routine upgrades) but still alert on add/remove
+```bash
+enroll diff --old /path/to/harvestA --new /path/to/harvestB --ignore-package-versions
+```
+
+### Enforce the old harvest state when drift is detected (requires Ansible)
+```bash
+enroll diff --old /path/to/harvestA --new /path/to/harvestB --enforce --ignore-package-versions --exclude-path /var/anacron
+```
+
 ---
 
 ## Explain
@@ -492,6 +532,12 @@ ansible-playbook -i "localhost," -c local /tmp/enroll-ansible/playbook.yml
 ansible-playbook /tmp/enroll-ansible/playbooks/"$(hostname -f)".yml
 ```
 
+### Run only specific roles (tags)
+Generated playbooks tag each role as `role_<name>` (e.g. `role_users`, `role_services`), so you can speed up targeted runs:
+```bash
+ansible-playbook -i "localhost," -c local /tmp/enroll-ansible/playbook.yml --tags role_users
+```
+
 ## Configuration file
 
 As can be seen above, there are a lot of powerful 'permutations' available to all four subcommands.
@@ -540,6 +586,12 @@ exclude_path = /usr/local/bin/docker-*, /usr/local/bin/some-tool
 # you can set defaults here too, e.g.
 no_jinjaturtle = true
 sops = 00AE817C24A10C2540461A9C1D7CDE0234DB458D
+
+[diff]
+# ignore noisy drift
+exclude_path = /var/anacron
+ignore_package_versions = true
+# enforce = true  # requires ansible-playbook on PATH
 
 [single-shot]
 # if you use single-shot, put its defaults here.

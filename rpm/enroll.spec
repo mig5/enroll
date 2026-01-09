@@ -1,4 +1,4 @@
-%global upstream_version 0.3.0
+%global upstream_version 0.4.0
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -19,7 +19,6 @@ Requires: python3-yaml
 Requires: python3-paramiko
 Requires: python3-jsonschema
 
-# Make sure private repo dependency is pulled in by package name as well.
 Recommends:       jinjaturtle
 
 %description
@@ -44,6 +43,15 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sat Jan 10 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.
+- Attempt to generate Jinja2 templates of systemd unit files and Postfix main.cf (now that JinjaTurtle supports it)
+- Update pynacl dependency to resolve CVE-2025-69277
+- Add `--exclude-path` to `enroll diff` command, so that you can ignore certain churn from the diff (stuff you still wanted to harvest as a baseline but don't care if it changes day to day)
+- Add `--ignore-package-versions` to `enroll diff` command, to optionally ignore package upgrades (e.g due to patching) from the diff.
+- Add tags to the playbook for each role, to allow easier targeting of specific roles during play later.
+- Add `--enforce` mode to `enroll diff`. If there is diff detected between the two harvests, and it can enforce restoring the state from the older harvest, it will manifest the state and apply it with ansible.
+Only the specific roles that had diffed will be applied (via the new tags capability)
 * Mon Jan 05 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Introduce `enroll explain` - a tool to analyze and explain what's in (or not in) a harvest and why.
 - Centralise the cron and logrotate stuff into their respective roles, we had a bit of duplication between roles based on harvest discovery.

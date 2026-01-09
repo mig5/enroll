@@ -35,25 +35,8 @@ set -euo pipefail
 SRC="${SRC:-/src}"
 WORKROOT="${WORKROOT:-/work}"
 OUT="${OUT:-/out}"
-DEPS_DIR="${DEPS_DIR:-/deps}"
 VERSION_ID="$(grep VERSION_ID /etc/os-release | cut -d= -f2)"
 echo "Version ID is ${VERSION_ID}"
-# Install jinjaturtle from local rpm
-# Filter out .src.rpm and debug* subpackages if present.
-if [ -d "${DEPS_DIR}" ] && compgen -G "${DEPS_DIR}/*.rpm" > /dev/null; then
-  mapfile -t rpms < <(ls -1 "${DEPS_DIR}"/*.rpm | grep -vE '(\.src\.rpm$|-(debuginfo|debugsource)-)' | grep "${VERSION_ID}")
-  if [ "${#rpms[@]}" -gt 0 ]; then
-    echo "Installing dependency RPMs from ${DEPS_DIR}:"
-    printf '  - %s\n' "${rpms[@]}"
-    dnf -y install "${rpms[@]}"
-    dnf -y clean all
-  else
-    echo "NOTE: Only src/debug RPMs found in ${DEPS_DIR}; nothing installed." >&2
-  fi
-else
-  echo "NOTE: No RPMs found in ${DEPS_DIR}. If the build fails with missing python3dist(jinjaturtle)," >&2
-  echo "      mount your jinjaturtle RPM directory as -v <dir>:/deps" >&2
-fi
 
 mkdir -p "${WORKROOT}" "${OUT}"
 WORK="${WORKROOT}/src"

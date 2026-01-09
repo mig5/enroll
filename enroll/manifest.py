@@ -163,6 +163,19 @@ def _write_role_scaffold(role_dir: str) -> None:
     os.makedirs(os.path.join(role_dir, "templates"), exist_ok=True)
 
 
+def _role_tag(role: str) -> str:
+    """Return a stable Ansible tag name for a role.
+
+    Used by `enroll diff --enforce` to run only the roles needed to repair drift.
+    """
+    r = str(role or "").strip()
+    # Ansible tag charset is fairly permissive, but keep it portable and consistent.
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", r).strip("_")
+    if not safe:
+        safe = "other"
+    return f"role_{safe}"
+
+
 def _write_playbook_all(path: str, roles: List[str]) -> None:
     pb_lines = [
         "---",
@@ -173,7 +186,8 @@ def _write_playbook_all(path: str, roles: List[str]) -> None:
         "  roles:",
     ]
     for r in roles:
-        pb_lines.append(f"    - {r}")
+        pb_lines.append(f"    - role: {r}")
+        pb_lines.append(f"      tags: [{_role_tag(r)}]")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(pb_lines) + "\n")
 
@@ -188,7 +202,8 @@ def _write_playbook_host(path: str, fqdn: str, roles: List[str]) -> None:
         "  roles:",
     ]
     for r in roles:
-        pb_lines.append(f"    - {r}")
+        pb_lines.append(f"    - role: {r}")
+        pb_lines.append(f"      tags: [{_role_tag(r)}]")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(pb_lines) + "\n")
 

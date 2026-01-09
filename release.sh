@@ -72,7 +72,7 @@ for dist in ${DISTS[@]}; do
   rm -rf "$PWD/dist/rpm"/*
   mkdir -p "$PWD/dist/rpm"
 
-  docker run --rm -v "$PWD":/src -v "$PWD/dist/rpm":/out -v "$HOME/git/jinjaturtle/dist/rpm":/deps:ro enroll-rpm:${release}
+  docker run --rm -v "$PWD":/src -v "$PWD/dist/rpm":/out enroll-rpm:${release}
   sudo chown -R "${USER}" "$PWD/dist"
 
   for file in `ls -1 "${BUILD_OUTPUT}/rpm"`; do

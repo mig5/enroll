@@ -568,6 +568,14 @@ def main() -> None:
         ),
     )
     d.add_argument(
+        "--ignore-package-versions",
+        action="store_true",
+        help=(
+            "Ignore package version changes in the diff report and exit status. "
+            "Package additions/removals are still reported. Useful when routine upgrades would otherwise create noisy drift."
+        ),
+    )
+    d.add_argument(
         "--enforce",
         action="store_true",
         help=(
@@ -854,6 +862,9 @@ def main() -> None:
                 args.new,
                 sops_mode=bool(getattr(args, "sops", False)),
                 exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                ignore_package_versions=bool(
+                    getattr(args, "ignore_package_versions", False)
+                ),
             )
 
             # Optional enforcement: if drift is detected, attempt to restore the
@@ -865,7 +876,7 @@ def main() -> None:
                             "requested": True,
                             "status": "skipped",
                             "reason": (
-                                "no enforceable drift detected (only package additions and/or version changes); "
+                                "no enforceable drift detected (only additions and/or package version changes); "
                                 "enroll does not attempt to downgrade packages"
                             ),
                         }
@@ -874,6 +885,7 @@ def main() -> None:
                             info = enforce_old_harvest(
                                 args.old,
                                 sops_mode=bool(getattr(args, "sops", False)),
+                                report=report,
                             )
                         except Exception as e:
                             raise SystemExit(
