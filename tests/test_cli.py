@@ -607,7 +607,7 @@ def test_cli_diff_notifies_webhook_and_email_and_respects_exit_code(
 ):
     calls: dict[str, object] = {}
 
-    def fake_compare(old, new, sops_mode=False):
+    def fake_compare(old, new, sops_mode=False, **kwargs):
         calls["compare"] = (old, new, sops_mode)
         return {"dummy": True}, True
 
@@ -662,7 +662,7 @@ def test_cli_diff_notifies_webhook_and_email_and_respects_exit_code(
 
 
 def test_cli_diff_webhook_http_error_raises_system_exit(monkeypatch):
-    def fake_compare(old, new, sops_mode=False):
+    def fake_compare(old, new, sops_mode=False, **kwargs):
         return {"dummy": True}, True
 
     monkeypatch.setattr(cli, "compare_harvests", fake_compare)
