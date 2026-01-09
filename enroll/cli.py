@@ -551,6 +551,16 @@ def main() -> None:
         help="Report output format (default: text).",
     )
     d.add_argument(
+        "--exclude-path",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "Exclude file paths from the diff report (repeatable). Supports globs (including '**') and regex via 're:<regex>'. "
+            "This affects file drift reporting only (added/removed/changed files), not package/service/user diffs."
+        ),
+    )
+    d.add_argument(
         "--out",
         help="Write the report to this file instead of stdout.",
     )
@@ -827,6 +837,7 @@ def main() -> None:
                 args.old,
                 args.new,
                 sops_mode=bool(getattr(args, "sops", False)),
+                exclude_paths=list(getattr(args, "exclude_path", []) or []),
             )
 
             txt = format_report(report, fmt=str(getattr(args, "format", "text")))

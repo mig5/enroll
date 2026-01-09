@@ -131,6 +131,7 @@ Compare two harvest bundles and report what changed.
 **Inputs**
 - `--old <harvest>` and `--new <harvest>` (directories or `state.json` paths)
 - `--sops` when comparing SOPS-encrypted harvest bundles
+- `--exclude-path` if you want to ignore certain files that changed in the diff
 
 **Output formats**
 - `--format json` (default for webhooks)
@@ -164,8 +165,7 @@ Validates a harvest by checking:
  * state.json exists and is valid JSON
  * state.json validates against a JSON Schema (by default the vendored one)
  * Every `managed_file` entry has a corresponding artifact at: `artifacts/<role_name>/<src_rel>`
-
-It also warns if there are **unreferenced files** sitting in `artifacts/`.
+ * That there are no **unreferenced files** sitting in `artifacts/` that aren't in the state.
 
 #### Schema location + overrides
 
@@ -400,7 +400,7 @@ enroll single-shot --remote-host myhost.example.com --remote-user myuser   --har
 
 ## Diff
 
-### Compare two harvest directories
+### Compare two harvest directories, output in json
 ```bash
 enroll diff --old /path/to/harvestA --new /path/to/harvestB --format json
 ```
@@ -411,6 +411,11 @@ enroll diff   --old /path/to/golden/harvest   --new /path/to/new/harvest   --web
 ```
 
 `diff` mode also supports email sending and text or markdown format, as well as `--exit-code` mode to trigger a return code of 2 (useful for crons or CI)
+
+### Ignore a specific directory or file from the diff
+```bash
+enroll diff --old /path/to/harvestA --new /path/to/harvestB --exclude-path /var/anacron
+```
 
 ---
 

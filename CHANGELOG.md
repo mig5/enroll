@@ -3,6 +3,7 @@
  * Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.
  * Attempt to generate Jinja2 templates of systemd unit files and Postfix main.cf (now that JinjaTurtle supports it)
  * Update pynacl dependency to resolve CVE-2025-69277
+ * Add `--exclude-path` to `enroll diff` command, so that you can ignore certain churn from the diff (stuff you still wanted to harvest as a baseline but don't care if it changes day to day)
 
 # 0.3.0
 

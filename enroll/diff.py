@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .remote import _safe_extract_tar
+from .pathfilter import PathFilter
 from .sopsutil import decrypt_file_binary_to, require_sops_cmd
 
 
@@ -289,6 +290,7 @@ def compare_harvests(
     new_path: str,
     *,
     sops_mode: bool = False,
+    exclude_paths: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Any], bool]:
     """Compare two harvests.
 
@@ -387,6 +389,17 @@ def compare_harvests(
 
         old_files = _file_index(old_b.dir, old_state)
         new_files = _file_index(new_b.dir, new_state)
+
+        # Optional user-supplied path exclusions (same semantics as harvest --exclude-path),
+        # applied only to file drift reporting.
+        diff_filter = PathFilter(include=(), exclude=exclude_paths or ())
+        if exclude_paths:
+            old_files = {
+                p: r for p, r in old_files.items() if not diff_filter.is_excluded(p)
+            }
+            new_files = {
+                p: r for p, r in new_files.items() if not diff_filter.is_excluded(p)
+            }
         old_paths_set = set(old_files)
         new_paths_set = set(new_files)
 
@@ -462,6 +475,9 @@ def compare_harvests(
 
         report: Dict[str, Any] = {
             "generated_at": _utc_now_iso(),
+            "filters": {
+                "exclude_paths": list(exclude_paths or []),
+            },
             "old": {
                 "input": old_path,
                 "bundle_dir": str(old_b.dir),
@@ -531,6 +547,11 @@ def _report_text(report: Dict[str, Any]) -> str:
         f"old: {old.get('input')} (host={old.get('host')}, state_mtime={old.get('state_mtime')})\n"
         f"new: {new.get('input')} (host={new.get('host')}, state_mtime={new.get('state_mtime')})"
     )
+
+    filt = report.get("filters", {}) or {}
+    ex_paths = filt.get("exclude_paths", []) or []
+    if ex_paths:
+        lines.append(f"file exclude patterns: {', '.join(str(p) for p in ex_paths)}")
 
     pk = report.get("packages", {})
     lines.append("\nPackages")
@@ -637,6 +658,15 @@ def _report_markdown(report: Dict[str, Any]) -> str:
         f"- **Old**: `{old.get('input')}` (host={old.get('host')}, state_mtime={old.get('state_mtime')})\n"
         f"- **New**: `{new.get('input')}` (host={new.get('host')}, state_mtime={new.get('state_mtime')})\n"
     )
+
+    filt = report.get("filters", {}) or {}
+    ex_paths = filt.get("exclude_paths", []) or []
+    if ex_paths:
+        out.append(
+            "- **File exclude patterns**: "
+            + ", ".join(f"`{p}`" for p in ex_paths)
+            + "\n"
+        )
 
     pk = report.get("packages", {})
     out.append("## Packages\n")
