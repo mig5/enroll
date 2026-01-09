@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Optional
 
 from .cache import new_harvest_cache_dir
-from .diff import compare_harvests, format_report, post_webhook, send_email
+from .diff import (
+    compare_harvests,
+    enforce_old_harvest,
+    format_report,
+    has_enforceable_drift,
+    post_webhook,
+    send_email,
+)
 from .explain import explain_state
 from .harvest import harvest
 from .manifest import manifest
@@ -561,6 +568,15 @@ def main() -> None:
         ),
     )
     d.add_argument(
+        "--enforce",
+        action="store_true",
+        help=(
+            "If differences are detected, attempt to enforce the old harvest state locally by generating a manifest and "
+            "running ansible-playbook. Requires ansible-playbook on PATH. "
+            "Enroll does not attempt to downgrade packages; if the only drift is package version upgrades (or newly installed packages), enforcement is skipped."
+        ),
+    )
+    d.add_argument(
         "--out",
         help="Write the report to this file instead of stdout.",
     )
@@ -839,6 +855,40 @@ def main() -> None:
                 sops_mode=bool(getattr(args, "sops", False)),
                 exclude_paths=list(getattr(args, "exclude_path", []) or []),
             )
+
+            # Optional enforcement: if drift is detected, attempt to restore the
+            # system to the *old* (baseline) state using ansible-playbook.
+            if bool(getattr(args, "enforce", False)):
+                if has_changes:
+                    if not has_enforceable_drift(report):
+                        report["enforcement"] = {
+                            "requested": True,
+                            "status": "skipped",
+                            "reason": (
+                                "no enforceable drift detected (only package additions and/or version changes); "
+                                "enroll does not attempt to downgrade packages"
+                            ),
+                        }
+                    else:
+                        try:
+                            info = enforce_old_harvest(
+                                args.old,
+                                sops_mode=bool(getattr(args, "sops", False)),
+                            )
+                        except Exception as e:
+                            raise SystemExit(
+                                f"error: could not enforce old harvest state: {e}"
+                            ) from e
+                        report["enforcement"] = {
+                            "requested": True,
+                            **(info or {}),
+                        }
+                else:
+                    report["enforcement"] = {
+                        "requested": True,
+                        "status": "skipped",
+                        "reason": "no differences detected",
+                    }
 
             txt = format_report(report, fmt=str(getattr(args, "format", "text")))
             out_path = getattr(args, "out", None)

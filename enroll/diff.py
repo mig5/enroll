@@ -529,6 +529,162 @@ def compare_harvests(
         return report, has_changes
 
 
+def _tail_text(s: str, *, max_chars: int = 4000) -> str:
+    s = s or ""
+    if len(s) <= max_chars:
+        return s
+    return "…" + s[-max_chars:]
+
+
+def has_enforceable_drift(report: Dict[str, Any]) -> bool:
+    """Return True if the diff report contains drift that is safe/meaningful to enforce.
+
+    Enforce mode is intended to restore *state* (files/users/services) and to
+    reinstall packages that were removed.
+
+    It is deliberately conservative about package drift:
+      - Package *version* changes alone are not enforced (no downgrades).
+      - Newly installed packages are not removed.
+
+    This helper lets the CLI decide whether `--enforce` should actually run.
+    """
+
+    pk = report.get("packages", {}) or {}
+    if pk.get("removed"):
+        return True
+
+    sv = report.get("services", {}) or {}
+    if (sv.get("enabled_added") or []) or (sv.get("enabled_removed") or []):
+        return True
+
+    for ch in sv.get("changed", []) or []:
+        changes = ch.get("changes") or {}
+        # Ignore package set drift for enforceability decisions; package
+        # enforcement is handled via reinstalling removed packages, and we
+        # avoid trying to "undo" upgrades/renames.
+        for k in changes.keys():
+            if k != "packages":
+                return True
+
+    us = report.get("users", {}) or {}
+    if (
+        (us.get("added") or [])
+        or (us.get("removed") or [])
+        or (us.get("changed") or [])
+    ):
+        return True
+
+    fl = report.get("files", {}) or {}
+    if (
+        (fl.get("added") or [])
+        or (fl.get("removed") or [])
+        or (fl.get("changed") or [])
+    ):
+        return True
+
+    return False
+
+
+def enforce_old_harvest(
+    old_path: str,
+    *,
+    sops_mode: bool = False,
+) -> Dict[str, Any]:
+    """Enforce the *old* (baseline) harvest state on the current machine.
+
+    When Ansible is available, this:
+      1) renders a temporary manifest from the old harvest, and
+      2) runs ansible-playbook locally to apply it.
+
+    Returns a dict suitable for attaching to the diff report under
+    report['enforcement'].
+    """
+
+    ansible_playbook = shutil.which("ansible-playbook")
+    if not ansible_playbook:
+        raise RuntimeError(
+            "ansible-playbook not found on PATH (cannot enforce; install Ansible)"
+        )
+
+    # Import lazily to avoid heavy import cost and potential CLI cycles.
+    from .manifest import manifest
+
+    started_at = _utc_now_iso()
+
+    with ExitStack() as stack:
+        old_b = _bundle_from_input(old_path, sops_mode=sops_mode)
+        if old_b.tempdir:
+            stack.callback(old_b.tempdir.cleanup)
+
+        with tempfile.TemporaryDirectory(prefix="enroll-enforce-") as td:
+            td_path = Path(td)
+            try:
+                os.chmod(td_path, 0o700)
+            except OSError:
+                pass
+
+            # 1) Generate a manifest in a temp directory.
+            manifest(str(old_b.dir), str(td_path))
+
+            playbook = td_path / "playbook.yml"
+            if not playbook.exists():
+                raise RuntimeError(
+                    f"manifest did not produce expected playbook.yml at {playbook}"
+                )
+
+            # 2) Apply it locally.
+            env = dict(os.environ)
+            cfg = td_path / "ansible.cfg"
+            if cfg.exists():
+                env["ANSIBLE_CONFIG"] = str(cfg)
+
+            cmd = [
+                ansible_playbook,
+                "-i",
+                "localhost,",
+                "-c",
+                "local",
+                str(playbook),
+            ]
+            p = subprocess.run(
+                cmd,
+                cwd=str(td_path),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )  # nosec
+
+            finished_at = _utc_now_iso()
+
+            info: Dict[str, Any] = {
+                "status": "applied" if p.returncode == 0 else "failed",
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "ansible_playbook": ansible_playbook,
+                "command": cmd,
+                "returncode": int(p.returncode),
+            }
+
+            # Include a small tail for observability in webhooks/emails.
+            if p.stdout:
+                info["stdout_tail"] = _tail_text(p.stdout)
+            if p.stderr:
+                info["stderr_tail"] = _tail_text(p.stderr)
+
+            if p.returncode != 0:
+                err = (p.stderr or p.stdout or "").strip()
+                if err:
+                    err = _tail_text(err)
+                raise RuntimeError(
+                    "ansible-playbook failed"
+                    + (f" (rc={p.returncode})" if p.returncode is not None else "")
+                    + (f": {err}" if err else "")
+                )
+
+            return info
+
+
 def format_report(report: Dict[str, Any], *, fmt: str = "text") -> str:
     fmt = (fmt or "text").lower()
     if fmt == "json":
@@ -552,6 +708,30 @@ def _report_text(report: Dict[str, Any]) -> str:
     ex_paths = filt.get("exclude_paths", []) or []
     if ex_paths:
         lines.append(f"file exclude patterns: {', '.join(str(p) for p in ex_paths)}")
+
+    enf = report.get("enforcement") or {}
+    if enf:
+        lines.append("\nEnforcement")
+        status = str(enf.get("status") or "").strip().lower()
+        if status == "applied":
+            lines.append(
+                f"  applied old harvest via ansible-playbook (rc={enf.get('returncode')})"
+                + (
+                    f" (finished {enf.get('finished_at')})"
+                    if enf.get("finished_at")
+                    else ""
+                )
+            )
+        elif status == "failed":
+            lines.append(
+                f"  attempted enforcement but ansible-playbook failed (rc={enf.get('returncode')})"
+            )
+        elif status == "skipped":
+            r = enf.get("reason")
+            lines.append("  skipped" + (f": {r}" if r else ""))
+        else:
+            # Best-effort formatting for future fields.
+            lines.append("  " + json.dumps(enf, sort_keys=True))
 
     pk = report.get("packages", {})
     lines.append("\nPackages")
@@ -667,6 +847,41 @@ def _report_markdown(report: Dict[str, Any]) -> str:
             + ", ".join(f"`{p}`" for p in ex_paths)
             + "\n"
         )
+
+    enf = report.get("enforcement") or {}
+    if enf:
+        out.append("\n## Enforcement\n")
+        status = str(enf.get("status") or "").strip().lower()
+        if status == "applied":
+            out.append(
+                "- ✅ Applied old harvest via ansible-playbook"
+                + (
+                    f" (rc={enf.get('returncode')})"
+                    if enf.get("returncode") is not None
+                    else ""
+                )
+                + (
+                    f" (finished `{enf.get('finished_at')}`)"
+                    if enf.get("finished_at")
+                    else ""
+                )
+                + "\n"
+            )
+        elif status == "failed":
+            out.append(
+                "- ⚠️ Attempted enforcement but ansible-playbook failed"
+                + (
+                    f" (rc={enf.get('returncode')})"
+                    if enf.get("returncode") is not None
+                    else ""
+                )
+                + "\n"
+            )
+        elif status == "skipped":
+            r = enf.get("reason")
+            out.append("- Skipped" + (f": {r}" if r else "") + "\n")
+        else:
+            out.append(f"- {json.dumps(enf, sort_keys=True)}\n")
 
     pk = report.get("packages", {})
     out.append("## Packages\n")
