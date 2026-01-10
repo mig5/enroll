@@ -206,11 +206,11 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
 
     # Playbook should include users, etc_custom, packages, and services
     pb = (out / "playbook.yml").read_text(encoding="utf-8")
-    assert "- users" in pb
-    assert "- etc_custom" in pb
-    assert "- usr_local_custom" in pb
-    assert "- curl" in pb
-    assert "- foo" in pb
+    assert "role: users" in pb
+    assert "role: etc_custom" in pb
+    assert "role: usr_local_custom" in pb
+    assert "role: curl" in pb
+    assert "role: foo" in pb
 
 
 def test_manifest_site_mode_creates_host_inventory_and_raw_files(tmp_path: Path):
@@ -490,7 +490,7 @@ def test_manifest_includes_dnf_config_role_when_present(tmp_path: Path):
     manifest.manifest(str(bundle), str(out))
 
     pb = (out / "playbook.yml").read_text(encoding="utf-8")
-    assert "- dnf_config" in pb
+    assert "role: dnf_config" in pb
 
     tasks = (out / "roles" / "dnf_config" / "tasks" / "main.yml").read_text(
         encoding="utf-8"
@@ -632,9 +632,9 @@ def test_manifest_orders_cron_and_logrotate_at_playbook_tail(tmp_path: Path):
     ]
 
     # Ensure tail ordering.
-    assert roles[-2:] == ["cron", "logrotate"]
-    assert "users" in roles
-    assert roles.index("users") < roles.index("cron")
+    assert roles[-2:] == ["role: cron", "role: logrotate"]
+    assert "role: users" in roles
+    assert roles.index("role: users") < roles.index("role: cron")
 
 
 def test_yaml_helpers_fallback_when_yaml_unavailable(monkeypatch):
