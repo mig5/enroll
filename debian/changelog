@@ -1,5 +1,9 @@
-enroll (0.4.0) unstable; urgency=medium
+enroll (0.4.1) unstable; urgency=medium
+ * Add interactive output when 'enroll diff --enforce' is invoking Ansible.
 
+ -- Miguel Jacq <mig@mig5.net>  Sun, 11 Jan 2026 10:00:00 +1100
+
+enroll (0.4.0) unstable; urgency=medium
  * Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.
  * Attempt to generate Jinja2 templates of systemd unit files and Postfix main.cf (now that JinjaTurtle supports it)
  * Update pynacl dependency to resolve CVE-2025-69277

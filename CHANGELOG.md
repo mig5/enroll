@@ -1,3 +1,7 @@
+# 0.4.1
+
+ * Add interactive output when 'enroll diff --enforce' is invoking Ansible.
+
 # 0.4.0
 
  * Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.

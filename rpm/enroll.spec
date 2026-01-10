@@ -1,4 +1,4 @@
-%global upstream_version 0.4.0
+%global upstream_version 0.4.1
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,8 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sun Jan 11 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Add interactive output when 'enroll diff --enforce' is invoking Ansible.
 * Sat Jan 10 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Introduce `enroll validate` - a tool to validate a harvest against the state schema, or check for missing or orphaned obsolete artifacts in a harvest.
 - Attempt to generate Jinja2 templates of systemd unit files and Postfix main.cf (now that JinjaTurtle supports it)

@@ -8,6 +8,10 @@ import shutil
 import subprocess  # nosec
 import tarfile
 import tempfile
+import sys
+import threading
+import time
+import itertools
 import urllib.request
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -19,6 +23,69 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .remote import _safe_extract_tar
 from .pathfilter import PathFilter
 from .sopsutil import decrypt_file_binary_to, require_sops_cmd
+
+
+def _progress_enabled() -> bool:
+    """Return True if we should display interactive progress UI on the CLI.
+
+    We only emit progress when stderr is a TTY, so it won't pollute JSON/text reports
+    captured by systemd, CI, webhooks, etc. Users can also disable this explicitly via
+    ENROLL_NO_PROGRESS=1.
+    """
+    if os.environ.get("ENROLL_NO_PROGRESS", "").strip() in {"1", "true", "yes"}:
+        return False
+    try:
+        return sys.stderr.isatty()
+    except Exception:
+        return False
+
+
+class _Spinner:
+    """A tiny terminal spinner with an elapsed-time counter (stderr-only)."""
+
+    def __init__(self, message: str, *, interval: float = 0.12) -> None:
+        self.message = message.rstrip()
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._last_len = 0
+        self._start = 0.0
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._start = time.monotonic()
+        self._thread = threading.Thread(
+            target=self._run, name="enroll-spinner", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self, final_line: Optional[str] = None) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+        # Clear spinner line.
+        try:
+            sys.stderr.write("\r" + (" " * max(self._last_len, 0)) + "\r")
+            if final_line:
+                sys.stderr.write(final_line.rstrip() + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass  # nosec
+
+    def _run(self) -> None:
+        frames = itertools.cycle("|/-\\")
+        while not self._stop.is_set():
+            elapsed = time.monotonic() - self._start
+            line = f"{self.message} {next(frames)} {elapsed:0.1f}s"
+            try:
+                sys.stderr.write("\r" + line)
+                sys.stderr.flush()
+                self._last_len = max(self._last_len, len(line))
+            except Exception:
+                return
+            self._stop.wait(self.interval)
 
 
 def _utc_now_iso() -> str:
@@ -772,14 +839,40 @@ def enforce_old_harvest(
             ]
             if tags:
                 cmd.extend(["--tags", ",".join(tags)])
-            p = subprocess.run(
-                cmd,
-                cwd=str(td_path),
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )  # nosec
+
+            spinner: Optional[_Spinner] = None
+            p: Optional[subprocess.CompletedProcess[str]] = None
+            t0 = time.monotonic()
+            if _progress_enabled():
+                if tags:
+                    sys.stderr.write(
+                        f"Enforce: running ansible-playbook (tags: {','.join(tags)})\n",
+                    )
+                else:
+                    sys.stderr.write("Enforce: running ansible-playbook\n")
+                sys.stderr.flush()
+                spinner = _Spinner("  ansible-playbook")
+                spinner.start()
+
+            try:
+                p = subprocess.run(
+                    cmd,
+                    cwd=str(td_path),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )  # nosec
+            finally:
+                if spinner:
+                    elapsed = time.monotonic() - t0
+                    rc = p.returncode if p is not None else None
+                    spinner.stop(
+                        final_line=(
+                            f"Enforce: ansible-playbook finished in {elapsed:0.1f}s"
+                            + (f" (rc={rc})" if rc is not None else ""),
+                        ),
+                    )
 
             finished_at = _utc_now_iso()
 
