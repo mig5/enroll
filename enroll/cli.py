@@ -351,15 +351,32 @@ def _add_remote_args(p: argparse.ArgumentParser) -> None:
         help="SSH host to run harvesting on (if set, harvest runs remotely and is pulled locally).",
     )
     p.add_argument(
+        "--remote-ssh-config",
+        nargs="?",
+        const=str(Path.home() / ".ssh" / "config"),
+        default=None,
+        help=(
+            "Use OpenSSH-style ssh_config settings for --remote-host. "
+            "If provided without a value, defaults to ~/.ssh/config. "
+            "(Applies HostName/User/Port/IdentityFile/ProxyCommand/HostKeyAlias when supported.)"
+        ),
+    )
+    p.add_argument(
         "--remote-port",
         type=int,
-        default=22,
-        help="SSH port for --remote-host (default: 22).",
+        default=None,
+        help=(
+            "SSH port for --remote-host. If omitted, defaults to 22, or a value from ssh_config when "
+            "--remote-ssh-config is set."
+        ),
     )
     p.add_argument(
         "--remote-user",
-        default=os.environ.get("USER") or None,
-        help="SSH username for --remote-host (default: local $USER).",
+        default=None,
+        help=(
+            "SSH username for --remote-host. If omitted, defaults to local $USER, or a value from ssh_config when "
+            "--remote-ssh-config is set."
+        ),
     )
 
     # Align terminology with Ansible: "become" == sudo.
@@ -728,6 +745,17 @@ def main() -> None:
     )
     args = ap.parse_args(argv)
 
+    # Preserve historical defaults for remote harvesting unless ssh_config lookup is enabled.
+    # This lets ssh_config values take effect when the user did not explicitly set
+    # --remote-user / --remote-port.
+    if hasattr(args, "remote_host"):
+        rsc = getattr(args, "remote_ssh_config", None)
+        if not rsc:
+            if getattr(args, "remote_port", None) is None:
+                setattr(args, "remote_port", 22)
+            if getattr(args, "remote_user", None) is None:
+                setattr(args, "remote_user", os.environ.get("USER") or None)
+
     try:
         if args.cmd == "harvest":
             sops_fps = getattr(args, "sops", None)
@@ -745,8 +773,9 @@ def main() -> None:
                             ask_become_pass=args.ask_become_pass,
                             local_out_dir=tmp_bundle,
                             remote_host=args.remote_host,
-                            remote_port=int(args.remote_port),
+                            remote_port=args.remote_port,
                             remote_user=args.remote_user,
+                            remote_ssh_config=args.remote_ssh_config,
                             dangerous=bool(args.dangerous),
                             no_sudo=bool(args.no_sudo),
                             include_paths=list(getattr(args, "include_path", []) or []),
@@ -766,8 +795,9 @@ def main() -> None:
                         ask_become_pass=args.ask_become_pass,
                         local_out_dir=out_dir,
                         remote_host=args.remote_host,
-                        remote_port=int(args.remote_port),
+                        remote_port=args.remote_port,
                         remote_user=args.remote_user,
+                        remote_ssh_config=args.remote_ssh_config,
                         dangerous=bool(args.dangerous),
                         no_sudo=bool(args.no_sudo),
                         include_paths=list(getattr(args, "include_path", []) or []),
@@ -968,8 +998,9 @@ def main() -> None:
                             ask_become_pass=args.ask_become_pass,
                             local_out_dir=tmp_bundle,
                             remote_host=args.remote_host,
-                            remote_port=int(args.remote_port),
+                            remote_port=args.remote_port,
                             remote_user=args.remote_user,
+                            remote_ssh_config=args.remote_ssh_config,
                             dangerous=bool(args.dangerous),
                             no_sudo=bool(args.no_sudo),
                             include_paths=list(getattr(args, "include_path", []) or []),
@@ -998,8 +1029,9 @@ def main() -> None:
                         ask_become_pass=args.ask_become_pass,
                         local_out_dir=harvest_dir,
                         remote_host=args.remote_host,
-                        remote_port=int(args.remote_port),
+                        remote_port=args.remote_port,
                         remote_user=args.remote_user,
+                        remote_ssh_config=args.remote_ssh_config,
                         dangerous=bool(args.dangerous),
                         no_sudo=bool(args.no_sudo),
                         include_paths=list(getattr(args, "include_path", []) or []),

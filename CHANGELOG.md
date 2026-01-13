@@ -1,3 +1,7 @@
+# 0.4.2
+
+ * Support `--remote-ssh-config [path-to-ssh-config]` as an argument in case extra params are required beyond `--remote-port` or `--remote-user`. Note: `--remote-host` must still be set, but it can be an 'alias' represented by the 'Host' value in the ssh config.
+
 # 0.4.1
 
  * Add interactive output when 'enroll diff --enforce' is invoking Ansible.

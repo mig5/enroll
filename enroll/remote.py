@@ -330,8 +330,9 @@ def _remote_harvest(
     *,
     local_out_dir: Path,
     remote_host: str,
-    remote_port: int = 22,
+    remote_port: Optional[int] = None,
     remote_user: Optional[str] = None,
+    remote_ssh_config: Optional[str] = None,
     remote_python: str = "python3",
     dangerous: bool = False,
     no_sudo: bool = False,
@@ -370,10 +371,60 @@ def _remote_harvest(
         # Users should add the key to known_hosts.
         ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
 
+        # Resolve SSH connection parameters.
+        connect_host = remote_host
+        connect_port = int(remote_port) if remote_port is not None else 22
+        connect_user = remote_user
+        key_filename = None
+        sock = None
+        hostkey_name = connect_host
+
+        if remote_ssh_config:
+            from paramiko.config import SSHConfig  # type: ignore
+            from paramiko.proxy import ProxyCommand  # type: ignore
+            import socket as _socket
+
+            cfg_path = Path(str(remote_ssh_config)).expanduser()
+            if not cfg_path.exists():
+                raise RuntimeError(f"SSH config file not found: {cfg_path}")
+
+            cfg = SSHConfig()
+            with cfg_path.open("r", encoding="utf-8") as _fp:
+                cfg.parse(_fp)
+            hcfg = cfg.lookup(remote_host)
+
+            connect_host = str(hcfg.get("hostname") or remote_host)
+            hostkey_name = str(hcfg.get("hostkeyalias") or connect_host)
+
+            if remote_port is None and hcfg.get("port"):
+                try:
+                    connect_port = int(str(hcfg.get("port")))
+                except ValueError:
+                    pass
+            if connect_user is None and hcfg.get("user"):
+                connect_user = str(hcfg.get("user"))
+
+            ident = hcfg.get("identityfile")
+            if ident:
+                if isinstance(ident, (list, tuple)):
+                    key_filename = [str(Path(p).expanduser()) for p in ident]
+                else:
+                    key_filename = str(Path(str(ident)).expanduser())
+
+            proxycmd = hcfg.get("proxycommand")
+            if proxycmd:
+                sock = ProxyCommand(str(proxycmd))
+            elif hostkey_name != connect_host:
+                # If HostKeyAlias is used, connect to HostName via a socket but
+                # use HostKeyAlias for known_hosts lookups.
+                sock = _socket.create_connection((connect_host, connect_port))
+
         ssh.connect(
-            hostname=remote_host,
-            port=int(remote_port),
-            username=remote_user,
+            hostname=hostkey_name if sock is not None else connect_host,
+            port=connect_port,
+            username=connect_user,
+            key_filename=key_filename,
+            sock=sock,
             allow_agent=True,
             look_for_keys=True,
         )

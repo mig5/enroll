@@ -1,4 +1,4 @@
-%global upstream_version 0.4.1
+%global upstream_version 0.4.2
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,9 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Tue Jan 13 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Support `--remote-ssh-config [path-to-ssh-config]` as an argument in case extra params are required beyond `--remote-port` or `--remote-user`. Note: `--remote-host` must still be s
+et, but it can be an 'alias' represented by the 'Host' value in the ssh config.
 * Sun Jan 11 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Add interactive output when 'enroll diff --enforce' is invoking Ansible.
 * Sat Jan 10 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
