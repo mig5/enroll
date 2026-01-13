@@ -74,7 +74,7 @@ Harvest state about a host and write a harvest bundle.
 
 **Common flags**
 - Remote harvesting:
-  - `--remote-host`, `--remote-user`, `--remote-port`
+  - `--remote-host`, `--remote-user`, `--remote-port`, `--remote-ssh-config`
   - `--no-sudo` (if you don't want/need sudo)
 - Sensitive-data behaviour:
   - default: tries to avoid likely secrets
@@ -353,6 +353,14 @@ enroll harvest --out /tmp/enroll-harvest
 ### Remote harvest over SSH
 ```bash
 enroll harvest --remote-host myhost.example.com --remote-user myuser --out /tmp/enroll-harvest
+```
+
+### Remote harvest over SSH, where the SSH configuration is in ~/.ssh/config (e.g a different SSH key)
+
+Note: you must still pass `--remote-host`, but in this case, its value can be the 'Host' alias of an entry in your `~/.ssh/config`.
+
+```bash
+enroll harvest --remote-host myhostalias --remote-ssh-config ~/.ssh/config --out /tmp/enroll-harvest
 ```
 
 ### Include paths (`--include-path`)
