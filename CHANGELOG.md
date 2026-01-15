@@ -1,6 +1,7 @@
 # 0.4.3
 
  * Add support for AddressFamily and ConnectTimeout in the .ssh/config when using `--remote-ssh-config`.
+ * Update dependencies
 
 # 0.4.2
 
