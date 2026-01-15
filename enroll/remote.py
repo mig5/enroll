@@ -379,6 +379,10 @@ def _remote_harvest(
         sock = None
         hostkey_name = connect_host
 
+        # Timeouts derived from ssh_config if set (ConnectTimeout).
+        # Used both for socket connect (when we create one) and Paramiko handshake/auth.
+        connect_timeout: Optional[float] = None
+
         if remote_ssh_config:
             from paramiko.config import SSHConfig  # type: ignore
             from paramiko.proxy import ProxyCommand  # type: ignore
@@ -411,14 +415,58 @@ def _remote_harvest(
                 else:
                     key_filename = str(Path(str(ident)).expanduser())
 
+            # Honour OpenSSH ConnectTimeout (seconds) if present.
+            if hcfg.get("connecttimeout"):
+                try:
+                    connect_timeout = float(str(hcfg.get("connecttimeout")))
+                except (TypeError, ValueError):
+                    connect_timeout = None
+
             proxycmd = hcfg.get("proxycommand")
+
+            # AddressFamily support: inet (IPv4 only), inet6 (IPv6 only), any (default).
+            addrfam = str(hcfg.get("addressfamily") or "any").strip().lower()
+            family: Optional[int] = None
+            if addrfam == "inet":
+                family = _socket.AF_INET
+            elif addrfam == "inet6":
+                family = _socket.AF_INET6
+
             if proxycmd:
+                # ProxyCommand provides the transport; AddressFamily doesn't apply here.
                 sock = ProxyCommand(str(proxycmd))
+            elif family is not None:
+                # Enforce the requested address family by pre-connecting the socket and
+                # passing it into Paramiko via sock=.
+                last_err: Optional[OSError] = None
+                infos = _socket.getaddrinfo(
+                    connect_host, connect_port, family, _socket.SOCK_STREAM
+                )
+                for af, socktype, proto, _, sa in infos:
+                    s = _socket.socket(af, socktype, proto)
+                    if connect_timeout is not None:
+                        s.settimeout(connect_timeout)
+                    try:
+                        s.connect(sa)
+                        sock = s
+                        break
+                    except OSError as e:
+                        last_err = e
+                        try:
+                            s.close()
+                        except Exception:
+                            pass  # nosec
+                if sock is None and last_err is not None:
+                    raise last_err
             elif hostkey_name != connect_host:
                 # If HostKeyAlias is used, connect to HostName via a socket but
                 # use HostKeyAlias for known_hosts lookups.
-                sock = _socket.create_connection((connect_host, connect_port))
+                sock = _socket.create_connection(
+                    (connect_host, connect_port), timeout=connect_timeout
+                )
 
+        # If we created a socket (sock!=None), pass hostkey_name as hostname so
+        # known_hosts lookup uses HostKeyAlias (or whatever hostkey_name resolved to).
         ssh.connect(
             hostname=hostkey_name if sock is not None else connect_host,
             port=connect_port,
@@ -427,6 +475,9 @@ def _remote_harvest(
             sock=sock,
             allow_agent=True,
             look_for_keys=True,
+            timeout=connect_timeout,
+            banner_timeout=connect_timeout,
+            auth_timeout=connect_timeout,
         )
 
         # If no username was explicitly provided, SSH may have selected a default.

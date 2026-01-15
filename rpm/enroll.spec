@@ -1,4 +1,4 @@
-%global upstream_version 0.4.2
+%global upstream_version 0.4.3
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,8 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Fri Jan 16 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Add support for AddressFamily and ConnectTimeout in the .ssh/config when using `--remote-ssh-config`.
 * Tue Jan 13 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Support `--remote-ssh-config [path-to-ssh-config]` as an argument in case extra params are required beyond `--remote-port` or `--remote-user`. Note: `--remote-host` must still be s
 et, but it can be an 'alias' represented by the 'Host' value in the ssh config.
