@@ -1,3 +1,7 @@
+# 0.4.4 (unreleased)
+
+ * Update cryptography dependency
+
 # 0.4.3
 
  * Add support for AddressFamily and ConnectTimeout in the .ssh/config when using `--remote-ssh-config`.
