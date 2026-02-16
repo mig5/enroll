@@ -1,3 +1,9 @@
+enroll (0.4.4) unstable; urgency=medium
+
+ * Add capability to handle passphrases on encrypted SSH private keys. Prompting can be forced with `--ask-key-passphrase` or automated (e.g for CI) with `--ssh-key-passphrase env SOMEVAR`
+
+ -- Miguel Jacq <mig@mig5.net>  Tue, 17 Feb 2026 11:00 +1100
+
 enroll (0.4.3) unstable; urgency=medium
 
  *  Add support for AddressFamily and ConnectTimeout in the .ssh/config when using `--remote-ssh-config`.

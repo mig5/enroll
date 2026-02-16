@@ -1,4 +1,4 @@
-# 0.4.4 (unreleased)
+# 0.4.4
 
  * Update cryptography dependency
  * Add capability to handle passphrases on encrypted SSH private keys. Prompting can be forced with `--ask-key-passphrase` or automated (e.g for CI) with `--ssh-key-passphrase env SOMEVAR`
