@@ -22,7 +22,11 @@ from .diff import (
 from .explain import explain_state
 from .harvest import harvest
 from .manifest import manifest
-from .remote import remote_harvest, RemoteSudoPasswordRequired
+from .remote import (
+    remote_harvest,
+    RemoteSudoPasswordRequired,
+    RemoteSSHKeyPassphraseRequired,
+)
 from .sopsutil import SopsError, encrypt_file_binary
 from .validate import validate_harvest
 from .version import get_enroll_version
@@ -387,6 +391,24 @@ def _add_remote_args(p: argparse.ArgumentParser) -> None:
         help=(
             "Prompt for the remote sudo (become) password when using --remote-host "
             "(similar to ansible --ask-become-pass)."
+        ),
+    )
+
+    keyp = p.add_mutually_exclusive_group()
+    keyp.add_argument(
+        "--ask-key-passphrase",
+        action="store_true",
+        help=(
+            "Prompt for the SSH private key passphrase when using --remote-host. "
+            "If not set, enroll will still prompt on-demand if it detects an encrypted key in an interactive session."
+        ),
+    )
+    keyp.add_argument(
+        "--ssh-key-passphrase-env",
+        metavar="ENV_VAR",
+        help=(
+            "Read the SSH private key passphrase from environment variable ENV_VAR "
+            "(useful for non-interactive runs/CI)."
         ),
     )
 
@@ -771,6 +793,10 @@ def main() -> None:
                             pass
                         remote_harvest(
                             ask_become_pass=args.ask_become_pass,
+                            ask_key_passphrase=bool(args.ask_key_passphrase),
+                            ssh_key_passphrase_env=getattr(
+                                args, "ssh_key_passphrase_env", None
+                            ),
                             local_out_dir=tmp_bundle,
                             remote_host=args.remote_host,
                             remote_port=args.remote_port,
@@ -793,6 +819,10 @@ def main() -> None:
                     )
                     state = remote_harvest(
                         ask_become_pass=args.ask_become_pass,
+                        ask_key_passphrase=bool(args.ask_key_passphrase),
+                        ssh_key_passphrase_env=getattr(
+                            args, "ssh_key_passphrase_env", None
+                        ),
                         local_out_dir=out_dir,
                         remote_host=args.remote_host,
                         remote_port=args.remote_port,
@@ -996,6 +1026,10 @@ def main() -> None:
                             pass
                         remote_harvest(
                             ask_become_pass=args.ask_become_pass,
+                            ask_key_passphrase=bool(args.ask_key_passphrase),
+                            ssh_key_passphrase_env=getattr(
+                                args, "ssh_key_passphrase_env", None
+                            ),
                             local_out_dir=tmp_bundle,
                             remote_host=args.remote_host,
                             remote_port=args.remote_port,
@@ -1027,6 +1061,10 @@ def main() -> None:
                     )
                     remote_harvest(
                         ask_become_pass=args.ask_become_pass,
+                        ask_key_passphrase=bool(args.ask_key_passphrase),
+                        ssh_key_passphrase_env=getattr(
+                            args, "ssh_key_passphrase_env", None
+                        ),
                         local_out_dir=harvest_dir,
                         remote_host=args.remote_host,
                         remote_port=args.remote_port,
@@ -1096,6 +1134,12 @@ def main() -> None:
         raise SystemExit(
             "error: remote sudo requires a password. Re-run with --ask-become-pass."
         ) from None
+    except RemoteSSHKeyPassphraseRequired as e:
+        msg = str(e).strip() or (
+            "SSH private key passphrase is required. "
+            "Re-run with --ask-key-passphrase or --ssh-key-passphrase-env VAR."
+        )
+        raise SystemExit(f"error: {msg}") from None
     except RuntimeError as e:
         raise SystemExit(f"error: {e}") from None
     except SopsError as e:

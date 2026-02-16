@@ -18,6 +18,10 @@ class RemoteSudoPasswordRequired(RuntimeError):
     """Raised when sudo requires a password but none was provided."""
 
 
+class RemoteSSHKeyPassphraseRequired(RuntimeError):
+    """Raised when SSH private key decryption needs a passphrase."""
+
+
 def _sudo_password_required(out: str, err: str) -> bool:
     """Return True if sudo output indicates it needs a password/TTY."""
     blob = (out + "\n" + err).lower()
@@ -68,11 +72,42 @@ def _resolve_become_password(
     return None
 
 
+def _resolve_ssh_key_passphrase(
+    ask_key_passphrase: bool,
+    *,
+    env_var: Optional[str] = None,
+    prompt: str = "SSH key passphrase: ",
+    getpass_fn: Callable[[str], str] = getpass.getpass,
+) -> Optional[str]:
+    """Resolve SSH private-key passphrase from env and/or prompt.
+
+    Precedence:
+      1) --ssh-key-passphrase-env style input (env_var)
+      2) --ask-key-passphrase style interactive prompt
+      3) None
+    """
+    if env_var:
+        val = os.environ.get(str(env_var))
+        if val is None:
+            raise RuntimeError(
+                "SSH key passphrase environment variable is not set: " f"{env_var}"
+            )
+        return val
+
+    if ask_key_passphrase:
+        return getpass_fn(prompt)
+
+    return None
+
+
 def remote_harvest(
     *,
     ask_become_pass: bool = False,
+    ask_key_passphrase: bool = False,
+    ssh_key_passphrase_env: Optional[str] = None,
     no_sudo: bool = False,
     prompt: str = "sudo password: ",
+    key_prompt: str = "SSH key passphrase: ",
     getpass_fn: Optional[Callable[[str], str]] = None,
     stdin: Optional[TextIO] = None,
     **kwargs,
@@ -97,21 +132,52 @@ def remote_harvest(
         prompt=prompt,
         getpass_fn=getpass_fn,
     )
+    ssh_key_passphrase = _resolve_ssh_key_passphrase(
+        ask_key_passphrase,
+        env_var=ssh_key_passphrase_env,
+        prompt=key_prompt,
+        getpass_fn=getpass_fn,
+    )
 
-    try:
-        return _remote_harvest(sudo_password=sudo_password, no_sudo=no_sudo, **kwargs)
-    except RemoteSudoPasswordRequired:
-        if sudo_password is not None:
-            raise
+    while True:
+        try:
+            return _remote_harvest(
+                sudo_password=sudo_password,
+                no_sudo=no_sudo,
+                ssh_key_passphrase=ssh_key_passphrase,
+                **kwargs,
+            )
+        except RemoteSSHKeyPassphraseRequired:
+            # Already tried a passphrase and still failed.
+            if ssh_key_passphrase is not None:
+                raise RemoteSSHKeyPassphraseRequired(
+                    "SSH private key could not be decrypted with the supplied "
+                    "passphrase."
+                ) from None
 
-        # Fallback prompt if interactive
-        if stdin is not None and getattr(stdin, "isatty", lambda: False)():
-            pw = getpass_fn(prompt)
-            return _remote_harvest(sudo_password=pw, no_sudo=no_sudo, **kwargs)
+            # Fallback prompt if interactive.
+            if stdin is not None and getattr(stdin, "isatty", lambda: False)():
+                ssh_key_passphrase = getpass_fn(key_prompt)
+                continue
 
-        raise RemoteSudoPasswordRequired(
-            "Remote sudo requires a password. Re-run with --ask-become-pass."
-        )
+            raise RemoteSSHKeyPassphraseRequired(
+                "SSH private key is encrypted and needs a passphrase. "
+                "Re-run with --ask-key-passphrase or "
+                "--ssh-key-passphrase-env VAR."
+            )
+
+        except RemoteSudoPasswordRequired:
+            if sudo_password is not None:
+                raise
+
+            # Fallback prompt if interactive.
+            if stdin is not None and getattr(stdin, "isatty", lambda: False)():
+                sudo_password = getpass_fn(prompt)
+                continue
+
+            raise RemoteSudoPasswordRequired(
+                "Remote sudo requires a password. Re-run with --ask-become-pass."
+            )
 
 
 def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
@@ -337,6 +403,7 @@ def _remote_harvest(
     dangerous: bool = False,
     no_sudo: bool = False,
     sudo_password: Optional[str] = None,
+    ssh_key_passphrase: Optional[str] = None,
     include_paths: Optional[list[str]] = None,
     exclude_paths: Optional[list[str]] = None,
 ) -> Path:
@@ -467,18 +534,24 @@ def _remote_harvest(
 
         # If we created a socket (sock!=None), pass hostkey_name as hostname so
         # known_hosts lookup uses HostKeyAlias (or whatever hostkey_name resolved to).
-        ssh.connect(
-            hostname=hostkey_name if sock is not None else connect_host,
-            port=connect_port,
-            username=connect_user,
-            key_filename=key_filename,
-            sock=sock,
-            allow_agent=True,
-            look_for_keys=True,
-            timeout=connect_timeout,
-            banner_timeout=connect_timeout,
-            auth_timeout=connect_timeout,
-        )
+        try:
+            ssh.connect(
+                hostname=hostkey_name if sock is not None else connect_host,
+                port=connect_port,
+                username=connect_user,
+                key_filename=key_filename,
+                sock=sock,
+                allow_agent=True,
+                look_for_keys=True,
+                timeout=connect_timeout,
+                banner_timeout=connect_timeout,
+                auth_timeout=connect_timeout,
+                passphrase=ssh_key_passphrase,
+            )
+        except paramiko.PasswordRequiredException as e:  # type: ignore[attr-defined]
+            raise RemoteSSHKeyPassphraseRequired(
+                "SSH private key is encrypted and no passphrase was provided."
+            ) from e
 
         # If no username was explicitly provided, SSH may have selected a default.
         # We need a concrete username for the (sudo) chown step below.

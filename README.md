@@ -89,8 +89,27 @@ Harvest state about a host and write a harvest bundle.
     - glob (default): supports `*` and `**` (prefix with `glob:` to force)
     - regex: prefix with `re:` or `regex:`
   - Precedence: excludes win over includes.
-* Using remote mode and sudo requires password?
-  - `--ask-become-pass` (or `-K`) will prompt for the password. If you forget, and remote requires password for sudo, it'll still fall back to prompting for a password, but will be a bit slower to do so.
+  * Using remote mode and auth requires secrets?
+    * sudo password:
+      * `--ask-become-pass` (or `-K`) prompts for the sudo password.
+      * If you forget, and remote sudo requires a password, Enroll will still fall back to prompting in interactive mode (slightly slower due to retry).
+    * SSH private-key passphrase:
+      * `--ask-key-passphrase` prompts for the SSH key passphrase.
+      * `--ssh-key-passphrase-env ENV_VAR` reads the SSH key passphrase from an environment variable (useful for CI/non-interactive runs).
+      * If neither is provided, and Enroll detects an encrypted key in an interactive session, it will still fall back to prompting on-demand.
+      * In non-interactive sessions, pass `--ask-key-passphrase` or `--ssh-key-passphrase-env ENV_VAR` when using encrypted private keys.
+    * Note: `--ask-key-passphrase` and `--ssh-key-passphrase-env` are mutually exclusive.
+
+Examples (encrypted SSH key)
+
+```bash
+# Interactive
+enroll harvest --remote-host myhost.example.com --remote-user myuser --ask-key-passphrase --out /tmp/enroll-harvest
+
+# Non-interactive / CI
+export ENROLL_SSH_KEY_PASSPHRASE='correct horse battery staple'
+enroll single-shot --remote-host myhost.example.com --remote-user myuser --ssh-key-passphrase-env ENROLL_SSH_KEY_PASSPHRASE --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn myhost.example.com
+```
 
 ---
 
