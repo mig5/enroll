@@ -612,7 +612,7 @@ exclude_path = /usr/local/bin/docker-*, /usr/local/bin/some-tool
 [manifest]
 # you can set defaults here too, e.g.
 no_jinjaturtle = true
-sops = 00AE817C24A10C2540461A9C1D7CDE0234DB458D
+sops = 54A91143AE0AB4F7743B01FE888ED1B423A3BC99
 
 [diff]
 # ignore noisy drift

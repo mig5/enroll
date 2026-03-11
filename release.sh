@@ -46,7 +46,7 @@ done
 # RPM
 sudo apt-get -y install createrepo-c rpm
 BUILD_OUTPUT="${HOME}/git/enroll/dist"
-KEYID="00AE817C24A10C2540461A9C1D7CDE0234DB458D"
+KEYID="54A91143AE0AB4F7743B01FE888ED1B423A3BC99"
 REPO_ROOT="${HOME}/git/repo_rpm"
 REMOTE="letessier.mig5.net:/opt/repo_rpm"
 
