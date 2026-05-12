@@ -131,3 +131,15 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
         encoding="utf-8"
     )
     assert "foo_key: 1" in defaults
+
+
+def test_openssh_paths_are_jinjaturtle_supported_and_forced_to_ssh() -> None:
+    from enroll.jinjaturtle import can_jinjify_path, infer_other_formats
+
+    assert infer_other_formats("/etc/ssh/sshd_config") == "ssh"
+    assert infer_other_formats("/etc/ssh/ssh_config") == "ssh"
+    assert infer_other_formats("/etc/ssh/sshd_config.d/50-hardening.conf") == "ssh"
+    assert infer_other_formats("/etc/ssh/ssh_config.d/99-proxy.conf") == "ssh"
+
+    assert can_jinjify_path("/etc/ssh/sshd_config")
+    assert can_jinjify_path("/etc/ssh/ssh_config")

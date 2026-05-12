@@ -1,3 +1,9 @@
+enroll (0.5.0) unstable; urgency=medium
+
+ * Add ssh config support where JinjaTurtle is used
+
+ -- Miguel Jacq <mig@mig5.net>  Tue, 12 May 2026 12:00 +1000
+
 enroll (0.4.4) unstable; urgency=medium
 
  * Add capability to handle passphrases on encrypted SSH private keys. Prompting can be forced with `--ask-key-passphrase` or automated (e.g for CI) with `--ssh-key-passphrase env SOMEVAR`

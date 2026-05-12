@@ -46,6 +46,12 @@ def infer_other_formats(dest_path: str) -> Optional[str]:
     # systemd units
     if suffix in SYSTEMD_SUFFIXES:
         return "systemd"
+    # OpenSSH system config files and snippets
+    parts = {part.lower() for part in p.parts}
+    if name in {"sshd_config", "ssh_config"}:
+        return "ssh"
+    if suffix == ".conf" and {"sshd_config.d", "ssh_config.d"} & parts:
+        return "ssh"
     return None
 
 
