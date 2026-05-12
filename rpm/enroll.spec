@@ -1,4 +1,4 @@
-%global upstream_version 0.4.4
+%global upstream_version 0.5.0
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,8 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Tue May 12 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Add ssh config support where JinjaTurtle is used
 * Tue Feb 16 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Add capability to handle passphrases on encrypted SSH private keys. Prompting can be forced with `--ask-key-passphrase` or automated (e.g for CI) with `--ssh-key-passphrase env SOMEVAR`
 * Fri Jan 16 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
