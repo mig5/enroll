@@ -60,7 +60,7 @@
           "enum": [
             "user_excluded",
             "unreadable",
-	    "backup_file",
+            "backup_file",
             "log_file",
             "denied_path",
             "too_large",
@@ -304,6 +304,23 @@
           "properties": {
             "kind": {
               "const": "package_role"
+            },
+            "ref": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "firewall_runtime"
             },
             "ref": {
               "minLength": 1,
@@ -579,6 +596,62 @@
         }
       ],
       "unevaluatedProperties": false
+    },
+    "FirewallRuntimeSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "role_name": {
+          "const": "firewall_runtime"
+        },
+        "packages": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ipset_save": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ipset_sets": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "iptables_v4_save": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "iptables_v6_save": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "role_name",
+        "packages",
+        "ipset_save",
+        "ipset_sets",
+        "iptables_v4_save",
+        "iptables_v6_save",
+        "notes"
+      ],
+      "type": "object"
     }
   },
   "$id": "https://enroll.sh/schema/state.schema.json",
@@ -686,6 +759,9 @@
         },
         "usr_local_custom": {
           "$ref": "#/$defs/UsrLocalCustomSnapshot"
+        },
+        "firewall_runtime": {
+          "$ref": "#/$defs/FirewallRuntimeSnapshot"
         }
       },
       "required": [

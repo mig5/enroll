@@ -13,6 +13,7 @@
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
 - Captures non-system users and their SSH public keys and any .bashrc or .bash_aliases or .profile files that deviate from the skel defaults.
 - Captures miscellaneous `/etc` files it can't attribute to a package and installs them in an `etc_custom` role.
+- Captures live ipset and iptables runtime state into a fallback `firewall_runtime` role, when active ipsets/iptables rules are present *and* no corresponding persistent ipset/iptables *files* were found.
 - Captures symlinks in common applications that rely on them, e.g apache2/nginx 'sites-enabled'
 - Ditto for /usr/local/bin (for non-binary files) and /usr/local/etc
 - Avoids trying to start systemd services that were detected as inactive during harvest.
@@ -70,6 +71,8 @@ Harvest state about a host and write a harvest bundle.
 - Changed-from-default config (plus related custom/unowned files under service dirs)
 - Non-system users + SSH public keys
 - Misc `/etc` that can't be attributed to a package (`etc_custom` role)
+- Static firewall config files such as nftables, UFW, firewalld, `/etc/iptables/rules.v4`, `/etc/iptables/rules.v6`, and `/etc/ipset*`
+- Live kernel ipset/iptables state via `ipset save`, `iptables-save`, and `ip6tables-save` as a fallback, but only when the corresponding persistent config was not found (`firewall_runtime` role at manifest time)
 - Optional user-specified extra files/dirs via `--include-path` (emitted as an `extra_paths` role at manifest time)
 
 **Common flags**
@@ -531,6 +534,7 @@ Roles collected
 - packages: 232 package snapshot(s), 41 file(s), 0 excluded
 - apt_config: 26 file(s), 7 dir(s), 10 excluded
 - dnf_config: 0 file(s), 0 dir(s), 0 excluded
+- firewall_runtime: 2 snapshot(s), 1 ipset(s)
 - etc_custom: 70 file(s), 20 dir(s), 0 excluded
 - usr_local_custom: 35 file(s), 1 dir(s), 0 excluded
 - extra_paths: 0 file(s), 0 dir(s), 0 excluded

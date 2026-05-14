@@ -168,3 +168,121 @@ def test_iter_system_capture_paths_dedupes_first_reason(monkeypatch):
     )
     out = h._iter_system_capture_paths()
     assert out == [("/dup", "r1")]
+
+
+def test_ipset_and_iptables_state_helpers(tmp_path: Path):
+    ipset_save = """create blocklist hash:ip family inet hashsize 1024 maxelem 65536
+add blocklist 203.0.113.10
+create nets hash:net family inet
+"""
+    assert h._ipset_save_has_state(ipset_save)
+    assert h._parse_ipset_set_names(ipset_save) == ["blocklist", "nets"]
+    assert not h._ipset_save_has_state("# empty\n")
+
+    empty_iptables = """*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+COMMIT
+"""
+    assert not h._iptables_save_has_state(empty_iptables)
+
+    native_rule = empty_iptables.replace(
+        "COMMIT", "-A INPUT -p tcp --dport 22 -j ACCEPT\nCOMMIT"
+    )
+    assert h._iptables_save_has_state(native_rule)
+
+    changed_policy = empty_iptables.replace(":INPUT ACCEPT", ":INPUT DROP")
+    assert h._iptables_save_has_state(changed_policy)
+
+
+def test_collect_firewall_runtime_snapshot_writes_generated_artifacts(
+    monkeypatch, tmp_path: Path
+):
+    outputs = {
+        "ipset_save": (
+            "create blocklist hash:ip family inet\nadd blocklist 203.0.113.10\n",
+            None,
+        ),
+        "iptables_v4_save": (
+            "*filter\n:INPUT DROP [0:0]\n-A INPUT -m set --match-set blocklist src -j DROP\nCOMMIT\n",
+            None,
+        ),
+        "iptables_v6_save": ("*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n", None),
+    }
+
+    def fake_run(command_key, *, timeout=10):
+        return outputs[command_key]
+
+    monkeypatch.setattr(h, "_run_capture_command", fake_run)
+
+    snap = h._collect_firewall_runtime_snapshot(str(tmp_path))
+    assert snap.role_name == "firewall_runtime"
+    assert snap.packages == ["ipset", "iptables"]
+    assert snap.ipset_save == "firewall/ipset.save"
+    assert snap.ipset_sets == ["blocklist"]
+    assert snap.iptables_v4_save == "firewall/iptables.v4"
+    assert snap.iptables_v6_save is None
+
+    assert (
+        (tmp_path / "artifacts" / "firewall_runtime" / "firewall" / "ipset.save")
+        .read_text(encoding="utf-8")
+        .startswith("create blocklist")
+    )
+    assert (
+        (tmp_path / "artifacts" / "firewall_runtime" / "firewall" / "iptables.v4")
+        .read_text(encoding="utf-8")
+        .startswith("*filter")
+    )
+
+
+def test_collect_firewall_runtime_snapshot_is_per_family_fallback(
+    monkeypatch, tmp_path: Path
+):
+    calls = []
+    outputs = {
+        "ipset_save": (
+            "create blocklist hash:ip family inet\nadd blocklist 203.0.113.10\n",
+            None,
+        ),
+        "iptables_v4_save": (
+            "*filter\n:INPUT DROP [0:0]\n-A INPUT -p tcp --dport 22 -j ACCEPT\nCOMMIT\n",
+            None,
+        ),
+        "iptables_v6_save": (
+            "*filter\n:INPUT DROP [0:0]\n-A INPUT -p tcp --dport 22 -j ACCEPT\nCOMMIT\n",
+            None,
+        ),
+    }
+
+    def fake_run(command_key, *, timeout=10):
+        calls.append(command_key)
+        return outputs[command_key]
+
+    monkeypatch.setattr(h, "_run_capture_command", fake_run)
+
+    snap = h._collect_firewall_runtime_snapshot(
+        str(tmp_path),
+        persistent_ipset_files=["/etc/ipset.conf"],
+        persistent_iptables_v4_files=["/etc/iptables/rules.v4"],
+        persistent_iptables_v6_files=[],
+    )
+
+    assert "ipset_save" not in calls
+    assert "iptables_v4_save" not in calls
+    assert "iptables_v6_save" in calls
+    assert snap.ipset_save is None
+    assert snap.iptables_v4_save is None
+    assert snap.iptables_v6_save == "firewall/iptables.v6"
+    assert snap.packages == ["iptables"]
+    assert any("persistent ipset configuration" in note for note in snap.notes)
+    assert any("persistent IPv4 iptables configuration" in note for note in snap.notes)
+    assert not (
+        tmp_path / "artifacts" / "firewall_runtime" / "firewall" / "ipset.save"
+    ).exists()
+    assert not (
+        tmp_path / "artifacts" / "firewall_runtime" / "firewall" / "iptables.v4"
+    ).exists()
+    assert (
+        tmp_path / "artifacts" / "firewall_runtime" / "firewall" / "iptables.v6"
+    ).exists()

@@ -5,10 +5,12 @@ import json
 import os
 import re
 import shutil
+import shlex
 import stat
+import subprocess  # nosec
 import time
 from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from .systemd import (
     list_enabled_services,
@@ -145,6 +147,17 @@ class ExtraPathsSnapshot:
     managed_files: List[ManagedFile] = field(default_factory=list)
     managed_links: List[ManagedLink] = field(default_factory=list)
     excluded: List[ExcludedFile] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+
+@dataclass
+class FirewallRuntimeSnapshot:
+    role_name: str
+    packages: List[str] = field(default_factory=list)
+    ipset_save: Optional[str] = None
+    ipset_sets: List[str] = field(default_factory=list)
+    iptables_v4_save: Optional[str] = None
+    iptables_v6_save: Optional[str] = None
     notes: List[str] = field(default_factory=list)
 
 
@@ -653,6 +666,13 @@ _SYSTEM_CAPTURE_GLOBS: List[tuple[str, str]] = [
     ("/etc/nftables.d/*", "system_firewall"),
     ("/etc/iptables/rules.v4", "system_firewall"),
     ("/etc/iptables/rules.v6", "system_firewall"),
+    ("/etc/sysconfig/iptables", "system_firewall"),
+    ("/etc/sysconfig/ip6tables", "system_firewall"),
+    ("/etc/ipset.conf", "system_firewall"),
+    ("/etc/ipset/*", "system_firewall"),
+    ("/etc/ipset.d/*", "system_firewall"),
+    ("/etc/sysconfig/ipset", "system_firewall"),
+    ("/etc/default/ipset", "system_firewall"),
     ("/etc/ufw/*", "system_firewall"),
     ("/etc/default/ufw", "system_firewall"),
     ("/etc/firewalld/*", "system_firewall"),
@@ -662,6 +682,46 @@ _SYSTEM_CAPTURE_GLOBS: List[tuple[str, str]] = [
     # other
     ("/etc/rc.local", "system_rc"),
 ]
+
+
+# Persistent firewall files that are treated as authoritative for their
+# respective runtime state. If any matching file exists, the runtime capture
+# for that family is retained only as static managed-file harvest output and
+# not duplicated through the generated firewall_runtime role.
+_PERSISTENT_IPTABLES_V4_GLOBS = [
+    "/etc/iptables/rules.v4",
+    "/etc/sysconfig/iptables",
+]
+
+_PERSISTENT_IPTABLES_V6_GLOBS = [
+    "/etc/iptables/rules.v6",
+    "/etc/sysconfig/ip6tables",
+]
+
+_PERSISTENT_IPSET_GLOBS = [
+    "/etc/ipset.conf",
+    "/etc/ipset/*",
+    "/etc/ipset.d/*",
+    "/etc/sysconfig/ipset",
+]
+
+
+def _persistent_firewall_files(globs: List[str]) -> List[str]:
+    """Return persistent firewall files matching ``globs``.
+
+    This intentionally uses the same file walking helper as the static system
+    capture path so the runtime fallback decision matches what Enroll can
+    harvest as managed files.
+    """
+    seen: Set[str] = set()
+    out: List[str] = []
+    for spec in globs:
+        for path in _iter_matching_files(spec):
+            if path in seen:
+                continue
+            seen.add(path)
+            out.append(path)
+    return sorted(out)
 
 
 def _iter_matching_files(spec: str, *, cap: int = MAX_FILES_CAP) -> List[str]:
@@ -854,6 +914,200 @@ def _iter_system_capture_paths() -> List[tuple[str, str]]:
     return uniq
 
 
+_FIREWALL_CAPTURE_COMMANDS: Dict[str, Tuple[str, ...]] = {
+    "ipset_save": ("ipset", "save"),
+    "iptables_v4_save": ("iptables-save",),
+    "iptables_v6_save": ("ip6tables-save",),
+}
+
+
+def _run_capture_command(
+    command_key: str, *, timeout: int = 10
+) -> tuple[Optional[str], Optional[str]]:
+    """Return (stdout, error_note) for an allowlisted local state command.
+
+    The command key is resolved through ``_FIREWALL_CAPTURE_COMMANDS`` so this
+    helper never executes caller-supplied argv. Commands are run with
+    ``shell=False`` explicitly to avoid shell interpretation.
+    """
+    argv = _FIREWALL_CAPTURE_COMMANDS.get(command_key)
+    if argv is None:
+        return None, f"Unknown capture command: {command_key}"
+
+    exe = argv[0]
+    if shutil.which(exe) is None:
+        return None, f"{exe} not found on PATH."
+
+    try:
+        proc = subprocess.run(  # nosec
+            argv,
+            shell=False,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception as e:  # noqa: BLE001
+        return None, f"{' '.join(argv)} failed: {e!r}"
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        if len(stderr) > 300:
+            stderr = stderr[:297] + "..."
+        return (
+            None,
+            f"{' '.join(argv)} exited {proc.returncode}: {stderr or '(no stderr)'}",
+        )
+
+    return proc.stdout or "", None
+
+
+def _write_generated_artifact(
+    bundle_dir: str, role_name: str, src_rel: str, content: str
+) -> None:
+    """Write a generated harvest artifact that did not exist as a file on disk."""
+    dst = os.path.join(bundle_dir, "artifacts", role_name, src_rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _ipset_save_has_state(text: str) -> bool:
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(("create ", "add ")):
+            return True
+    return False
+
+
+def _parse_ipset_set_names(text: str) -> List[str]:
+    names: List[str] = []
+    seen: Set[str] = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            toks = shlex.split(line)
+        except ValueError:
+            toks = line.split()
+        if len(toks) >= 2 and toks[0] == "create" and toks[1] not in seen:
+            seen.add(toks[1])
+            names.append(toks[1])
+    return names
+
+
+def _iptables_save_has_state(text: str) -> bool:
+    """Return True when iptables-save output contains non-default state."""
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("*") or line == "COMMIT":
+            continue
+        if line.startswith(":"):
+            parts = line.split()
+            chain_name = parts[0][1:] if parts else ""
+            policy = parts[1] if len(parts) >= 2 else ""
+            # Built-in empty chains usually look like ':INPUT ACCEPT [0:0]'.
+            # A changed policy, or any custom chain, is meaningful state.
+            if policy not in ("ACCEPT", "-"):
+                return True
+            if policy == "-" and chain_name:
+                return True
+            continue
+        if line.startswith(("-A ", "-I ", "-N ", "-P ", "-R ")):
+            return True
+    return False
+
+
+def _collect_firewall_runtime_snapshot(
+    bundle_dir: str,
+    *,
+    persistent_ipset_files: Optional[List[str]] = None,
+    persistent_iptables_v4_files: Optional[List[str]] = None,
+    persistent_iptables_v6_files: Optional[List[str]] = None,
+) -> FirewallRuntimeSnapshot:
+    """Capture live kernel firewall state only when no persistent config exists.
+
+    Enroll also harvests persistent firewall files such as
+    /etc/iptables/rules.v4, /etc/iptables/rules.v6, and /etc/ipset.conf as
+    managed files. The generated runtime restore role is therefore a fallback:
+    it captures each firewall family only when that family has no persistent
+    file to avoid generating two roles that try to manage the same state.
+    """
+    role_name = "firewall_runtime"
+    packages: Set[str] = set()
+    notes: List[str] = []
+    ipset_save_rel: Optional[str] = None
+    ipset_sets: List[str] = []
+    iptables_v4_rel: Optional[str] = None
+    iptables_v6_rel: Optional[str] = None
+
+    persistent_ipset_files = persistent_ipset_files or []
+    persistent_iptables_v4_files = persistent_iptables_v4_files or []
+    persistent_iptables_v6_files = persistent_iptables_v6_files or []
+
+    if persistent_ipset_files:
+        notes.append(
+            "Live ipset runtime capture skipped because persistent ipset "
+            f"configuration was found: {', '.join(persistent_ipset_files)}"
+        )
+    else:
+        ipset_out, ipset_err = _run_capture_command("ipset_save")
+        if ipset_err:
+            notes.append(ipset_err)
+        elif ipset_out is not None and _ipset_save_has_state(ipset_out):
+            ipset_save_rel = "firewall/ipset.save"
+            _write_generated_artifact(bundle_dir, role_name, ipset_save_rel, ipset_out)
+            ipset_sets = _parse_ipset_set_names(ipset_out)
+            packages.add("ipset")
+
+    if persistent_iptables_v4_files:
+        notes.append(
+            "Live IPv4 iptables runtime capture skipped because persistent "
+            f"IPv4 iptables configuration was found: {', '.join(persistent_iptables_v4_files)}"
+        )
+    else:
+        ipt4_out, ipt4_err = _run_capture_command("iptables_v4_save")
+        if ipt4_err:
+            notes.append(ipt4_err)
+        elif ipt4_out is not None and _iptables_save_has_state(ipt4_out):
+            iptables_v4_rel = "firewall/iptables.v4"
+            _write_generated_artifact(bundle_dir, role_name, iptables_v4_rel, ipt4_out)
+            packages.add("iptables")
+
+    if persistent_iptables_v6_files:
+        notes.append(
+            "Live IPv6 iptables runtime capture skipped because persistent "
+            f"IPv6 iptables configuration was found: {', '.join(persistent_iptables_v6_files)}"
+        )
+    else:
+        ipt6_out, ipt6_err = _run_capture_command("iptables_v6_save")
+        if ipt6_err:
+            notes.append(ipt6_err)
+        elif ipt6_out is not None and _iptables_save_has_state(ipt6_out):
+            iptables_v6_rel = "firewall/iptables.v6"
+            _write_generated_artifact(bundle_dir, role_name, iptables_v6_rel, ipt6_out)
+            packages.add("iptables")
+
+    # Package names are intentionally added only when matching live state was
+    # captured. Merely having iptables/ipset installed should not create a role.
+
+    return FirewallRuntimeSnapshot(
+        role_name=role_name,
+        packages=sorted(packages),
+        ipset_save=ipset_save_rel,
+        ipset_sets=ipset_sets,
+        iptables_v4_save=iptables_v4_rel,
+        iptables_v6_save=iptables_v6_rel,
+        notes=notes,
+    )
+
+
 def harvest(
     bundle_dir: str,
     policy: Optional[IgnorePolicy] = None,
@@ -906,6 +1160,29 @@ def harvest(
 
     installed_pkgs = backend.installed_packages() or {}
     installed_names: Set[str] = set(installed_pkgs.keys())
+
+    persistent_ipset_files = _persistent_firewall_files(_PERSISTENT_IPSET_GLOBS)
+    persistent_iptables_v4_files = _persistent_firewall_files(
+        _PERSISTENT_IPTABLES_V4_GLOBS
+    )
+    persistent_iptables_v6_files = _persistent_firewall_files(
+        _PERSISTENT_IPTABLES_V6_GLOBS
+    )
+
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        firewall_runtime_snapshot = FirewallRuntimeSnapshot(
+            role_name="firewall_runtime",
+            notes=[
+                "Live ipset/iptables runtime capture skipped because harvest is not running as root."
+            ],
+        )
+    else:
+        firewall_runtime_snapshot = _collect_firewall_runtime_snapshot(
+            bundle_dir,
+            persistent_ipset_files=persistent_ipset_files,
+            persistent_iptables_v4_files=persistent_iptables_v4_files,
+            persistent_iptables_v6_files=persistent_iptables_v6_files,
+        )
 
     def _pick_installed(cands: List[str]) -> Optional[str]:
         for c in cands:
@@ -2121,6 +2398,7 @@ def harvest(
     pkg_names |= manual_set
     pkg_names |= set(pkg_units.keys())
     pkg_names |= {ps.package for ps in pkg_snaps}
+    pkg_names |= set(firewall_runtime_snapshot.packages or [])
 
     packages_inventory: Dict[str, Dict[str, object]] = {}
     for pkg in sorted(pkg_names):
@@ -2136,6 +2414,13 @@ def harvest(
             observed.append({"kind": "systemd_unit", "ref": unit})
         for rn in sorted(set(pkg_role_names.get(pkg, []))):
             observed.append({"kind": "package_role", "ref": rn})
+        if pkg in set(firewall_runtime_snapshot.packages or []):
+            observed.append(
+                {"kind": "firewall_runtime", "ref": firewall_runtime_snapshot.role_name}
+            )
+            pkg_roles_map.setdefault(pkg, set()).add(
+                firewall_runtime_snapshot.role_name
+            )
 
         roles = sorted(pkg_roles_map.get(pkg, set()))
 
@@ -2219,6 +2504,7 @@ def harvest(
             "packages": [asdict(p) for p in pkg_snaps],
             "apt_config": asdict(apt_config_snapshot),
             "dnf_config": asdict(dnf_config_snapshot),
+            "firewall_runtime": asdict(firewall_runtime_snapshot),
             "etc_custom": asdict(etc_custom_snapshot),
             "usr_local_custom": asdict(usr_local_custom_snapshot),
             "extra_paths": asdict(extra_paths_snapshot),

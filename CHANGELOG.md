@@ -1,3 +1,14 @@
+# 0.6.0
+
+ * Add support for capturing ipset and iptables configuration files
+ * Add support for generating ipset and iptables configuration files from runtime, if the former weren't present (`firewall_runtime` role)
+ * Dependency updates
+
+# 0.5.0
+
+ * Add support for templating `sshd_config`, if a compatible version of JinjaTurtle is also present.
+ * Dependency updates
+
 # 0.4.4
 
  * Update cryptography dependency

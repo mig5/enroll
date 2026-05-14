@@ -582,6 +582,97 @@ def _render_install_packages_tasks(role: str, var_prefix: str) -> str:
 """
 
 
+def _render_firewall_runtime_tasks(var_prefix: str) -> str:
+    """Render tasks for live ipset/iptables snapshots."""
+    return f"""- name: Ensure firewall runtime snapshot directory exists
+  ansible.builtin.file:
+    path: /etc/enroll/firewall
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy captured ipset snapshot
+  vars:
+    _enroll_ff:
+      files:
+        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ {var_prefix}_ipset_save }}}}"
+        - "{{{{ role_path }}}}/files/{{{{ {var_prefix}_ipset_save }}}}"
+  ansible.builtin.copy:
+    src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
+    dest: /etc/enroll/firewall/ipset.save
+    owner: root
+    group: root
+    mode: "0600"
+  when: ({var_prefix}_ipset_save | default('') | length) > 0
+
+- name: Flush captured ipsets before restoring members
+  ansible.builtin.command:
+    cmd: "ipset flush {{{{ item }}}}"
+  loop: "{{{{ {var_prefix}_ipset_sets | default([]) }}}}"
+  register: _enroll_ipset_flush
+  failed_when: false
+  changed_when: false
+  when:
+    - ({var_prefix}_ipset_save | default('') | length) > 0
+    - {var_prefix}_sync_ipsets_exact | default(true) | bool
+
+- name: Restore captured ipsets
+  ansible.builtin.shell: "ipset restore -exist < /etc/enroll/firewall/ipset.save"
+  args:
+    executable: /bin/sh
+  register: _enroll_ipset_restore
+  changed_when: _enroll_ipset_restore.rc == 0
+  when: ({var_prefix}_ipset_save | default('') | length) > 0
+
+- name: Deploy captured IPv4 iptables snapshot
+  vars:
+    _enroll_ff:
+      files:
+        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ {var_prefix}_iptables_v4_save }}}}"
+        - "{{{{ role_path }}}}/files/{{{{ {var_prefix}_iptables_v4_save }}}}"
+  ansible.builtin.copy:
+    src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
+    dest: /etc/enroll/firewall/iptables.v4
+    owner: root
+    group: root
+    mode: "0600"
+  when: ({var_prefix}_iptables_v4_save | default('') | length) > 0
+
+- name: Restore captured IPv4 iptables rules
+  ansible.builtin.command:
+    cmd: iptables-restore /etc/enroll/firewall/iptables.v4
+  register: _enroll_iptables_v4_restore
+  changed_when: _enroll_iptables_v4_restore.rc == 0
+  when:
+    - ({var_prefix}_iptables_v4_save | default('') | length) > 0
+    - {var_prefix}_restore_iptables | default(true) | bool
+
+- name: Deploy captured IPv6 iptables snapshot
+  vars:
+    _enroll_ff:
+      files:
+        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ {var_prefix}_iptables_v6_save }}}}"
+        - "{{{{ role_path }}}}/files/{{{{ {var_prefix}_iptables_v6_save }}}}"
+  ansible.builtin.copy:
+    src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
+    dest: /etc/enroll/firewall/iptables.v6
+    owner: root
+    group: root
+    mode: "0600"
+  when: ({var_prefix}_iptables_v6_save | default('') | length) > 0
+
+- name: Restore captured IPv6 iptables rules
+  ansible.builtin.command:
+    cmd: ip6tables-restore /etc/enroll/firewall/iptables.v6
+  register: _enroll_iptables_v6_restore
+  changed_when: _enroll_iptables_v6_restore.rc == 0
+  when:
+    - ({var_prefix}_iptables_v6_save | default('') | length) > 0
+    - {var_prefix}_restore_iptables | default(true) | bool
+"""
+
+
 def _prepare_bundle_dir(
     bundle: str,
     *,
@@ -746,6 +837,7 @@ def _manifest_from_bundle_dir(
     users_snapshot: Dict[str, Any] = roles.get("users", {})
     apt_config_snapshot: Dict[str, Any] = roles.get("apt_config", {})
     dnf_config_snapshot: Dict[str, Any] = roles.get("dnf_config", {})
+    firewall_runtime_snapshot: Dict[str, Any] = roles.get("firewall_runtime", {})
     etc_custom_snapshot: Dict[str, Any] = roles.get("etc_custom", {})
     usr_local_custom_snapshot: Dict[str, Any] = roles.get("usr_local_custom", {})
     extra_paths_snapshot: Dict[str, Any] = roles.get("extra_paths", {})
@@ -782,6 +874,7 @@ def _manifest_from_bundle_dir(
     manifested_users_roles: List[str] = []
     manifested_apt_config_roles: List[str] = []
     manifested_dnf_config_roles: List[str] = []
+    manifested_firewall_runtime_roles: List[str] = []
     manifested_etc_custom_roles: List[str] = []
     manifested_usr_local_custom_roles: List[str] = []
     manifested_extra_paths_roles: List[str] = []
@@ -1331,6 +1424,104 @@ DNF/YUM configuration harvested from the system (repos, config files, and RPM GP
             f.write(readme)
 
         manifested_dnf_config_roles.append(role)
+
+    # -------------------------
+    # firewall_runtime role (live ipset/iptables kernel state)
+    # -------------------------
+    if firewall_runtime_snapshot and (
+        firewall_runtime_snapshot.get("ipset_save")
+        or firewall_runtime_snapshot.get("iptables_v4_save")
+        or firewall_runtime_snapshot.get("iptables_v6_save")
+    ):
+        role = firewall_runtime_snapshot.get("role_name", "firewall_runtime")
+        role_dir = os.path.join(roles_root, role)
+        _write_role_scaffold(role_dir)
+
+        var_prefix = role
+        packages = firewall_runtime_snapshot.get("packages", []) or []
+        ipset_save = firewall_runtime_snapshot.get("ipset_save") or ""
+        ipset_sets = firewall_runtime_snapshot.get("ipset_sets", []) or []
+        iptables_v4_save = firewall_runtime_snapshot.get("iptables_v4_save") or ""
+        iptables_v6_save = firewall_runtime_snapshot.get("iptables_v6_save") or ""
+        notes = firewall_runtime_snapshot.get("notes", []) or []
+
+        # Generated firewall snapshots are host-specific in site mode.
+        if site_mode:
+            _copy_artifacts(
+                bundle_dir,
+                role,
+                _host_role_files_dir(out_dir, fqdn or "", role),
+            )
+        else:
+            _copy_artifacts(bundle_dir, role, os.path.join(role_dir, "files"))
+
+        vars_map: Dict[str, Any] = {
+            f"{var_prefix}_packages": packages,
+            f"{var_prefix}_ipset_save": ipset_save,
+            f"{var_prefix}_ipset_sets": ipset_sets,
+            f"{var_prefix}_iptables_v4_save": iptables_v4_save,
+            f"{var_prefix}_iptables_v6_save": iptables_v6_save,
+            f"{var_prefix}_sync_ipsets_exact": True,
+            f"{var_prefix}_restore_iptables": True,
+        }
+
+        if site_mode:
+            _write_role_defaults(
+                role_dir,
+                {
+                    f"{var_prefix}_packages": [],
+                    f"{var_prefix}_ipset_save": "",
+                    f"{var_prefix}_ipset_sets": [],
+                    f"{var_prefix}_iptables_v4_save": "",
+                    f"{var_prefix}_iptables_v6_save": "",
+                    f"{var_prefix}_sync_ipsets_exact": True,
+                    f"{var_prefix}_restore_iptables": True,
+                },
+            )
+            _write_hostvars(out_dir, fqdn or "", role, vars_map)
+        else:
+            _write_role_defaults(role_dir, vars_map)
+
+        tasks = (
+            "---\n"
+            + _render_install_packages_tasks(role, var_prefix)
+            + _render_firewall_runtime_tasks(var_prefix)
+        )
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(tasks.rstrip() + "\n")
+
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\ndependencies: []\n")
+
+        readme = f"""# {role}
+
+Generated from live firewall runtime state captured during harvest.
+
+This role restores live ipset and iptables state only for firewall families where Enroll did not find corresponding persistent configuration on the source host. Static firewall configuration files, such as `/etc/iptables/rules.v4`, `/etc/iptables/rules.v6`, UFW, nftables, firewalld, or `/etc/ipset*`, are harvested separately as managed files and treated as authoritative for their respective family.
+
+## Captured snapshots
+- ipset: {ipset_save or "(none)"}
+- iptables IPv4: {iptables_v4_save or "(none)"}
+- iptables IPv6: {iptables_v6_save or "(none)"}
+
+## Captured ipsets
+{os.linesep.join("- " + x for x in ipset_sets) or "- (none)"}
+
+## Notes
+{os.linesep.join("- " + n for n in notes) or "- (none)"}
+
+## Safety notes
+- `firewall_runtime_sync_ipsets_exact` defaults to `true`; it flushes captured set members before replaying the saved members so stale entries are removed. This applies only when no persistent ipset config was found.
+- `firewall_runtime_restore_iptables` defaults to `true`; `iptables-restore`/`ip6tables-restore` replace only captured families. A family is captured only when no corresponding persistent iptables config was found.
+"""
+        with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write(readme)
+
+        manifested_firewall_runtime_roles.append(role)
 
     # -------------------------
     # etc_custom role (unowned /etc not already attributed)
@@ -2012,6 +2203,7 @@ Generated for package `{pkg}`.
         + manifested_extra_paths_roles
         + manifested_users_roles
         + tail_roles
+        + manifested_firewall_runtime_roles
     )
 
     if site_mode:

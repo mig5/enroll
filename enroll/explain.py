@@ -72,7 +72,7 @@ _MANAGED_FILE_REASONS: Dict[str, ReasonInfo] = {
     ),
     "system_firewall": ReasonInfo(
         "Firewall configuration",
-        "Firewall rules/configuration (ufw, nftables, iptables, etc.).",
+        "Firewall rules/configuration (ufw, nftables, iptables, ipset, etc.).",
     ),
     "system_sysctl": ReasonInfo(
         "sysctl configuration",
@@ -210,6 +210,10 @@ _OBSERVED_VIA: Dict[str, ReasonInfo] = {
     "package_role": ReasonInfo(
         "Referenced by package role",
         "Package was referenced by an enroll packages snapshot/role.",
+    ),
+    "firewall_runtime": ReasonInfo(
+        "Referenced by firewall runtime role",
+        "Package was referenced by captured live ipset/iptables runtime state.",
     ),
 }
 
@@ -356,6 +360,22 @@ def explain_state(
                 "packages": [
                     p.get("package") for p in pkgs_list if isinstance(p, dict)
                 ],
+            }
+        )
+
+    # Runtime firewall snapshot
+    firewall_obj = roles.get("firewall_runtime") or {}
+    if isinstance(firewall_obj, dict) and firewall_obj:
+        captures = [
+            key
+            for key in ("ipset_save", "iptables_v4_save", "iptables_v6_save")
+            if firewall_obj.get(key)
+        ]
+        role_summaries.append(
+            {
+                "role": "firewall_runtime",
+                "summary": f"{len(captures)} snapshot(s), {len(firewall_obj.get('ipset_sets') or [])} ipset(s)",
+                "notes": firewall_obj.get("notes") or [],
             }
         )
 

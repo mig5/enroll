@@ -1,4 +1,4 @@
-%global upstream_version 0.5.0
+%global upstream_version 0.6.0
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,9 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Thu May 14 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Add support for capturing ipset and iptables configuration files
+- Add support for generating ipset and iptables configuration files from runtime, if the former weren't present ('firewall_runtime' role)
 * Tue May 12 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Add ssh config support where JinjaTurtle is used
 * Tue Feb 16 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}

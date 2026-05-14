@@ -197,6 +197,37 @@ def validate_harvest(
                     f"artifact is not a file for role {role_name}: artifacts/{role_name}/{src_rel}"
                 )
 
+        # Runtime firewall snapshots are generated artifacts rather than managed files.
+        fw = (state.get("roles") or {}).get("firewall_runtime") or {}
+        if isinstance(fw, dict):
+            for key in ("ipset_save", "iptables_v4_save", "iptables_v6_save"):
+                src_rel = str(fw.get(key) or "")
+                if not src_rel:
+                    continue
+                if src_rel.startswith("/") or ".." in src_rel.split("/"):
+                    errors.append(
+                        f"firewall_runtime {key} has suspicious src_rel: {src_rel!r}"
+                    )
+                    continue
+                referenced.add(
+                    (str(fw.get("role_name") or "firewall_runtime"), src_rel)
+                )
+                p = (
+                    artifacts_dir
+                    / str(fw.get("role_name") or "firewall_runtime")
+                    / src_rel
+                )
+                if not p.exists():
+                    errors.append(
+                        "missing firewall runtime artifact: "
+                        f"artifacts/{fw.get('role_name') or 'firewall_runtime'}/{src_rel}"
+                    )
+                elif not p.is_file():
+                    errors.append(
+                        "firewall runtime artifact is not a file: "
+                        f"artifacts/{fw.get('role_name') or 'firewall_runtime'}/{src_rel}"
+                    )
+
         # Warn if there are extra files in artifacts not referenced.
         if artifacts_dir.exists() and artifacts_dir.is_dir():
             for fp in artifacts_dir.rglob("*"):

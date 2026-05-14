@@ -795,3 +795,100 @@ def test_manifest_applies_jinjaturtle_to_jinjifyable_managed_file(
     assert not (
         out_dir / "roles" / "apt_config" / "files" / "etc" / "apt" / "foo.ini"
     ).exists()
+
+
+def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    (bundle / "artifacts" / "firewall_runtime" / "firewall").mkdir(
+        parents=True, exist_ok=True
+    )
+    (bundle / "artifacts" / "firewall_runtime" / "firewall" / "ipset.save").write_text(
+        "create blocklist hash:ip family inet\nadd blocklist 203.0.113.10\n",
+        encoding="utf-8",
+    )
+    (bundle / "artifacts" / "firewall_runtime" / "firewall" / "iptables.v4").write_text(
+        "*filter\n:INPUT DROP [0:0]\n-A INPUT -m set --match-set blocklist src -j DROP\nCOMMIT\n",
+        encoding="utf-8",
+    )
+
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "packages": ["ipset", "iptables"],
+                "ipset_save": "firewall/ipset.save",
+                "ipset_sets": ["blocklist"],
+                "iptables_v4_save": "firewall/iptables.v4",
+                "iptables_v6_save": None,
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+        },
+    }
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out))
+
+    tasks = (out / "roles" / "firewall_runtime" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "ipset restore -exist" in tasks
+    assert "iptables-restore /etc/enroll/firewall/iptables.v4" in tasks
+    assert "ipset flush {{ item }}" in tasks
+
+    defaults = (out / "roles" / "firewall_runtime" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "firewall_runtime_ipset_sets:" in defaults
+    assert "- blocklist" in defaults
+    assert "firewall_runtime_restore_iptables: true" in defaults
+
+    pb = (out / "playbook.yml").read_text(encoding="utf-8")
+    assert "role: firewall_runtime" in pb
+    assert (
+        out / "roles" / "firewall_runtime" / "files" / "firewall" / "ipset.save"
+    ).exists()
