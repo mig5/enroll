@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 
 def test_dpkg_owner_parses_output(monkeypatch):
@@ -337,3 +338,200 @@ def test_read_pkg_md5sums_parses_md5sums_file(tmp_path: Path, monkeypatch):
     assert (
         result["etc/nginx/sites-enabled/default"] == "1234567890abcdef1234567890abcdef"
     )
+
+
+def test_dpkg_owner_raises_on_command_failure(monkeypatch):
+    """Test _run raises RuntimeError on non-zero exit."""
+    import enroll.debian as d
+
+    class P:
+        returncode = 1
+        stdout = ""
+        stderr = "command failed"
+
+    def fake_run(cmd, text, capture_output, check=False):
+        return P()
+
+    monkeypatch.setattr(d.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        d._run(["fake", "command"])
+
+    assert "Command failed" in str(exc_info.value)
+    assert "fake" in str(exc_info.value)
+
+
+def test_build_dpkg_etc_index_skips_invalid_line_formats(tmp_path: Path):
+    """Test that lines with less than 3 parts are skipped."""
+    import enroll.debian as d
+
+    info = tmp_path / "info"
+    info.mkdir()
+    # Create a .list file with invalid format (missing tab-separated fields)
+    (info / "foo.list").write_text(
+        "/etc/foo/bar\n"  # This is a path, not a tab-separated line
+        "/etc/foo/baz\n",
+        encoding="utf-8",
+    )
+
+    # Should handle gracefully
+    owned, owner_map, topdir_to_pkgs, pkg_to_etc = d.build_dpkg_etc_index(str(info))
+    # The path lines should be processed normally
+    assert "/etc/foo/bar" in owned or "/etc/foo/baz" in owned
+
+
+def test_build_dpkg_etc_index_handles_file_not_found(tmp_path: Path):
+    """Test that FileNotFoundError is handled gracefully."""
+    import enroll.debian as d
+
+    info = tmp_path / "info"
+    info.mkdir()
+    # Create a .list file that references a non-existent path
+    (info / "foo.list").write_text(
+        "/nonexistent/path\n",
+        encoding="utf-8",
+    )
+
+    # Should not raise
+    owned, owner_map, topdir_to_pkgs, pkg_to_etc = d.build_dpkg_etc_index(str(info))
+    # The non-existent path should be skipped
+    assert "/nonexistent/path" not in owned
+
+
+def test_parse_status_conffiles_skips_empty_lines(tmp_path: Path):
+    """Test that empty lines in conffiles are skipped."""
+    import enroll.debian as d
+
+    status = tmp_path / "status"
+    status.write_text(
+        "Package: nginx\n"
+        "Version: 1\n"
+        "Conffiles:\n"
+        " /etc/nginx/nginx.conf abcdef\n"
+        " /etc/nginx/mime.types 123456\n"
+        "\n",  # Empty line to trigger flush
+        encoding="utf-8",
+    )
+
+    m = d.parse_status_conffiles(str(status))
+    assert "/etc/nginx/nginx.conf" in m["nginx"]
+    assert "/etc/nginx/mime.types" in m["nginx"]
+
+
+def test_read_pkg_md5sums_skips_invalid_md5_lines(tmp_path: Path, monkeypatch):
+    """Test that lines without proper MD5 format are skipped."""
+    import enroll.debian as d
+
+    info_dir = tmp_path / "info"
+    info_dir.mkdir()
+    md5_file = info_dir / "foo.md5sums"
+    md5_file.write_text(
+        "abcdef1234567890abcdef1234567890  etc/foo/bar\n"
+        "invalid line without proper format\n"
+        "1234567890abcdef1234567890abcdef  etc/foo/baz\n",
+        encoding="utf-8",
+    )
+
+    def fake_exists(path):
+        return str(path).endswith("foo.md5sums")
+
+    monkeypatch.setattr(d.os.path, "exists", fake_exists)
+
+    original_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if "foo.md5sums" in str(path):
+            return original_open(md5_file, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open, raising=False)
+
+    result = d.read_pkg_md5sums("foo")
+    assert "etc/foo/bar" in result
+    assert "etc/foo/baz" in result
+
+
+def test_build_dpkg_etc_index_skips_lines_without_tabs(tmp_path: Path):
+    """Test that lines without tab separators are skipped (parts < 3)."""
+    import enroll.debian as d
+
+    info = tmp_path / "info"
+    info.mkdir()
+    # Create file with lines that don't have tab separators
+    (info / "foo.list").write_text(
+        "notabseparator\n"  # No tab - should be skipped
+        "/etc/foo/bar\n",  # This is a path line, processed differently
+        encoding="utf-8",
+    )
+
+    owned, owner_map, topdir_to_pkgs, pkg_to_etc = d.build_dpkg_etc_index(str(info))
+    # Path lines are still processed
+    assert "/etc/foo/bar" in owned
+
+
+def test_read_pkg_md5sums_skips_empty_lines(tmp_path: Path, monkeypatch):
+    """Test that empty lines in md5sums are skipped."""
+    import enroll.debian as d
+
+    info_dir = tmp_path / "info"
+    info_dir.mkdir()
+    md5_file = info_dir / "bar.md5sums"
+    md5_file.write_text(
+        "abcdef1234567890abcdef1234567890  etc/bar/file1\n"
+        "\n"  # Empty line
+        "1234567890abcdef1234567890abcdef  etc/bar/file2\n",
+        encoding="utf-8",
+    )
+
+    def fake_exists(path):
+        return str(path).endswith("bar.md5sums")
+
+    monkeypatch.setattr(d.os.path, "exists", fake_exists)
+
+    original_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if "bar.md5sums" in str(path):
+            return original_open(md5_file, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open, raising=False)
+
+    result = d.read_pkg_md5sums("bar")
+    assert "etc/bar/file1" in result
+    assert "etc/bar/file2" in result
+
+
+def test_read_pkg_md5sums_skips_lines_not_starting_with_path(
+    tmp_path: Path, monkeypatch
+):
+    """Test that lines not starting with / are skipped."""
+    import enroll.debian as d
+
+    info_dir = tmp_path / "info"
+    info_dir.mkdir()
+    md5_file = info_dir / "baz.md5sums"
+    md5_file.write_text(
+        "abcdef1234567890abcdef1234567890  etc/baz/file1\n"
+        "invalid line\n"  # Doesn't start with /
+        "1234567890abcdef1234567890abcdef  etc/baz/file2\n",
+        encoding="utf-8",
+    )
+
+    def fake_exists(path):
+        return str(path).endswith("baz.md5sums")
+
+    monkeypatch.setattr(d.os.path, "exists", fake_exists)
+
+    original_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if "baz.md5sums" in str(path):
+            return original_open(md5_file, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open, raising=False)
+
+    result = d.read_pkg_md5sums("baz")
+    assert "etc/baz/file1" in result
+    assert "etc/baz/file2" in result

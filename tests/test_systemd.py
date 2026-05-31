@@ -232,3 +232,90 @@ def test_get_unit_info_with_empty_fields(monkeypatch):
     assert ui.env_files == []
     assert ui.exec_paths == []
     assert ui.active_state is None
+
+
+def test_run_command_raises_on_error(monkeypatch):
+    """Test _run raises RuntimeError on non-zero exit."""
+
+    class P:
+        returncode = 1
+        stdout = ""
+        stderr = "command failed"
+
+    def fake_run(cmd, check, text, capture_output):
+        return P()
+
+    monkeypatch.setattr(s.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        s._run(["fake", "command"])
+
+    assert "Command failed" in str(exc_info.value)
+    assert "fake" in str(exc_info.value)
+
+
+def test_list_enabled_services_filters_non_service_units(monkeypatch):
+    """Test that non-.service units are filtered out."""
+
+    def fake_run(cmd: list[str]) -> str:
+        return "\n".join(
+            [
+                "nginx.service enabled",
+                "network.target enabled",  # not a service
+                "multi-user.target enabled",  # not a service
+            ]
+        )
+
+    monkeypatch.setattr(s, "_run", fake_run)
+    result = s.list_enabled_services()
+    assert result == ["nginx.service"]
+
+
+def test_list_enabled_timers_filters_non_timer_units(monkeypatch):
+    """Test that non-.timer units are filtered out."""
+
+    def fake_run(cmd: list[str]) -> str:
+        return "\n".join(
+            [
+                "apt-daily.timer enabled",
+                "some.service enabled",  # not a timer
+            ]
+        )
+
+    monkeypatch.setattr(s, "_run", fake_run)
+    result = s.list_enabled_timers()
+    assert result == ["apt-daily.timer"]
+
+
+def test_list_enabled_services_filters_empty_lines(monkeypatch):
+    """Test that empty lines are skipped."""
+
+    def fake_run(cmd: list[str]) -> str:
+        return "\n".join(
+            [
+                "nginx.service enabled",
+                "",  # empty line
+                "ssh.service enabled",
+            ]
+        )
+
+    monkeypatch.setattr(s, "_run", fake_run)
+    result = s.list_enabled_services()
+    assert result == ["nginx.service", "ssh.service"]
+
+
+def test_list_enabled_timers_filters_empty_lines(monkeypatch):
+    """Test that empty lines are skipped."""
+
+    def fake_run(cmd: list[str]) -> str:
+        return "\n".join(
+            [
+                "apt-daily.timer enabled",
+                "",  # empty line
+                "daily.timer enabled",
+            ]
+        )
+
+    monkeypatch.setattr(s, "_run", fake_run)
+    result = s.list_enabled_timers()
+    assert result == ["apt-daily.timer", "daily.timer"]

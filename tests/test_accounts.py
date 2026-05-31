@@ -285,3 +285,30 @@ def test_collect_non_system_users_skips_below_uid_min(tmp_path: Path):
 
     users = a.collect_non_system_users()
     assert [u.name for u in users] == ["alice"]
+
+
+def test_parse_group_handles_empty_lines(tmp_path: Path):
+    from enroll.accounts import parse_group
+
+    p = tmp_path / "group"
+    p.write_text(
+        "valid:x:1000:user1\n" "\n" "another:x:1001:user2\n",
+        encoding="utf-8",
+    )
+    gid_to_name, name_to_gid, members = parse_group(str(p))
+    assert 1000 in gid_to_name
+    assert 1001 in gid_to_name
+
+
+def test_parse_group_handles_short_lines(tmp_path: Path):
+    from enroll.accounts import parse_group
+
+    p = tmp_path / "group"
+    p.write_text(
+        "valid:x:1000:user1\n" "short:x:1001\n" "another:x:1002:user2\n",
+        encoding="utf-8",
+    )
+    gid_to_name, name_to_gid, members = parse_group(str(p))
+    assert 1000 in gid_to_name
+    assert 1001 not in gid_to_name  # skipped due to short line
+    assert 1002 in gid_to_name

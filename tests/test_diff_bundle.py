@@ -6,6 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from enroll.diff import (
+    _Spinner,
+    _enforcement_plan,
+    has_enforceable_drift,
+    _role_tag,
+    _utc_now_iso,
+    _report_markdown,
+)
+
 
 def _make_bundle_dir(tmp_path: Path) -> Path:
     b = tmp_path / "bundle"
@@ -201,10 +210,6 @@ def test_load_state(tmp_path: Path):
     state_file.write_text('{"host": {"hostname": "test"}}', encoding="utf-8")
     result = _load_state(tmp_path)
     assert result["host"]["hostname"] == "test"
-
-
-def test_roles_empty_state():
-    assert _roles({}) == {}
 
 
 def test_roles_with_roles():
@@ -696,40 +701,10 @@ def test_compare_harvests_with_exclude_paths(tmp_path: Path):
     assert "/etc/passwd" not in [f["path"] for f in report["files"]["changed"]]
 
 
-from enroll.diff import (
-    _Spinner,
-    _enforcement_plan,
-    has_enforceable_drift,
-    _role_tag,
-    _utc_now_iso,
-    _report_markdown,
-)
-
-
 def test_utc_now_iso():
     result = _utc_now_iso()
     assert "T" in result
     assert "+" in result or "Z" in result
-
-
-def test_spinner_start_stop(monkeypatch):
-    # Mock sys.stderr to avoid actual writes
-    class FakeStderr:
-        def write(self, s):
-            pass
-
-        def flush(self):
-            pass
-
-        def isatty(self):
-            return True
-
-    monkeypatch.setattr(sys, "stderr", FakeStderr())
-
-    spinner = _Spinner("Test")
-    spinner.start()
-    spinner.stop(final_line="Done")
-    # Should not raise
 
 
 def test_spinner_stop_without_start():
@@ -1079,3 +1054,320 @@ def test_report_markdown_empty():
     result = _report_markdown(report)
     assert "## Packages" in result
     assert "## Services" in result
+
+
+def test_spinner_start_stop(monkeypatch):
+    """Test spinner can be started and stopped."""
+    import enroll.diff as d
+
+    # Mock threading to avoid actual thread creation
+    class FakeThread:
+        def __init__(self, target, name, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            pass
+
+    monkeypatch.setattr(d.threading, "Thread", FakeThread)
+
+    spinner = d._Spinner("test message")
+    spinner.start()
+    spinner.stop()
+
+
+def test_spinner_already_started(monkeypatch):
+    """Test spinner doesn't restart if already running."""
+    import enroll.diff as d
+
+    class FakeThread:
+        def __init__(self, target, name, daemon):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            pass
+
+    monkeypatch.setattr(d.threading, "Thread", FakeThread)
+
+    spinner = d._Spinner("test message")
+    spinner.start()
+    spinner._thread = FakeThread(None, None, True)  # Simulate already running
+    spinner.start()  # Should return early
+
+
+def test_spinner_stop_clears_line(monkeypatch, tmp_path):
+    """Test spinner stop clears the line."""
+    import enroll.diff as d
+    import sys
+
+    class FakeThread:
+        def __init__(self, target, name, daemon):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            pass
+
+    monkeypatch.setattr(d.threading, "Thread", FakeThread)
+
+    # Capture stderr writes
+    writes = []
+    original_write = sys.stderr.write
+
+    def capture_write(s):
+        writes.append(s)
+        return original_write(s)
+
+    monkeypatch.setattr(sys.stderr, "write", capture_write)
+
+    spinner = d._Spinner("test message")
+    spinner._last_len = 20
+    spinner.stop()
+
+    # Should have written clearing sequence
+    assert any("\r" in w for w in writes)
+
+
+def test_should_show_spinner_disabled_env(monkeypatch):
+    """Test spinner disabled via environment variable."""
+    import enroll.diff as d
+
+    monkeypatch.setenv("ENROLL_NO_PROGRESS", "1")
+    assert d._progress_enabled() is False
+
+    monkeypatch.setenv("ENROLL_NO_PROGRESS", "true")
+    assert d._progress_enabled() is False
+
+    monkeypatch.setenv("ENROLL_NO_PROGRESS", "yes")
+    assert d._progress_enabled() is False
+
+
+def test_should_show_spinner_exception_on_isatty(monkeypatch):
+    """Test spinner returns False when isatty raises exception."""
+    import enroll.diff as d
+    import sys
+
+    original_stderr = sys.stderr
+
+    class FakeStderr:
+        def isatty(self):
+            raise Exception("No tty")
+
+    monkeypatch.setattr(sys, "stderr", FakeStderr())
+    assert d._progress_enabled() is False
+
+    # Restore
+    monkeypatch.setattr(sys, "stderr", original_stderr)
+
+
+def test_all_packages_from_state():
+    """Test _all_packages extracts sorted package list."""
+    import enroll.diff as d
+
+    state = {
+        "inventory": {
+            "packages": {
+                "nginx": [{"version": "1.0"}],
+                "vim": [{"version": "2.0"}],
+                "bash": [{"version": "3.0"}],
+            }
+        }
+    }
+
+    result = d._all_packages(state)
+    assert result == ["bash", "nginx", "vim"]
+
+
+def test_all_packages_empty_state():
+    """Test _all_packages with empty state."""
+    import enroll.diff as d
+
+    state = {"inventory": {"packages": {}}}
+    result = d._all_packages(state)
+    assert result == []
+
+
+def test_roles_from_state():
+    """Test _roles extracts roles from state."""
+    import enroll.diff as d
+
+    state = {"roles": {"web": {}, "db": {}}}
+    result = d._roles(state)
+    assert result == {"web": {}, "db": {}}
+
+
+def test_roles_empty_state():
+    """Test _roles with empty state."""
+    import enroll.diff as d
+
+    state = {}
+    result = d._roles(state)
+    assert result == {}
+
+
+def test_pkg_version_key_with_multiple_versions():
+    """Test _pkg_version_key handles multiple versions."""
+    import enroll.diff as d
+
+    entry = {
+        "installations": [
+            {"version": "1.0", "arch": "amd64"},
+            {"version": "2.0", "arch": "arm64"},
+        ]
+    }
+
+    result = d._pkg_version_key(entry)
+    # Just check it returns a non-None value with version info
+    assert result is not None
+    assert len(result) > 0
+
+
+def test_pkg_version_key_without_version():
+    """Test _pkg_version_key skips entries without version."""
+    import enroll.diff as d
+
+    entry = {
+        "installations": [
+            {"arch": "amd64"},  # No version
+        ]
+    }
+
+    result = d._pkg_version_key(entry)
+    assert result is None
+
+
+def test_pkg_version_key_with_empty_installations():
+    """Test _pkg_version_key with empty installations."""
+    import enroll.diff as d
+
+    entry = {"installations": []}
+    result = d._pkg_version_key(entry)
+    assert result is None
+
+
+def test_pkg_version_key_without_installations():
+    """Test _pkg_version_key without installations key."""
+    import enroll.diff as d
+
+    entry = {}
+    result = d._pkg_version_key(entry)
+    assert result is None
+
+
+def test_pkg_version_key_with_direct_version():
+    """Test _pkg_version_key with direct version field."""
+    import enroll.diff as d
+
+    entry = {"version": "1.2.3"}
+    result = d._pkg_version_key(entry)
+    assert result == "1.2.3"
+
+
+def test_report_text_with_exclude_paths():
+    """Test _report_text includes exclude paths."""
+    import enroll.diff as d
+
+    report = {
+        "generated_at": "2024-01-01T00:00:00Z",
+        "old": {"input": "old.tar.gz", "host": "host1", "state_mtime": "mtime1"},
+        "new": {"input": "new.tar.gz", "host": "host2", "state_mtime": "mtime2"},
+        "filters": {"exclude_paths": ["/tmp/*", "/var/log/*"]},
+        "packages": {"added": [], "removed": [], "version_changed": []},
+        "services": {"enabled_added": [], "enabled_removed": [], "changed": []},
+        "users": {"added": [], "removed": [], "changed": []},
+        "files": {"added": [], "removed": [], "changed": []},
+    }
+    result = d._report_text(report)
+    assert "file exclude patterns" in result
+    assert "/tmp/*" in result
+
+
+def test_report_text_with_ignore_package_versions():
+    """Test _report_text includes ignore package versions message."""
+    import enroll.diff as d
+
+    report = {
+        "generated_at": "2024-01-01T00:00:00Z",
+        "old": {"input": "old.tar.gz", "host": "host1", "state_mtime": "mtime1"},
+        "new": {"input": "new.tar.gz", "host": "host2", "state_mtime": "mtime2"},
+        "filters": {"ignore_package_versions": True},
+        "packages": {"version_changed_ignored_count": 5},
+        "services": {"enabled_added": [], "enabled_removed": [], "changed": []},
+        "users": {"added": [], "removed": [], "changed": []},
+        "files": {"added": [], "removed": [], "changed": []},
+    }
+    result = d._report_text(report)
+    assert "package version drift: ignored" in result
+    assert "ignored 5 changes" in result
+
+
+def test_report_text_with_enforcement_applied():
+    """Test _report_text includes enforcement applied status."""
+    import enroll.diff as d
+
+    report = {
+        "generated_at": "2024-01-01T00:00:00Z",
+        "old": {"input": "old.tar.gz", "host": "host1", "state_mtime": "mtime1"},
+        "new": {"input": "new.tar.gz", "host": "host2", "state_mtime": "mtime2"},
+        "packages": {"added": [], "removed": [], "version_changed": []},
+        "services": {"enabled_added": [], "enabled_removed": [], "changed": []},
+        "users": {"added": [], "removed": [], "changed": []},
+        "files": {"added": [], "removed": [], "changed": []},
+        "enforcement": {
+            "status": "applied",
+            "returncode": 0,
+            "tags": ["test"],
+            "finished_at": "2024-01-01T01:00:00Z",
+        },
+    }
+    result = d._report_text(report)
+    assert "Enforcement" in result
+    assert "applied old harvest via ansible-playbook" in result
+    assert "tags=test" in result
+
+
+def test_report_text_with_enforcement_failed():
+    """Test _report_text includes enforcement failed status."""
+    import enroll.diff as d
+
+    report = {
+        "generated_at": "2024-01-01T00:00:00Z",
+        "old": {"input": "old.tar.gz", "host": "host1", "state_mtime": "mtime1"},
+        "new": {"input": "new.tar.gz", "host": "host2", "state_mtime": "mtime2"},
+        "packages": {"added": [], "removed": [], "version_changed": []},
+        "services": {"enabled_added": [], "enabled_removed": [], "changed": []},
+        "users": {"added": [], "removed": [], "changed": []},
+        "files": {"added": [], "removed": [], "changed": []},
+        "enforcement": {"status": "failed", "returncode": 1},
+    }
+    result = d._report_text(report)
+    assert "Enforcement" in result
+    assert "ansible-playbook failed" in result
+
+
+def test_report_text_with_enforcement_skipped():
+    """Test _report_text includes enforcement skipped status."""
+    import enroll.diff as d
+
+    report = {
+        "generated_at": "2024-01-01T00:00:00Z",
+        "old": {"input": "old.tar.gz", "host": "host1", "state_mtime": "mtime1"},
+        "new": {"input": "new.tar.gz", "host": "host2", "state_mtime": "mtime2"},
+        "packages": {"added": [], "removed": [], "version_changed": []},
+        "services": {"enabled_added": [], "enabled_removed": [], "changed": []},
+        "users": {"added": [], "removed": [], "changed": []},
+        "files": {"added": [], "removed": [], "changed": []},
+        "enforcement": {"status": "skipped", "reason": "no changes"},
+    }
+    result = d._report_text(report)
+    assert "Enforcement" in result
+    assert "skipped" in result
+    assert "no changes" in result
