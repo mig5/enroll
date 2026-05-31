@@ -892,3 +892,175 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
     assert (
         out / "roles" / "firewall_runtime" / "files" / "firewall" / "ipset.save"
     ).exists()
+
+
+def test_try_yaml_with_yaml_installed():
+    result = manifest._try_yaml()
+    # PyYAML should be installed for tests
+    if result is None:
+        pytest.skip("PyYAML not installed")
+    assert hasattr(result, "safe_load")
+    assert hasattr(result, "dump")
+
+
+def test_yaml_load_mapping_with_yaml(tmp_path: Path):
+    text = """
+key1: value1
+key2:
+  nested: value
+list:
+  - item1
+  - item2
+"""
+    result = manifest._yaml_load_mapping(text)
+    assert result["key1"] == "value1"
+    assert result["key2"]["nested"] == "value"
+    assert result["list"] == ["item1", "item2"]
+
+
+def test_yaml_load_mapping_empty():
+    result = manifest._yaml_load_mapping("")
+    assert result == {}
+
+
+def test_yaml_load_mapping_invalid():
+    result = manifest._yaml_load_mapping("invalid: yaml: :")
+    assert result == {}
+
+
+def test_yaml_load_mapping_not_dict():
+    result = manifest._yaml_load_mapping("- item1\n- item2")
+    assert result == {}
+
+
+def test_yaml_load_mapping_none():
+    result = manifest._yaml_load_mapping("~")
+    assert result == {}
+
+
+def test_yaml_dump_mapping_with_yaml(tmp_path: Path):
+    obj = {"key1": "value1", "key2": 123}
+    result = manifest._yaml_dump_mapping(obj)
+    assert "key1: value1" in result
+    assert "key2:" in result
+
+
+def test_yaml_dump_mapping_empty():
+    result = manifest._yaml_dump_mapping({})
+    # Empty dict produces '{}'
+    assert result.strip() == "{}"
+
+
+def test_yaml_dump_mapping_with_nested(tmp_path: Path):
+    obj = {"key1": {"nested": "value"}}
+    result = manifest._yaml_dump_mapping(obj)
+    assert "nested:" in result
+
+
+def test_merge_mappings_overwrite_simple():
+    existing = {"key1": "old", "key2": "keep"}
+    incoming = {"key1": "new", "key3": "added"}
+    result = manifest._merge_mappings_overwrite(existing, incoming)
+    assert result["key1"] == "new"
+    assert result["key2"] == "keep"
+    assert result["key3"] == "added"
+
+
+def test_merge_mappings_overwrite_nested():
+    existing = {"key1": {"a": 1}}
+    incoming = {"key1": {"b": 2}}
+    result = manifest._merge_mappings_overwrite(existing, incoming)
+    # Nested dicts are replaced, not merged
+    assert result["key1"] == {"b": 2}
+
+
+def test_merge_mappings_overwrite_empty():
+    result = manifest._merge_mappings_overwrite({}, {"key": "value"})
+    assert result == {"key": "value"}
+
+    result = manifest._merge_mappings_overwrite({"key": "value"}, {})
+    assert result == {"key": "value"}
+
+
+def test_copy2_replace(tmp_path: Path):
+    src = tmp_path / "src.txt"
+    src.write_text("content", encoding="utf-8")
+    dst = tmp_path / "dst" / "subdir" / "dst.txt"
+
+    manifest._copy2_replace(str(src), str(dst))
+
+    assert dst.exists()
+    assert dst.read_text(encoding="utf-8") == "content"
+
+
+def test_copy2_replace_preserves_metadata(tmp_path: Path):
+    src = tmp_path / "src.txt"
+    src.write_text("content", encoding="utf-8")
+    os.chmod(str(src), 0o644)
+    dst = tmp_path / "dst.txt"
+
+    manifest._copy2_replace(str(src), str(dst))
+
+    assert dst.exists()
+    st = dst.stat()
+    assert stat.S_IMODE(st.st_mode) == 0o644
+
+
+def test_copy2_replace_atomic(tmp_path: Path):
+    src = tmp_path / "src.txt"
+    src.write_text("content", encoding="utf-8")
+    dst = tmp_path / "dst.txt"
+
+    # Write initial content
+    dst.write_text("old", encoding="utf-8")
+
+    manifest._copy2_replace(str(src), str(dst))
+
+    assert dst.read_text(encoding="utf-8") == "content"
+
+
+def test_render_firewall_runtime_tasks_empty():
+    state = {"roles": {}}
+    result = manifest._render_firewall_runtime_tasks(state)
+    # Function always returns at least a basic playbook structure
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+def test_render_firewall_runtime_tasks_with_iptables():
+    state = {
+        "roles": {
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "iptables_v4_save": "artifacts/firewall_runtime/iptables.save",
+            }
+        }
+    }
+    result = manifest._render_firewall_runtime_tasks(state)
+    assert len(result) >= 1
+
+
+def test_render_firewall_runtime_tasks_with_ipset():
+    state = {
+        "roles": {
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "ipset_save": "artifacts/firewall_runtime/ipset.save",
+            }
+        }
+    }
+    result = manifest._render_firewall_runtime_tasks(state)
+    assert len(result) >= 1
+
+
+def test_render_firewall_runtime_tasks_with_ipv6():
+    state = {
+        "roles": {
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "iptables_v6_save": "artifacts/firewall_runtime/ip6tables.save",
+            }
+        }
+    }
+    result = manifest._render_firewall_runtime_tasks(state)
+    assert len(result) >= 1

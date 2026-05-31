@@ -1,4 +1,5 @@
 import json
+import enroll.harvest as harvest
 from pathlib import Path
 
 import enroll.harvest as h
@@ -367,3 +368,149 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
     assert all(
         mf["path"] != "/etc/cron.d/ntpsec" for mf in svc_apparmor["managed_files"]
     )
+
+
+def test_files_differ_same_content(tmp_path: Path):
+    file1 = tmp_path / "file1.txt"
+    file2 = tmp_path / "file2.txt"
+    file1.write_text("same content", encoding="utf-8")
+    file2.write_text("same content", encoding="utf-8")
+    assert harvest._files_differ(str(file1), str(file2)) is False
+
+
+def test_files_differ_different_content(tmp_path: Path):
+    file1 = tmp_path / "file1.txt"
+    file2 = tmp_path / "file2.txt"
+    file1.write_text("content1", encoding="utf-8")
+    file2.write_text("content2", encoding="utf-8")
+    assert harvest._files_differ(str(file1), str(file2)) is True
+
+
+def test_files_differ_missing_file(tmp_path: Path):
+    file1 = tmp_path / "file1.txt"
+    file1.write_text("content", encoding="utf-8")
+    file2 = tmp_path / "file2.txt"
+    assert harvest._files_differ(str(file1), str(file2)) is True
+
+
+def test_files_differ_both_missing(tmp_path: Path):
+    file1 = tmp_path / "file1.txt"
+    file2 = tmp_path / "file2.txt"
+    assert harvest._files_differ(str(file1), str(file2)) is True
+
+
+def test_files_differ_binary(tmp_path: Path):
+    file1 = tmp_path / "file1.bin"
+    file2 = tmp_path / "file2.bin"
+    file1.write_bytes(b"\x00\x01\x02\x03")
+    file2.write_bytes(b"\x00\x01\x02\x03")
+    assert harvest._files_differ(str(file1), str(file2)) is False
+
+
+def test_files_differ_binary_different(tmp_path: Path):
+    file1 = tmp_path / "file1.bin"
+    file2 = tmp_path / "file2.bin"
+    file1.write_bytes(b"\x00\x01\x02\x03")
+    file2.write_bytes(b"\x00\x01\x02\x04")
+    assert harvest._files_differ(str(file1), str(file2)) is True
+
+
+def test_files_differ_non_regular_a(tmp_path: Path):
+    directory = tmp_path / "dir"
+    directory.mkdir()
+    file1 = tmp_path / "file1.txt"
+    file1.write_text("content", encoding="utf-8")
+    assert harvest._files_differ(str(directory), str(file1)) is True
+
+
+def test_files_differ_non_regular_b(tmp_path: Path):
+    file1 = tmp_path / "file1.txt"
+    file1.write_text("content", encoding="utf-8")
+    directory = tmp_path / "dir"
+    directory.mkdir()
+    assert harvest._files_differ(str(file1), str(directory)) is True
+
+
+def test_files_differ_size_mismatch(tmp_path: Path):
+    file1 = tmp_path / "file1.txt"
+    file1.write_text("short", encoding="utf-8")
+    file2 = tmp_path / "file2.txt"
+    file2.write_text("much longer content", encoding="utf-8")
+    assert harvest._files_differ(str(file1), str(file2)) is True
+
+
+def test_files_differ_large_files(tmp_path: Path):
+    file1 = tmp_path / "file1.bin"
+    file2 = tmp_path / "file2.bin"
+    file1.write_bytes(b"x" * 3_000_000)
+    file2.write_bytes(b"x" * 3_000_000)
+    assert harvest._files_differ(str(file1), str(file2)) is True
+
+
+def test_is_confish_with_conf(tmp_path: Path):
+    file1 = tmp_path / "test.conf"
+    file1.write_text("content", encoding="utf-8")
+    assert harvest._is_confish(str(file1)) is True
+
+
+def test_is_confish_with_yaml(tmp_path: Path):
+    file1 = tmp_path / "test.yaml"
+    file1.write_text("content", encoding="utf-8")
+    assert harvest._is_confish(str(file1)) is True
+
+
+def test_is_confish_with_json(tmp_path: Path):
+    file1 = tmp_path / "test.json"
+    file1.write_text("{}", encoding="utf-8")
+    assert harvest._is_confish(str(file1)) is True
+
+
+def test_is_confish_with_service(tmp_path: Path):
+    file1 = tmp_path / "test.service"
+    file1.write_text("[Unit]", encoding="utf-8")
+    assert harvest._is_confish(str(file1)) is True
+
+
+def test_is_confish_with_extensionless(tmp_path: Path):
+    file1 = tmp_path / "default"
+    file1.write_text("OPTIONS=", encoding="utf-8")
+    assert harvest._is_confish(str(file1)) is True
+
+
+def test_is_confish_not_config(tmp_path: Path):
+    file1 = tmp_path / "test.log"
+    file1.write_text("log", encoding="utf-8")
+    assert harvest._is_confish(str(file1)) is False
+
+
+def test_is_confish_nonexistent():
+    assert harvest._is_confish("/nonexistent/file.xyz") is False
+
+
+def test_topdirs_for_package_with_multiple_paths():
+    pkg_to_etc_paths = {
+        "nginx": ["/etc/nginx/nginx.conf", "/etc/nginx/sites-enabled/default"],
+    }
+    result = harvest._topdirs_for_package("nginx", pkg_to_etc_paths)
+    assert result == {"nginx"}
+
+
+def test_topdirs_for_package_with_multiple_topdirs():
+    pkg_to_etc_paths = {
+        "multi": ["/etc/nginx/nginx.conf", "/etc/ssh/sshd_config"],
+    }
+    result = harvest._topdirs_for_package("multi", pkg_to_etc_paths)
+    assert result == {"nginx", "ssh"}
+
+
+def test_topdirs_for_package_empty():
+    result = harvest._topdirs_for_package("empty", {})
+    assert result == set()
+
+
+def test_topdirs_for_package_no_etc():
+    pkg_to_etc_paths = {
+        "other": ["/usr/share/doc/file"],
+    }
+    result = harvest._topdirs_for_package("other", pkg_to_etc_paths)
+    assert result == set()

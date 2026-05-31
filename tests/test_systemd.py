@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import pytest
+import enroll.systemd as s
 
 
 def test_list_enabled_services_and_timers_filters_templates(monkeypatch):
-    import enroll.systemd as s
-
     def fake_run(cmd: list[str]) -> str:
         if "--type=service" in cmd:
             return "\n".join(
@@ -35,8 +34,6 @@ def test_list_enabled_services_and_timers_filters_templates(monkeypatch):
 
 
 def test_get_unit_info_parses_fields(monkeypatch):
-    import enroll.systemd as s
-
     class P:
         def __init__(self, rc: int, out: str, err: str = ""):
             self.returncode = rc
@@ -71,8 +68,6 @@ def test_get_unit_info_parses_fields(monkeypatch):
 
 
 def test_get_unit_info_raises_unit_query_error(monkeypatch):
-    import enroll.systemd as s
-
     class P:
         def __init__(self, rc: int, out: str, err: str):
             self.returncode = rc
@@ -90,8 +85,6 @@ def test_get_unit_info_raises_unit_query_error(monkeypatch):
 
 
 def test_get_timer_info_parses_fields(monkeypatch):
-    import enroll.systemd as s
-
     class P:
         def __init__(self, rc: int, out: str, err: str = ""):
             self.returncode = rc
@@ -119,3 +112,123 @@ def test_get_timer_info_parses_fields(monkeypatch):
     ti = s.get_timer_info("apt-daily.timer")
     assert ti.trigger_unit == "apt-daily.service"
     assert "/etc/default/apt" in ti.env_files
+
+
+def test_list_enabled_services_empty_output(monkeypatch):
+    def fake_run(cmd: list[str]) -> str:
+        return ""
+
+    monkeypatch.setattr(s, "_run", fake_run)
+    result = s.list_enabled_services()
+    assert result == []
+
+
+def test_list_enabled_timers_empty_output(monkeypatch):
+    def fake_run(cmd: list[str]) -> str:
+        return ""
+
+    monkeypatch.setattr(s, "_run", fake_run)
+    result = s.list_enabled_timers()
+    assert result == []
+
+
+def test_list_enabled_services_with_only_templates(monkeypatch):
+    def fake_run(cmd: list[str]) -> str:
+        return "getty@.service enabled\n"
+
+    monkeypatch.setattr(s, "_run", fake_run)
+    result = s.list_enabled_services()
+    assert result == []
+
+
+def test_list_enabled_timers_with_only_templates(monkeypatch):
+    def fake_run(cmd: list[str]) -> str:
+        return "foo@.timer enabled\n"
+
+    monkeypatch.setattr(s, "_run", fake_run)
+    result = s.list_enabled_timers()
+    assert result == []
+
+
+def test_get_timer_info_raises_on_failure(monkeypatch):
+    class P:
+        def __init__(self, rc: int, out: str, err: str):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
+
+    def fake_run(cmd, text, capture_output):
+        return P(1, "", "timer not found")
+
+    monkeypatch.setattr(s.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        s.get_timer_info("nonexistent.timer")
+
+    assert "nonexistent.timer" in str(exc_info.value)
+
+
+def test_get_timer_info_with_empty_fields(monkeypatch):
+    class P:
+        def __init__(self, rc: int, out: str, err: str = ""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
+
+    def fake_run(cmd, text, capture_output):
+        return P(
+            0,
+            "\n".join(
+                [
+                    "FragmentPath=",
+                    "DropInPaths=",
+                    "EnvironmentFiles=",
+                    "Unit=",
+                    "ActiveState=",
+                    "SubState=",
+                    "UnitFileState=",
+                    "ConditionResult=",
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(s.subprocess, "run", fake_run)
+    ti = s.get_timer_info("empty.timer")
+    assert ti.fragment_path is None
+    assert ti.dropin_paths == []
+    assert ti.env_files == []
+    assert ti.trigger_unit is None
+    assert ti.active_state is None
+
+
+def test_get_unit_info_with_empty_fields(monkeypatch):
+    class P:
+        def __init__(self, rc: int, out: str, err: str = ""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
+
+    def fake_run(cmd, check, text, capture_output):
+        return P(
+            0,
+            "\n".join(
+                [
+                    "FragmentPath=",
+                    "DropInPaths=",
+                    "EnvironmentFiles=",
+                    "ExecStart=",
+                    "ActiveState=",
+                    "SubState=",
+                    "UnitFileState=",
+                    "ConditionResult=",
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(s.subprocess, "run", fake_run)
+    ui = s.get_unit_info("empty.service")
+    assert ui.fragment_path is None
+    assert ui.dropin_paths == []
+    assert ui.env_files == []
+    assert ui.exec_paths == []
+    assert ui.active_state is None

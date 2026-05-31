@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 import enroll.rpm as rpm
 
@@ -176,3 +177,33 @@ def test_rpm_owner_strips_epoch_prefix_when_present(monkeypatch):
         lambda cmd, allow_fail=False, merge_err=False: (0, "1:bash\n"),
     )
     assert rpm.rpm_owner("/bin/bash") == "bash"
+
+
+def test_strip_arch_no_suffix():
+    assert rpm._strip_arch("vim") == "vim"
+    assert rpm._strip_arch("nginx ") == "nginx"
+
+
+def test_strip_arch_with_unknown_suffix():
+    assert rpm._strip_arch("package.unknown") == "package.unknown"
+
+
+def test_run_command_raises_on_fail():
+    with pytest.raises(RuntimeError):
+        rpm._run(["sh", "-c", "echo stderr >&2; exit 1"], allow_fail=False)
+
+
+def test_rpm_owner_empty_path():
+    assert rpm.rpm_owner("") is None
+
+
+def test_rpm_modified_files_empty(monkeypatch):
+    monkeypatch.setattr(
+        rpm, "_run", lambda cmd, allow_fail=False, merge_err=False: (0, "")
+    )
+    assert rpm.rpm_modified_files("vim") == set()
+
+
+def test_list_manual_packages_no_commands_available(monkeypatch):
+    monkeypatch.setattr(rpm.shutil, "which", lambda exe: None)
+    assert rpm.list_manual_packages() == []

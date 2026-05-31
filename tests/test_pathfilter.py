@@ -184,3 +184,157 @@ def test_expand_includes_respects_max_files(monkeypatch):
     paths, notes = pf.expand_includes(include, max_files=2)
     assert len(paths) == 2
     assert "/root/c" not in paths
+
+
+def test_has_glob_chars():
+    assert pf._has_glob_chars("*.txt") is True
+    assert pf._has_glob_chars("file?.log") is True
+    assert pf._has_glob_chars("[abc]") is True
+    assert pf._has_glob_chars("file.txt") is False
+    assert pf._has_glob_chars("") is False
+
+
+def test_compile_path_pattern_regex_valid():
+    result = pf.compile_path_pattern("re:^/home/.*$")
+    assert result.kind == "regex"
+    assert result.regex is not None
+    assert result.regex.search("/home/user/file.txt") is not None
+    assert result.regex.search("/var/file.txt") is None
+
+
+def test_compile_path_pattern_glob_forced():
+    result = pf.compile_path_pattern("glob:/etc/*.conf")
+    assert result.kind == "glob"
+    assert result.value == "/etc/*.conf"
+
+
+def test_compile_path_pattern_glob_heuristic():
+    result = pf.compile_path_pattern("/etc/*.conf")
+    assert result.kind == "glob"
+
+
+def test_compile_path_pattern_prefix():
+    result = pf.compile_path_pattern("/etc/nginx")
+    assert result.kind == "prefix"
+    assert result.value == "/etc/nginx"
+
+
+def test_compiled_pattern_matches_prefix():
+    pat = pf.compile_path_pattern("/etc/nginx")
+    assert pat.matches("/etc/nginx") is True
+    assert pat.matches("/etc/nginx/conf.d") is True
+    assert pat.matches("/etc/ssh") is False
+
+
+def test_compiled_pattern_matches_glob():
+    pat = pf.compile_path_pattern("/etc/*.conf")
+    assert pat.matches("/etc/ssh.conf") is True
+    assert pat.matches("/etc/ssh/sshd.conf") is False
+
+
+def test_compiled_pattern_matches_regex():
+    pat = pf.compile_path_pattern("re:^/home/[^/]+/.bashrc$")
+    assert pat.matches("/home/alice/.bashrc") is True
+    assert pat.matches("/home/bob/.bashrc") is True
+    assert pat.matches("/home/alice/.profile") is False
+    assert pat.matches("/var/.bashrc") is False
+
+
+def test_path_filter_is_excluded():
+    pf_filter = pf.PathFilter(exclude=["/tmp/*", "/var/log"])
+    assert pf_filter.is_excluded("/tmp/file.txt") is True
+    assert pf_filter.is_excluded("/var/log/syslog") is True
+    assert pf_filter.is_excluded("/etc/ssh") is False
+
+
+def test_path_filter_empty():
+    pf_filter = pf.PathFilter()
+    assert pf_filter.is_excluded("/anything") is False
+    assert pf_filter.iter_include_patterns() == []
+
+
+def test_expand_includes_prefix_existing(tmp_path: Path):
+    etc_dir = tmp_path / "etc"
+    etc_dir.mkdir()
+    (etc_dir / "file1.txt").write_text("a")
+    (etc_dir / "file2.txt").write_text("b")
+
+    patterns = [pf.compile_path_pattern(str(etc_dir))]
+    paths, notes = pf.expand_includes(patterns, max_files=10)
+
+    assert len(paths) == 2
+    assert notes == []
+
+
+def test_expand_includes_prefix_nonexistent():
+    patterns = [pf.compile_path_pattern("/nonexistent/path")]
+    paths, notes = pf.expand_includes(patterns, max_files=10)
+
+    assert paths == []
+    assert len(notes) == 1
+    assert "matched no files" in notes[0]
+
+
+def test_expand_includes_glob_no_matches():
+    patterns = [pf.compile_path_pattern("/nonexistent/*.txt")]
+    paths, notes = pf.expand_includes(patterns, max_files=10)
+
+    assert paths == []
+    assert len(notes) == 1
+
+
+def test_expand_includes_skips_symlinks(tmp_path: Path):
+    real_file = tmp_path / "real.txt"
+    real_file.write_text("x")
+    link = tmp_path / "link.txt"
+    os.symlink(str(real_file), str(link))
+
+    patterns = [pf.compile_path_pattern(str(tmp_path))]
+    paths, notes = pf.expand_includes(patterns, max_files=10)
+
+    assert len(paths) == 1
+    assert paths[0].endswith("real.txt")
+
+
+def test_expand_includes_excludes_pattern(tmp_path: Path):
+    etc_dir = tmp_path / "etc"
+    etc_dir.mkdir()
+    (etc_dir / "include.txt").write_text("a")
+    (etc_dir / "exclude.txt").write_text("b")
+
+    patterns = [pf.compile_path_pattern(str(etc_dir))]
+    exclude = pf.PathFilter(exclude=["*exclude*"])
+    paths, notes = pf.expand_includes(patterns, exclude=exclude, max_files=10)
+
+    assert len(paths) == 1
+    assert paths[0].endswith("include.txt")
+
+
+def test_expand_includes_skips_directories(tmp_path: Path):
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    (tmp_path / "file.txt").write_text("x")
+
+    patterns = [pf.compile_path_pattern(str(subdir))]
+    paths, notes = pf.expand_includes(patterns, max_files=10)
+
+    assert paths == []
+
+
+def test_regex_literal_prefix_simple():
+    assert pf._regex_literal_prefix("/etc/nginx/") == "/etc/nginx/"
+
+
+def test_regex_literal_prefix_with_anchor():
+    assert pf._regex_literal_prefix("^/etc/nginx/") == "/etc/nginx/"
+
+
+def test_regex_literal_prefix_with_regex_chars():
+    assert pf._regex_literal_prefix("^/etc/.*\\.conf$") == "/etc/"
+
+
+def test_path_filter_with_include_patterns():
+    pf_filter = pf.PathFilter(include=["/etc/*.conf"], exclude=["/etc/secret.conf"])
+    patterns = pf_filter.iter_include_patterns()
+    assert len(patterns) == 1
+    assert patterns[0].kind == "glob"
