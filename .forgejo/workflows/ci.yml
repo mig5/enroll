@@ -27,6 +27,11 @@ jobs:
         run: |
           poetry install --with dev
 
+      - name: Install sops
+        run: |
+          curl -LO -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.1/sops-v3.13.1.linux.amd64
+          chmod +x /usr/local/bin/sops
+
       - name: Run test script
         run: |
           ./tests.sh
