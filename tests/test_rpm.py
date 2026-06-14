@@ -149,9 +149,9 @@ def test_list_manual_packages_uses_yum_fallback(monkeypatch):
 
 def test_list_installed_packages_parses_epoch_and_sorts(monkeypatch):
     out = (
-        "bash\t0\t5.2.26\t1.el9\tx86_64\n"
-        "bash\t1\t5.2.26\t1.el9\taarch64\n"
-        "coreutils\t(none)\t9.1\t2.el9\tx86_64\n"
+        "bash\t0\t5.2.26\t1.el9\tx86_64\tSystem Environment/Shells\n"
+        "bash\t1\t5.2.26\t1.el9\taarch64\tSystem Environment/Shells\n"
+        "coreutils\t(none)\t9.1\t2.el9\tx86_64\tSystem Environment/Base\n"
     )
     monkeypatch.setattr(
         rpm, "_run", lambda cmd, allow_fail=False, merge_err=False: (0, out)
@@ -159,6 +159,7 @@ def test_list_installed_packages_parses_epoch_and_sorts(monkeypatch):
     pkgs = rpm.list_installed_packages()
     assert pkgs["bash"][0]["arch"] == "aarch64"  # sorted by arch then version
     assert pkgs["bash"][0]["version"].startswith("1:")
+    assert pkgs["bash"][0]["group"] == "System Environment/Shells"
     assert pkgs["coreutils"][0]["version"] == "9.1-2.el9"
 
 

@@ -202,7 +202,12 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     owned_etc = {"/etc/openvpn/server.conf"}
     etc_owner_map = {"/etc/openvpn/server.conf": "openvpn"}
     topdir_to_pkgs = {"openvpn": {"openvpn"}}
-    pkg_to_etc_paths = {"openvpn": ["/etc/openvpn/server.conf"], "curl": []}
+    # curl has a package-owned /etc path, but no changed/custom harvested
+    # artifacts. That should still be considered a simple package role.
+    pkg_to_etc_paths = {
+        "openvpn": ["/etc/openvpn/server.conf"],
+        "curl": ["/etc/curl/curlrc"],
+    }
 
     backend = FakeBackend(
         name="dpkg",
@@ -264,6 +269,9 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     pkg_roles = st["roles"]["packages"]
     assert all(pr["package"] != "openvpn" for pr in pkg_roles)
     assert any(pr["package"] == "curl" for pr in pkg_roles)
+    curl_role = next(pr for pr in pkg_roles if pr["package"] == "curl")
+    assert curl_role["has_config"] is False
+    assert any("No changed or custom configuration" in n for n in curl_role["notes"])
 
     # Inventory provenance: openvpn should be observed via systemd unit.
     openvpn_obs = inv["openvpn"]["observed_via"]

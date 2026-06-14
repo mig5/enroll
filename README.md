@@ -129,7 +129,7 @@ Generate Ansible output from an existing harvest bundle.
 
 **Common flags**
 - `--fqdn <host>`: enables **multi-site** output style
-- `--merge-simple-packages`: Puts all packages that don't have config files or services to maintain, in a `common_packages` role, to reduce the number of overall Ansible roles to run.
+- `--no-common-roles`: disables the default grouping of package and systemd-unit roles into Debian Section/RPM Group roles, preserving one generated role per package/unit. `--fqdn` implies this behaviour.
 
 **Role tags**
 Generated playbooks tag each role so you can target just the parts you need:
@@ -149,7 +149,7 @@ Convenience wrapper that runs **harvest → manifest** in one command.
 
 Use this when you want “get me something workable ASAP”.
 
-Supports the same general flags as harvest/manifest, including `--fqdn`, remote harvest flags, `--merge-simple-packages`, and `--sops`.
+Supports the same general flags as harvest/manifest, including `--fqdn`, `--no-common-roles`, remote harvest flags, and `--sops`.
 
 ---
 

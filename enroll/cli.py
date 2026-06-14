@@ -312,6 +312,14 @@ def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
         "--fqdn",
         help="Host FQDN/name for site-mode output (creates inventory/, inventory/host_vars/, playbooks/).",
     )
+    p.add_argument(
+        "--no-common-roles",
+        action="store_true",
+        help=(
+            "Do not group package and systemd-unit roles into common section/group roles. "
+            "This preserves one generated role per package/unit. --fqdn implies this."
+        ),
+    )
     g = p.add_mutually_exclusive_group()
     g.add_argument(
         "--jinjaturtle",
@@ -503,11 +511,6 @@ def main() -> None:
             "(binary) using the given GPG fingerprint(s). Requires `sops` on PATH."
         ),
     )
-    m.add_argument(
-        "--merge-simple-packages",
-        action="store_true",
-        help="Merge packages with no configuration files into a single 'common_packages' role.",
-    )
     _add_common_manifest_args(m)
 
     s = sub.add_parser(
@@ -569,11 +572,6 @@ def main() -> None:
             "In --sops mode this may be either a directory (an encrypted file named manifest.tar.gz.sops will be created inside) "
             "or a file path."
         ),
-    )
-    s.add_argument(
-        "--merge-simple-packages",
-        action="store_true",
-        help="Merge packages with no configuration files into a single 'common_packages' role.",
     )
     _add_common_manifest_args(s)
 
@@ -921,7 +919,7 @@ def main() -> None:
                 fqdn=args.fqdn,
                 jinjaturtle=_jt_mode(args),
                 sops_fingerprints=getattr(args, "sops", None),
-                merge_simple_packages=getattr(args, "merge_simple_packages", False),
+                no_common_roles=bool(getattr(args, "no_common_roles", False)),
             )
             if getattr(args, "sops", None) and out_enc:
                 print(str(out_enc))
@@ -1059,9 +1057,7 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
-                        merge_simple_packages=getattr(
-                            args, "merge_simple_packages", False
-                        ),
+                        no_common_roles=bool(getattr(args, "no_common_roles", False)),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1092,9 +1088,7 @@ def main() -> None:
                         args.out,
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
-                        merge_simple_packages=getattr(
-                            args, "merge_simple_packages", False
-                        ),
+                        no_common_roles=bool(getattr(args, "no_common_roles", False)),
                     )
                     # For usability (when --harvest wasn't provided), print the harvest path.
                     if not args.harvest:
@@ -1125,9 +1119,7 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
-                        merge_simple_packages=getattr(
-                            args, "merge_simple_packages", False
-                        ),
+                        no_common_roles=bool(getattr(args, "no_common_roles", False)),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1147,9 +1139,7 @@ def main() -> None:
                         args.out,
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
-                        merge_simple_packages=getattr(
-                            args, "merge_simple_packages", False
-                        ),
+                        no_common_roles=bool(getattr(args, "no_common_roles", False)),
                     )
     except RemoteSudoPasswordRequired:
         raise SystemExit(

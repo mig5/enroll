@@ -69,7 +69,7 @@ def list_installed_packages() -> Dict[str, List[Dict[str, str]]]:
     Uses dpkg-query and is expected to work on Debian/Ubuntu-like systems.
 
     Output format:
-      {"pkg": [{"version": "...", "arch": "..."}, ...], ...}
+      {"pkg": [{"version": "...", "arch": "...", "section": "..."}, ...], ...}
     """
 
     try:
@@ -77,7 +77,7 @@ def list_installed_packages() -> Dict[str, List[Dict[str, str]]]:
             [
                 "dpkg-query",
                 "-W",
-                "-f=${Package}\t${Version}\t${Architecture}\n",
+                "-f=${Package}\t${Version}\t${Architecture}\t${Section}\n",
             ],
             text=True,
             capture_output=True,
@@ -97,7 +97,10 @@ def list_installed_packages() -> Dict[str, List[Dict[str, str]]]:
         name, ver, arch = parts[0].strip(), parts[1].strip(), parts[2].strip()
         if not name:
             continue
-        out.setdefault(name, []).append({"version": ver, "arch": arch})
+        instance = {"version": ver, "arch": arch}
+        if len(parts) >= 4 and parts[3].strip():
+            instance["section"] = parts[3].strip()
+        out.setdefault(name, []).append(instance)
 
     # Stable ordering for deterministic JSON dumps.
     for k in list(out.keys()):

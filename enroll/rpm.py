@@ -148,7 +148,7 @@ def list_installed_packages() -> Dict[str, List[Dict[str, str]]]:
     Uses `rpm -qa` and is expected to work on RHEL/Fedora-like systems.
 
     Output format:
-      {"pkg": [{"version": "...", "arch": "..."}, ...], ...}
+      {"pkg": [{"version": "...", "arch": "...", "group": "..."}, ...], ...}
 
     The version string is formatted as:
       - "<version>-<release>" for typical packages
@@ -161,7 +161,7 @@ def list_installed_packages() -> Dict[str, List[Dict[str, str]]]:
                 "rpm",
                 "-qa",
                 "--qf",
-                "%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n",
+                "%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{GROUP}\n",
             ],
             allow_fail=False,
             merge_err=True,
@@ -190,7 +190,11 @@ def list_installed_packages() -> Dict[str, List[Dict[str, str]]]:
         if epoch and epoch.isdigit() and epoch != "0":
             v = f"{epoch}:{v}"
 
-        pkgs.setdefault(name, []).append({"version": v, "arch": arch})
+        instance = {"version": v, "arch": arch}
+        if len(parts) >= 6 and parts[5].strip():
+            instance["group"] = parts[5].strip()
+
+        pkgs.setdefault(name, []).append(instance)
 
     for k in list(pkgs.keys()):
         pkgs[k] = sorted(

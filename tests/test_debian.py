@@ -169,7 +169,7 @@ def test_list_installed_packages_parses_output():
     original_run = d.subprocess.run
 
     def fake_run(cmd, text, capture_output, check):
-        return P(0, "nginx\t1.18.0\tamd64\nvim\t8.2\tamd64\n")
+        return P(0, "nginx\t1.18.0\tamd64\tweb\nvim\t8.2\tamd64\teditors\n")
 
     d.subprocess.run = fake_run
     try:
@@ -177,6 +177,7 @@ def test_list_installed_packages_parses_output():
         assert "nginx" in result
         assert result["nginx"][0]["version"] == "1.18.0"
         assert result["nginx"][0]["arch"] == "amd64"
+        assert result["nginx"][0]["section"] == "web"
         assert "vim" in result
     finally:
         d.subprocess.run = original_run

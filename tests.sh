@@ -44,10 +44,22 @@ poetry run \
 	  --format json | jq
 DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge cowsay
 
+# No common roles mode (tested later)
+ poetry run \
+ 	enroll manifest \
+ 	--harvest "${BUNDLE_DIR}2" \
+ 	--out "${ANSIBLE_DIR}2" \
+	--no-common-roles
+
 # Ansible test
 builtin cd "${ANSIBLE_DIR}"
 # Lint
 ansible-lint "${ANSIBLE_DIR}"
 
 # Run
+ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+
+# Test the --no-common-roles mode
+builtin cd "${ANSIBLE_DIR}2"
+ls "${ANSIBLE_DIR}2/roles"
 ansible-playbook playbook.yml -i "localhost," -c local --check --diff

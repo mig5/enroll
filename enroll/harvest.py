@@ -86,6 +86,7 @@ class ServiceSnapshot:
 class PackageSnapshot:
     package: str
     role_name: str
+    section: Optional[str] = None
     managed_dirs: List[ManagedDir] = field(default_factory=list)
     managed_files: List[ManagedFile] = field(default_factory=list)
     managed_links: List[ManagedLink] = field(default_factory=list)
@@ -387,6 +388,30 @@ def _role_name_from_unit(unit: str) -> str:
 
 def _role_name_from_pkg(pkg: str) -> str:
     return avoid_reserved_role_name(_safe_name(pkg), prefix="package")
+
+
+def _package_section_from_installations(
+    installs: List[Dict[str, str]],
+) -> Optional[str]:
+    """Return a stable package grouping label from installed package metadata.
+
+    Debian exposes this as ``Section``. RPM-family distributions have a broadly
+    similar ``Group`` tag, although modern Fedora/RHEL packages may omit it or
+    set it to ``Unspecified``.
+    """
+
+    values: Set[str] = set()
+    for inst in installs or []:
+        value = (inst.get("section") or inst.get("group") or "").strip()
+        if not value:
+            continue
+        if value.lower() in {"(none)", "none", "unspecified"}:
+            continue
+        values.add(value)
+
+    if not values:
+        return None
+    return sorted(values)[0]
 
 
 def _copy_into_bundle(
@@ -1279,6 +1304,9 @@ def harvest(
         cron_snapshot = PackageSnapshot(
             package=cron_pkg,
             role_name=cron_role_name,
+            section=_package_section_from_installations(
+                installed_pkgs.get(cron_pkg, [])
+            ),
             managed_files=cron_managed,
             excluded=cron_excluded,
             notes=cron_notes,
@@ -1314,6 +1342,9 @@ def harvest(
         logrotate_snapshot = PackageSnapshot(
             package=logrotate_pkg,
             role_name=logrotate_role_name,
+            section=_package_section_from_installations(
+                installed_pkgs.get(logrotate_pkg, [])
+            ),
             managed_files=lr_managed,
             excluded=lr_excluded,
             notes=lr_notes,
@@ -1732,11 +1763,11 @@ def harvest(
                 seen_global=captured_global,
             )
 
-        has_config = bool(pkg_to_etc_paths.get(pkg, []) or managed)
+        has_config = bool(managed or excluded)
 
         if not has_config:
             notes.append(
-                "No /etc files or custom configuration detected for this package."
+                "No changed or custom configuration detected for this package."
             )
             simple_packages.append(pkg)
 
@@ -1744,6 +1775,9 @@ def harvest(
             PackageSnapshot(
                 package=pkg,
                 role_name=role,
+                section=_package_section_from_installations(
+                    installed_pkgs.get(pkg, [])
+                ),
                 managed_files=managed,
                 managed_links=[],
                 excluded=excluded,
@@ -2487,6 +2521,7 @@ def harvest(
         arches = sorted({i.get("arch") for i in installs if i.get("arch")})
         vers = sorted({i.get("version") for i in installs if i.get("version")})
         version: Optional[str] = vers[0] if len(vers) == 1 else None
+        section = _package_section_from_installations(installs)
 
         observed: List[Dict[str, str]] = []
         if pkg in manual_set:
@@ -2509,6 +2544,7 @@ def harvest(
             "version": version,
             "arches": arches,
             "installations": installs,
+            "section": section,
             "observed_via": observed,
             "roles": roles,
         }

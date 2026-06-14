@@ -1,7 +1,7 @@
 # 0.7.0
 
  * Add support for detecting flatpaks and snaps
- * Add --merge-simple-packages to reduce the number of roles, for packages that have no config files or services to maintain.
+ * BREAKING CHANGE: Group all package and systemd-unit roles into Debian Section/RPM Group roles by default, including managed config files and unit state. This mode is not used if `--fqdn` or `--no-common-roles` is set, in which case, the traditional behaviour of preserving one role per package/unit is used instead.
 
 # 0.6.0
 

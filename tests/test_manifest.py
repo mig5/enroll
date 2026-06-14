@@ -9,6 +9,80 @@ import pytest
 import enroll.manifest as manifest
 
 
+def _minimal_package_state(packages):
+    return {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {
+            "packages": {
+                p["package"]: {
+                    "version": "1.0",
+                    "arches": ["amd64"],
+                    "installations": [
+                        {
+                            "version": "1.0",
+                            "arch": "amd64",
+                            "section": p.get("section") or "misc",
+                        }
+                    ],
+                    "section": p.get("section") or "misc",
+                    "observed_via": [{"kind": "package_role", "ref": p["role_name"]}],
+                    "roles": [p["role_name"]],
+                }
+                for p in packages
+            }
+        },
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": packages,
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+        },
+    }
+
+
+def _write_state(bundle: Path, state: dict) -> None:
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
 def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     bundle = tmp_path / "bundle"
     out = tmp_path / "ansible"
@@ -181,7 +255,7 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
         bundle / "artifacts" / "usr_local_custom" / "usr" / "local" / "bin" / "myscript"
     ).write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
 
-    manifest.manifest(str(bundle), str(out))
+    manifest.manifest(str(bundle), str(out), no_common_roles=True)
 
     # Service role: systemd management should be gated on foo_manage_unit and a probe.
     tasks = (out / "roles" / "foo" / "tasks" / "main.yml").read_text(encoding="utf-8")
@@ -211,6 +285,365 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     assert "role: usr_local_custom" in pb
     assert "role: curl" in pb
     assert "role: foo" in pb
+
+
+def test_manifest_groups_simple_packages_by_section_by_default(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    state = _minimal_package_state(
+        [
+            {
+                "package": "curl",
+                "role_name": "curl",
+                "section": "net",
+                "has_config": False,
+                "managed_files": [],
+                "managed_dirs": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            },
+            {
+                "package": "rsync",
+                "role_name": "rsync",
+                "section": "net",
+                "has_config": False,
+                "managed_files": [],
+                "managed_dirs": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            },
+            {
+                "package": "vim",
+                "role_name": "vim",
+                "section": "editors",
+                "has_config": False,
+                "managed_files": [],
+                "managed_dirs": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            },
+            {
+                "package": "nginx",
+                "role_name": "nginx",
+                "section": "httpd",
+                "has_config": True,
+                "managed_files": [],
+                "managed_dirs": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            },
+        ]
+    )
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out))
+
+    assert (out / "roles" / "net").exists()
+    assert (out / "roles" / "editors").exists()
+    assert (out / "roles" / "httpd").exists()
+    assert not (out / "roles" / "curl").exists()
+    assert not (out / "roles" / "rsync").exists()
+    assert not (out / "roles" / "vim").exists()
+    assert not (out / "roles" / "nginx").exists()
+
+    net_defaults = (out / "roles" / "net" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "- curl" in net_defaults
+    assert "- rsync" in net_defaults
+
+    pb = (out / "playbook.yml").read_text(encoding="utf-8")
+    assert "role: net" in pb
+    assert "role: editors" in pb
+    assert "role: httpd" in pb
+
+
+def test_manifest_no_common_roles_preserves_package_roles(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    state = _minimal_package_state(
+        [
+            {
+                "package": "curl",
+                "role_name": "curl",
+                "section": "net",
+                "has_config": False,
+                "managed_files": [],
+                "managed_dirs": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            },
+            {
+                "package": "vim",
+                "role_name": "vim",
+                "section": "editors",
+                "has_config": False,
+                "managed_files": [],
+                "managed_dirs": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            },
+        ]
+    )
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), no_common_roles=True)
+
+    assert (out / "roles" / "curl").exists()
+    assert (out / "roles" / "vim").exists()
+    assert not (out / "roles" / "net").exists()
+    assert not (out / "roles" / "editors").exists()
+
+
+def test_manifest_groups_excluded_package_paths_into_common_roles(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    state = _minimal_package_state(
+        [
+            {
+                "package": "secret-agent",
+                "role_name": "secret_agent",
+                "section": "net",
+                "has_config": False,
+                "managed_files": [],
+                "managed_dirs": [],
+                "managed_links": [],
+                "excluded": [
+                    {"path": "/etc/secret-agent/key", "reason": "possible_secret"}
+                ],
+                "notes": [],
+            }
+        ]
+    )
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out))
+
+    assert (out / "roles" / "net").exists()
+    assert not (out / "roles" / "secret_agent").exists()
+    readme = (out / "roles" / "net" / "README.md").read_text(encoding="utf-8")
+    assert "/etc/secret-agent/key" in readme
+
+
+def test_manifest_groups_managed_package_config_into_common_role(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    (bundle / "artifacts" / "nginx" / "etc" / "nginx").mkdir(
+        parents=True, exist_ok=True
+    )
+    (bundle / "artifacts" / "nginx" / "etc" / "nginx" / "nginx.conf").write_text(
+        "worker_processes auto;\n", encoding="utf-8"
+    )
+    state = _minimal_package_state(
+        [
+            {
+                "package": "nginx",
+                "role_name": "nginx",
+                "section": "httpd",
+                "has_config": True,
+                "managed_files": [
+                    {
+                        "path": "/etc/nginx/nginx.conf",
+                        "src_rel": "etc/nginx/nginx.conf",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0644",
+                        "reason": "modified_conffile",
+                    }
+                ],
+                "managed_dirs": [
+                    {
+                        "path": "/etc/nginx",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0755",
+                        "reason": "parent_of_managed_file",
+                    }
+                ],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            }
+        ]
+    )
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out))
+
+    assert (out / "roles" / "httpd").exists()
+    assert not (out / "roles" / "nginx").exists()
+    defaults = (out / "roles" / "httpd" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "- nginx" in defaults
+    assert "dest: /etc/nginx/nginx.conf" in defaults
+    assert (out / "roles" / "httpd" / "files" / "etc" / "nginx" / "nginx.conf").exists()
+
+
+def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    (bundle / "artifacts" / "network_manager" / "etc" / "NetworkManager").mkdir(
+        parents=True, exist_ok=True
+    )
+    (
+        bundle
+        / "artifacts"
+        / "network_manager"
+        / "etc"
+        / "NetworkManager"
+        / "NetworkManager.conf"
+    ).write_text("[main]\n", encoding="utf-8")
+
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {
+            "packages": {
+                "network-manager": {
+                    "version": "1.0",
+                    "arches": ["amd64"],
+                    "installations": [
+                        {"version": "1.0", "arch": "amd64", "section": "net"}
+                    ],
+                    "section": "net",
+                    "observed_via": [
+                        {"kind": "systemd_unit", "ref": "NetworkManager.service"}
+                    ],
+                    "roles": ["network_manager", "network_manager_dispatcher"],
+                }
+            }
+        },
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [
+                {
+                    "unit": "NetworkManager.service",
+                    "role_name": "network_manager",
+                    "packages": ["network-manager"],
+                    "active_state": "active",
+                    "sub_state": "running",
+                    "unit_file_state": "enabled",
+                    "condition_result": "yes",
+                    "managed_files": [
+                        {
+                            "path": "/etc/NetworkManager/NetworkManager.conf",
+                            "src_rel": "etc/NetworkManager/NetworkManager.conf",
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                            "reason": "modified_conffile",
+                        }
+                    ],
+                    "managed_dirs": [],
+                    "managed_links": [],
+                    "excluded": [],
+                    "notes": [],
+                },
+                {
+                    "unit": "NetworkManager-dispatcher.service",
+                    "role_name": "network_manager_dispatcher",
+                    "packages": ["network-manager"],
+                    "active_state": "inactive",
+                    "sub_state": "dead",
+                    "unit_file_state": "enabled",
+                    "condition_result": "no",
+                    "managed_files": [],
+                    "managed_dirs": [],
+                    "managed_links": [],
+                    "excluded": [],
+                    "notes": [],
+                },
+            ],
+            "packages": [],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+        },
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out))
+
+    assert (out / "roles" / "net").exists()
+    assert not (out / "roles" / "network_manager").exists()
+    assert not (out / "roles" / "network_manager_dispatcher").exists()
+    defaults = (out / "roles" / "net" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "- network-manager" in defaults
+    assert "name: NetworkManager.service" in defaults
+    assert "name: NetworkManager-dispatcher.service" in defaults
+    assert "dest: /etc/NetworkManager/NetworkManager.conf" in defaults
+    tasks = (out / "roles" / "net" / "tasks" / "main.yml").read_text(encoding="utf-8")
+    assert "Ensure grouped unit enablement matches harvest" in tasks
+
+
+def test_manifest_fqdn_implies_no_common_roles(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    state = _minimal_package_state(
+        [
+            {
+                "package": "curl",
+                "role_name": "curl",
+                "section": "net",
+                "has_config": False,
+                "managed_files": [],
+                "managed_dirs": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            }
+        ]
+    )
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), fqdn="host1.example.test")
+
+    assert (out / "roles" / "curl").exists()
+    assert not (out / "roles" / "net").exists()
 
 
 def test_manifest_site_mode_creates_host_inventory_and_raw_files(tmp_path: Path):
@@ -631,10 +1064,10 @@ def test_manifest_orders_cron_and_logrotate_at_playbook_tail(tmp_path: Path):
         ln.strip().removeprefix("- ").strip() for ln in pb if ln.startswith("    - ")
     ]
 
-    # Ensure tail ordering.
-    assert roles[-2:] == ["role: cron", "role: logrotate"]
+    # Ensure the grouped role containing cron/logrotate is still ordered after users.
+    assert roles[-1] == "role: misc"
+    assert roles.index("role: users") < roles.index("role: misc")
     assert "role: users" in roles
-    assert roles.index("role: users") < roles.index("role: cron")
 
 
 def test_yaml_helpers_fallback_when_yaml_unavailable(monkeypatch):
@@ -1367,7 +1800,7 @@ def test_manifest_avoids_package_role_collision_with_flatpak_singleton(tmp_path)
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 
-    manifest.manifest(str(bundle), str(out))
+    manifest.manifest(str(bundle), str(out), no_common_roles=True)
 
     flatpak_defaults = (out / "roles" / "flatpak" / "defaults" / "main.yml").read_text(
         encoding="utf-8"

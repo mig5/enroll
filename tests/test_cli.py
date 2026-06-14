@@ -47,6 +47,7 @@ def test_cli_manifest_subcommand_calls_manifest(monkeypatch, tmp_path):
         # Common manifest args should be passed through by the CLI.
         called["fqdn"] = kwargs.get("fqdn")
         called["jinjaturtle"] = kwargs.get("jinjaturtle")
+        called["no_common_roles"] = kwargs.get("no_common_roles")
 
     monkeypatch.setattr(cli, "manifest", fake_manifest)
     monkeypatch.setattr(
@@ -67,6 +68,36 @@ def test_cli_manifest_subcommand_calls_manifest(monkeypatch, tmp_path):
     assert called["out"] == str(tmp_path / "ansible")
     assert called["fqdn"] is None
     assert called["jinjaturtle"] == "auto"
+    assert called["no_common_roles"] is False
+
+
+def test_cli_manifest_no_common_roles_is_forwarded(monkeypatch, tmp_path):
+    called = {}
+
+    def fake_manifest(harvest_dir: str, out_dir: str, **kwargs):
+        called["harvest"] = harvest_dir
+        called["out"] = out_dir
+        called["no_common_roles"] = kwargs.get("no_common_roles")
+
+    monkeypatch.setattr(cli, "manifest", fake_manifest)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "enroll",
+            "manifest",
+            "--harvest",
+            str(tmp_path / "bundle"),
+            "--out",
+            str(tmp_path / "ansible"),
+            "--no-common-roles",
+        ],
+    )
+
+    cli.main()
+    assert called["harvest"] == str(tmp_path / "bundle")
+    assert called["out"] == str(tmp_path / "ansible")
+    assert called["no_common_roles"] is True
 
 
 def test_cli_enroll_subcommand_runs_harvest_then_manifest(monkeypatch, tmp_path):

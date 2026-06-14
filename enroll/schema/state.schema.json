@@ -117,6 +117,14 @@
           "minLength": 1,
           "type": "string"
         },
+        "group": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "section": {
+          "minLength": 1,
+          "type": "string"
+        },
         "version": {
           "minLength": 1,
           "type": "string"
@@ -364,6 +372,12 @@
           },
           "type": "array"
         },
+        "section": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "version": {
           "type": [
             "string",
@@ -394,6 +408,12 @@
             "has_config": {
               "type": "boolean",
               "default": true
+            },
+            "section": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
