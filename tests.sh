@@ -44,6 +44,13 @@ poetry run \
 	  --format json | jq
 DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge cowsay
 
+# Common simple packages mode (is tested later)
+poetry run \
+	enroll manifest \
+	--harvest "${BUNDLE_DIR}2" \
+	--out "${ANSIBLE_DIR}2" \
+	--merge-simple-packages
+
 # Ansible test
 builtin cd "${ANSIBLE_DIR}"
 # Lint
@@ -52,13 +59,8 @@ ansible-lint "${ANSIBLE_DIR}"
 # Run
 ansible-playbook playbook.yml -i "localhost," -c local --check --diff
 
-# Common simple packages mode
-poetry run \
-	enroll manifest \
-	--harvest "${BUNDLE_DIR}2" \
-	--out "${ANSIBLE_DIR}2" \
-	--merge-simple-packages
-
+# Test the --merge-simple-packages mode
 builtin cd "${ANSIBLE_DIR}2"
 ls "${ANSIBLE_DIR}2/roles"
+
 ansible-playbook playbook.yml -i "localhost," -c local --check --diff
