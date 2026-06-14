@@ -1170,7 +1170,6 @@ def _manifest_from_bundle_dir(
     group: "{{ item.group }}"
     mode: "{{ item.mode }}"
   loop: "{{ users_ssh_files | default([]) }}"
-
 """
 
         if flatpak_remotes or users_flatpaks:
@@ -1215,7 +1214,6 @@ def _manifest_from_bundle_dir(
   environment:
     HOME: "{{ item.home | default('/home/' ~ item.user, true) }}"
     XDG_DATA_HOME: "{{ (item.home | default('/home/' ~ item.user, true)) ~ '/.local/share' }}"
-
 """
 
         with open(
