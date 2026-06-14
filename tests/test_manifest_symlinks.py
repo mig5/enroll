@@ -10,7 +10,20 @@ def test_manifest_emits_symlink_tasks_and_vars(tmp_path: Path):
 
     state = {
         "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
-        "inventory": {"packages": {}},
+        "inventory": {
+            "packages": {
+                "nginx": {
+                    "version": "1.0",
+                    "arches": ["amd64"],
+                    "installations": [
+                        {"version": "1.0", "arch": "amd64", "section": "httpd"}
+                    ],
+                    "section": "httpd",
+                    "observed_via": [{"kind": "systemd_unit", "ref": "nginx.service"}],
+                    "roles": ["nginx"],
+                }
+            }
+        },
         "roles": {
             "users": {
                 "role_name": "users",
@@ -83,14 +96,13 @@ def test_manifest_emits_symlink_tasks_and_vars(tmp_path: Path):
 
     manifest.manifest(str(bundle), str(out))
 
-    tasks = (out / "roles" / "nginx" / "tasks" / "main.yml").read_text(encoding="utf-8")
+    role_dir = out / "roles" / "httpd"
+    tasks = (role_dir / "tasks" / "main.yml").read_text(encoding="utf-8")
     assert "- name: Ensure managed symlinks exist" in tasks
-    assert 'loop: "{{ nginx_managed_links | default([]) }}"' in tasks
+    assert 'loop: "{{ httpd_managed_links | default([]) }}"' in tasks
 
-    defaults = (out / "roles" / "nginx" / "defaults" / "main.yml").read_text(
-        encoding="utf-8"
-    )
-    # The role defaults should include the converted link mapping.
-    assert "nginx_managed_links:" in defaults
+    defaults = (role_dir / "defaults" / "main.yml").read_text(encoding="utf-8")
+    # The grouped role defaults should include the converted link mapping.
+    assert "httpd_managed_links:" in defaults
     assert "dest: /etc/nginx/sites-enabled/default" in defaults
     assert "src: ../sites-available/default" in defaults

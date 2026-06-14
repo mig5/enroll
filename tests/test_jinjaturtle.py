@@ -31,7 +31,10 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
                 "foo": {
                     "version": "1.0",
                     "arches": [],
-                    "installations": [{"version": "1.0", "arch": "amd64"}],
+                    "installations": [
+                        {"version": "1.0", "arch": "amd64", "section": "utils"}
+                    ],
+                    "section": "utils",
                     "observed_via": [{"kind": "systemd_unit", "ref": "foo.service"}],
                     "roles": ["foo"],
                 }
@@ -120,16 +123,16 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
 
     manifest_mod.manifest(str(bundle), str(out), jinjaturtle="on")
 
-    # Template should exist in the role.
-    assert (out / "roles" / "foo" / "templates" / "etc" / "foo.ini.j2").exists()
+    role_dir = out / "roles" / "utils"
+
+    # Template should exist in the grouped section role.
+    assert (role_dir / "templates" / "etc" / "foo.ini.j2").exists()
 
     # Raw file should NOT be copied into role files/ because it was templatised.
-    assert not (out / "roles" / "foo" / "files" / "etc" / "foo.ini").exists()
+    assert not (role_dir / "files" / "etc" / "foo.ini").exists()
 
     # Defaults should include jinjaturtle vars.
-    defaults = (out / "roles" / "foo" / "defaults" / "main.yml").read_text(
-        encoding="utf-8"
-    )
+    defaults = (role_dir / "defaults" / "main.yml").read_text(encoding="utf-8")
     assert "foo_key: 1" in defaults
 
 
