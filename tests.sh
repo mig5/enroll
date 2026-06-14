@@ -45,6 +45,7 @@ poetry run \
 DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge cowsay
 
 # Ensure some flatpaks are installed
+DEBIAN_FRONTEND=noninteractive apt-get install -y flatpak
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak install -y flathub org.onionshare.OnionShare
 
