@@ -459,7 +459,6 @@ def main() -> None:
             "Excludes apply to all harvesting, including defaults."
         ),
     )
-
     h.add_argument(
         "--sops",
         nargs="+",
@@ -504,6 +503,11 @@ def main() -> None:
             "(binary) using the given GPG fingerprint(s). Requires `sops` on PATH."
         ),
     )
+    m.add_argument(
+        "--merge-simple-packages",
+        action="store_true",
+        help="Merge packages with no configuration files into a single 'common_packages' role.",
+    )
     _add_common_manifest_args(m)
 
     s = sub.add_parser(
@@ -543,7 +547,6 @@ def main() -> None:
             "Excludes apply to all harvesting, including defaults."
         ),
     )
-
     s.add_argument(
         "--sops",
         nargs="+",
@@ -566,6 +569,11 @@ def main() -> None:
             "In --sops mode this may be either a directory (an encrypted file named manifest.tar.gz.sops will be created inside) "
             "or a file path."
         ),
+    )
+    s.add_argument(
+        "--merge-simple-packages",
+        action="store_true",
+        help="Merge packages with no configuration files into a single 'common_packages' role.",
     )
     _add_common_manifest_args(s)
 
@@ -913,6 +921,7 @@ def main() -> None:
                 fqdn=args.fqdn,
                 jinjaturtle=_jt_mode(args),
                 sops_fingerprints=getattr(args, "sops", None),
+                merge_simple_packages=getattr(args, "merge_simple_packages", False),
             )
             if getattr(args, "sops", None) and out_enc:
                 print(str(out_enc))
@@ -1050,6 +1059,9 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
+                        merge_simple_packages=getattr(
+                            args, "merge_simple_packages", False
+                        ),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1080,6 +1092,9 @@ def main() -> None:
                         args.out,
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
+                        merge_simple_packages=getattr(
+                            args, "merge_simple_packages", False
+                        ),
                     )
                     # For usability (when --harvest wasn't provided), print the harvest path.
                     if not args.harvest:
@@ -1110,6 +1125,9 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
+                        merge_simple_packages=getattr(
+                            args, "merge_simple_packages", False
+                        ),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1129,6 +1147,9 @@ def main() -> None:
                         args.out,
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
+                        merge_simple_packages=getattr(
+                            args, "merge_simple_packages", False
+                        ),
                     )
     except RemoteSudoPasswordRequired:
         raise SystemExit(

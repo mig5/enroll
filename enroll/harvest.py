@@ -90,6 +90,7 @@ class PackageSnapshot:
     managed_links: List[ManagedLink] = field(default_factory=list)
     excluded: List[ExcludedFile] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    has_config: bool = True  # False if package has no config/systemd/cron files
 
 
 @dataclass
@@ -364,10 +365,6 @@ def _role_id(raw: str) -> str:
 def _role_name_from_unit(unit: str) -> str:
     base = _role_id(unit.removesuffix(".service"))
     return _safe_name(base)
-
-
-def _role_name_from_pkg(pkg: str) -> str:
-    return _safe_name(pkg)
 
 
 def _copy_into_bundle(
@@ -1625,6 +1622,7 @@ def harvest(
 
     manual_pkgs_skipped: List[str] = []
     pkg_snaps: List[PackageSnapshot] = []
+    simple_packages: List[str] = []  # Packages with no config/systemd/cron files
 
     # Add dedicated cron/logrotate roles (if detected) as package roles.
     # These roles centralise all cron/logrotate managed files so they aren't scattered
@@ -1634,16 +1632,18 @@ def harvest(
     if logrotate_snapshot is not None:
         pkg_snaps.append(logrotate_snapshot)
     for pkg in sorted(manual_pkgs):
+        # Skip packages that are already managed by service roles
+        if pkg in covered_by_services:
+            manual_pkgs_skipped.append(pkg)
+            continue
+        # Skip cron/logrotate packages (they have dedicated roles)
         if cron_snapshot is not None and pkg == cron_pkg:
             manual_pkgs_skipped.append(pkg)
             continue
         if logrotate_snapshot is not None and pkg == logrotate_pkg:
             manual_pkgs_skipped.append(pkg)
             continue
-        if pkg in covered_by_services:
-            manual_pkgs_skipped.append(pkg)
-            continue
-        role = _role_name_from_pkg(pkg)
+
         notes: List[str] = []
         excluded: List[ExcludedFile] = []
         managed: List[ManagedFile] = []
@@ -1708,8 +1708,13 @@ def harvest(
                 seen_global=captured_global,
             )
 
-        if not pkg_to_etc_paths.get(pkg, []) and not managed:
-            notes.append("No /etc files detected for this package.")
+        has_config = bool(pkg_to_etc_paths.get(pkg, []) or managed)
+
+        if not has_config:
+            notes.append(
+                "No /etc files or custom configuration detected for this package."
+            )
+            simple_packages.append(pkg)
 
         pkg_snaps.append(
             PackageSnapshot(
@@ -1719,6 +1724,7 @@ def harvest(
                 managed_links=[],
                 excluded=excluded,
                 notes=notes,
+                has_config=has_config,
             )
         )
 

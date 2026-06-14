@@ -825,6 +825,7 @@ def _manifest_from_bundle_dir(
     *,
     fqdn: Optional[str] = None,
     jinjaturtle: str = "auto",  # auto|on|off
+    merge_simple_packages: bool = False,
 ) -> None:
     state_path = os.path.join(bundle_dir, "state.json")
     with open(state_path, "r", encoding="utf-8") as f:
@@ -2056,8 +2057,100 @@ Generated from `{unit}`.
         manifested_service_roles.append(role)
 
     # -------------------------
+    # Merge simple packages (if --merge-simple-packages is set)
+    #
+    # Packages with no configuration files, systemd units, or cron jobs
+    # are merged into a single 'common_packages' role to reduce role count.
+    # -------------------------
+    simple_packages_list: List[str] = []
+    if merge_simple_packages:
+        filtered_package_roles: List[Dict[str, Any]] = []
+        for pr in package_roles:
+            has_config = pr.get("has_config", True)
+            managed_files = pr.get("managed_files", []) or []
+            # A package is "simple" if it has no config files AND no managed files
+            if not has_config and not managed_files:
+                pkg = pr.get("package")
+                if pkg:
+                    simple_packages_list.append(pkg)
+            else:
+                filtered_package_roles.append(pr)
+        package_roles = filtered_package_roles
+
+    # -------------------------
     # Manually installed package roles
     # -------------------------
+    # First, create the common_packages role if we have simple packages to merge
+    if simple_packages_list:
+        role = "common_packages"
+        role_dir = os.path.join(roles_root, role)
+        _write_role_scaffold(role_dir)
+
+        var_prefix = role
+
+        # No managed files for common_packages - just package installation
+        files_var: List[Dict[str, Any]] = []
+        links_var: List[Dict[str, Any]] = []
+        dirs_var: List[Dict[str, Any]] = []
+
+        base_vars: Dict[str, Any] = {
+            f"{var_prefix}_packages": simple_packages_list,
+            f"{var_prefix}_managed_files": files_var,
+            f"{var_prefix}_managed_dirs": dirs_var,
+            f"{var_prefix}_managed_links": links_var,
+        }
+
+        if site_mode:
+            _write_role_defaults(
+                role_dir,
+                {
+                    f"{var_prefix}_packages": [],
+                    f"{var_prefix}_managed_files": [],
+                    f"{var_prefix}_managed_dirs": [],
+                    f"{var_prefix}_managed_links": [],
+                },
+            )
+            _write_hostvars(out_dir, fqdn or "", role, base_vars)
+        else:
+            _write_role_defaults(role_dir, base_vars)
+
+        handlers = "---\n"
+        with open(
+            os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(handlers)
+
+        task_parts: List[str] = []
+        task_parts.append("---\n" + _render_install_packages_tasks(role, var_prefix))
+
+        tasks = "\n".join(task_parts).rstrip() + "\n"
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(tasks)
+
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\ndependencies: []\n")
+
+        readme = f"""# {role}
+
+Common packages with no configuration files.
+
+This role was created by merging simple packages using the `--merge-simple-packages` flag.
+
+## Packages
+{os.linesep.join("- " + p for p in simple_packages_list) or "- (none)"}
+
+> Note: This role only installs packages; it does not manage any configuration files or services.
+"""
+        with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write(readme)
+
+        manifested_pkg_roles.append(role)
+
+    # Process package roles (those with configuration files)
     for pr in package_roles:
         role = pr["role_name"]
         pkg = pr.get("package") or ""
@@ -2221,6 +2314,7 @@ def manifest(
     fqdn: Optional[str] = None,
     jinjaturtle: str = "auto",  # auto|on|off
     sops_fingerprints: Optional[List[str]] = None,
+    merge_simple_packages: bool = False,
 ) -> Optional[str]:
     """Render an Ansible manifest from a harvest.
 
@@ -2249,7 +2343,11 @@ def manifest(
     try:
         if not sops_mode:
             _manifest_from_bundle_dir(
-                resolved_bundle_dir, out, fqdn=fqdn, jinjaturtle=jinjaturtle
+                resolved_bundle_dir,
+                out,
+                fqdn=fqdn,
+                jinjaturtle=jinjaturtle,
+                merge_simple_packages=merge_simple_packages,
             )
             return None
 
@@ -2265,7 +2363,11 @@ def manifest(
             pass
 
         _manifest_from_bundle_dir(
-            resolved_bundle_dir, str(tmp_out), fqdn=fqdn, jinjaturtle=jinjaturtle
+            resolved_bundle_dir,
+            str(tmp_out),
+            fqdn=fqdn,
+            jinjaturtle=jinjaturtle,
+            merge_simple_packages=merge_simple_packages,
         )
 
         enc = _encrypt_manifest_out_dir_to_sops(

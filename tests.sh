@@ -51,3 +51,14 @@ ansible-lint "${ANSIBLE_DIR}"
 
 # Run
 ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+
+# Common simple packages mode
+poetry run \
+	enroll manifest \
+	--harvest "${BUNDLE_DIR}2" \
+	--out "${ANSIBLE_DIR}2" \
+	--merge-simple-packages
+
+builtin cd "${ANSIBLE_DIR}2"
+ls "${ANSIBLE_DIR}2/roles"
+ansible-playbook playbook.yml -i "localhost," -c local --check --diff

@@ -390,6 +390,10 @@
             "package": {
               "minLength": 1,
               "type": "string"
+            },
+            "has_config": {
+              "type": "boolean",
+              "default": true
             }
           },
           "required": [
