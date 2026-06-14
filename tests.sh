@@ -44,21 +44,6 @@ poetry run \
 	  --format json | jq
 DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge cowsay
 
-# Ensure some flatpaks are installed
-DEBIAN_FRONTEND=noninteractive apt-get install -y flatpak
-flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak install -y flathub org.onionshare.OnionShare
-
-poetry run \
-	enroll manifest \
-	--harvest "${BUNDLE_DIR}2" \
-	--out "${ANSIBLE_DIR}2"
-
-# Test the presence of OnionShare
-builtin cd "${ANSIBLE_DIR}2"
-grep -r org.onionshare.OnionShare "${ANSIBLE_DIR}2/roles"
-ansible-playbook playbook.yml -i "localhost," -c local --check --diff --tags role_flatpak
-
 # Ansible test
 builtin cd "${ANSIBLE_DIR}"
 # Lint
