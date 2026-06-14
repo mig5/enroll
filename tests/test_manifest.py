@@ -1064,3 +1064,317 @@ def test_render_firewall_runtime_tasks_with_ipv6():
     }
     result = manifest._render_firewall_runtime_tasks(state)
     assert len(result) >= 1
+
+
+def test_manifest_renders_flatpak_and_snap_details(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [
+                    {
+                        "name": "alice",
+                        "uid": 1000,
+                        "gid": 1000,
+                        "gecos": "Alice",
+                        "home": "/home/alice",
+                        "shell": "/bin/bash",
+                        "primary_group": "alice",
+                        "supplementary_groups": [],
+                    }
+                ],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+                "user_flatpak_remotes": [
+                    {
+                        "name": "acme-user",
+                        "method": "user",
+                        "url": "https://flatpak.example/user-repo/",
+                        "user": "alice",
+                        "home": "/home/alice",
+                    },
+                ],
+                "user_flatpaks": {
+                    "alice": [
+                        {
+                            "name": "org.example.UserApp",
+                            "method": "user",
+                            "remote": "acme-user",
+                            "branch": "stable",
+                            "arch": "x86_64",
+                        }
+                    ]
+                },
+            },
+            "flatpak": {
+                "role_name": "flatpak",
+                "remotes": [
+                    {
+                        "name": "acme",
+                        "method": "system",
+                        "url": "https://flatpak.example/repo/",
+                    },
+                ],
+                "system_flatpaks": [
+                    {
+                        "name": "com.example.App",
+                        "method": "system",
+                        "remote": "acme",
+                        "branch": "stable",
+                        "arch": "x86_64",
+                    }
+                ],
+                "notes": [],
+            },
+            "snap": {
+                "role_name": "snap",
+                "system_snaps": [
+                    {
+                        "name": "code",
+                        "channel": "latest/stable",
+                        "revision": 123,
+                        "classic": True,
+                        "notes": ["classic"],
+                    }
+                ],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+        },
+    }
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out))
+
+    users_defaults = (out / "roles" / "users" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    users_tasks = (out / "roles" / "users" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    users_readme = (out / "roles" / "users" / "README.md").read_text(encoding="utf-8")
+    flatpak_defaults = (out / "roles" / "flatpak" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    flatpak_tasks = (out / "roles" / "flatpak" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    snap_defaults = (out / "roles" / "snap" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    snap_tasks = (out / "roles" / "snap" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "users_flatpak_remotes:" in users_defaults
+    assert "remote: acme-user" in users_defaults
+    assert "community.general.snap" not in users_tasks
+    assert "Install system-wide snaps" not in users_tasks
+    assert "Install system-wide Flatpaks" not in users_tasks
+    assert "ansible-galaxy collection install -r requirements.yml" in users_readme
+
+    assert "snap_system_snaps:" in snap_defaults
+    assert "channel: latest/stable" in snap_defaults
+    assert "classic: true" in snap_defaults
+    assert "community.general.snap" in snap_tasks
+    assert "Install system-wide snaps with full detected attributes" in snap_tasks
+    assert "Install system-wide snaps with compatibility options" in snap_tasks
+    assert "Install system-wide snaps with minimal options" in snap_tasks
+    assert "ignore_errors: true" in snap_tasks
+
+    assert "flatpak_system_flatpaks:" in flatpak_defaults
+    assert "remote: acme" in flatpak_defaults
+    assert "community.general.flatpak" in flatpak_tasks
+    assert "Install system-wide Flatpaks" in flatpak_tasks
+    assert (out / "requirements.yml").exists()
+
+
+def test_users_role_without_portable_apps_omits_community_general_tasks(tmp_path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "out"
+    state = {
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [
+                    {
+                        "name": "alice",
+                        "uid": 1000,
+                        "gid": 1000,
+                        "gecos": "Alice",
+                        "home": "/home/alice",
+                        "shell": "/bin/bash",
+                        "primary_group": "alice",
+                        "supplementary_groups": [],
+                    }
+                ],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+        },
+    }
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out))
+
+    users_tasks = (out / "roles" / "users" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    users_meta = (out / "roles" / "users" / "meta" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "community.general.flatpak" not in users_tasks
+    assert "community.general.snap" not in users_tasks
+    assert "collections:" not in users_meta
+
+
+def test_manifest_emits_flatpak_role_even_when_no_flatpaks(tmp_path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "out"
+    state = {
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+                "user_flatpaks": {},
+                "user_flatpak_remotes": [],
+            },
+            "flatpak": {
+                "role_name": "flatpak",
+                "system_flatpaks": [],
+                "remotes": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+        }
+    }
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out))
+
+    flatpak_tasks = (out / "roles" / "flatpak" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    flatpak_defaults = (out / "roles" / "flatpak" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "flatpak_system_flatpaks: []" in flatpak_defaults
+    assert "flatpak_remotes: []" in flatpak_defaults
+    assert "Install system-wide Flatpaks" in flatpak_tasks
+    assert "Ensure system Flatpak remotes exist" in flatpak_tasks
+
+
+def test_manifest_avoids_package_role_collision_with_flatpak_singleton(tmp_path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "out"
+    state = {
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+                "user_flatpaks": {},
+                "user_flatpak_remotes": [],
+            },
+            "flatpak": {
+                "role_name": "flatpak",
+                "remotes": [
+                    {
+                        "name": "flathub",
+                        "method": "system",
+                        "url": "https://dl.flathub.org/repo/",
+                    }
+                ],
+                "system_flatpaks": [
+                    {
+                        "name": "org.onionshare.OnionShare",
+                        "method": "system",
+                        "remote": "flathub",
+                        "branch": "stable",
+                        "arch": "x86_64",
+                    }
+                ],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [
+                {
+                    "package": "flatpak",
+                    "role_name": "flatpak",
+                    "managed_files": [],
+                    "managed_dirs": [],
+                    "managed_links": [],
+                    "excluded": [],
+                    "notes": [],
+                    "has_config": True,
+                }
+            ],
+        }
+    }
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out))
+
+    flatpak_defaults = (out / "roles" / "flatpak" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    playbook = (out / "playbook.yml").read_text(encoding="utf-8")
+
+    assert "org.onionshare.OnionShare" in flatpak_defaults
+    assert (out / "roles" / "package_flatpak" / "tasks" / "main.yml").exists()
+    assert "role: flatpak" in playbook
+    assert "role: package_flatpak" in playbook

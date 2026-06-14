@@ -312,3 +312,185 @@ def test_parse_group_handles_short_lines(tmp_path: Path):
     assert 1000 in gid_to_name
     assert 1001 not in gid_to_name  # skipped due to short line
     assert 1002 in gid_to_name
+
+
+def test_find_flatpaks_in_root_detects_remote_branch_and_arch(tmp_path: Path):
+    import enroll.accounts as a
+
+    root = tmp_path / "flatpak"
+    (root / "repo").mkdir(parents=True)
+    (root / "repo" / "config").write_text(
+        '[remote "acme"]\nurl=https://flatpak.example/repo/\n',
+        encoding="utf-8",
+    )
+    ref = (
+        root
+        / "repo"
+        / "refs"
+        / "remotes"
+        / "acme"
+        / "app"
+        / "com.example.App"
+        / "x86_64"
+        / "stable"
+    )
+    ref.parent.mkdir(parents=True)
+    ref.write_text("checksum\n", encoding="utf-8")
+    active = root / "app" / "com.example.App" / "x86_64" / "stable" / "active"
+    active.mkdir(parents=True)
+
+    remotes = a.find_flatpak_remotes(str(root), method="system")
+    assert [(r.name, r.url, r.method) for r in remotes] == [
+        ("acme", "https://flatpak.example/repo/", "system")
+    ]
+
+    apps = a._find_flatpaks_in_root(str(root), method="system")
+    assert len(apps) == 1
+    assert apps[0].name == "com.example.App"
+    assert apps[0].remote == "acme"
+    assert apps[0].branch == "stable"
+    assert apps[0].arch == "x86_64"
+
+
+def test_parse_snap_list_output_detects_channel_revision_and_modes():
+    import enroll.accounts as a
+
+    output = """Name       Version  Rev   Tracking       Publisher   Notes
+code       abc      123   latest/stable  vscode✓     classic
+mydev      1.0      42    latest/edge    example     devmode,dangerous
+bare       1.0      5     latest/stable  canonical✓  base
+"""
+
+    snaps = {snap.name: snap for snap in a._parse_snap_list_output(output)}
+    assert snaps["code"].channel == "latest/stable"
+    assert snaps["code"].revision == 123
+    assert snaps["code"].classic is True
+    assert snaps["mydev"].devmode is True
+    assert snaps["mydev"].dangerous is True
+    assert snaps["bare"].notes == ["base"]
+
+
+def test_parse_flatpak_list_output_detects_system_refs():
+    from enroll.accounts import _parse_flatpak_list_output
+
+    output = "\n".join(
+        [
+            "app/org.example.App/x86_64/stable\tflathub\tstable\tx86_64",
+            "runtime/org.freedesktop.Platform/x86_64/24.08\tflathub\t24.08\tx86_64",
+        ]
+    )
+
+    refs = _parse_flatpak_list_output(
+        output, method="system", columns=("ref", "origin", "branch", "arch")
+    )
+
+    assert [(r.kind, r.name, r.remote, r.branch, r.arch) for r in refs] == [
+        ("app", "org.example.App", "flathub", "stable", "x86_64"),
+        ("runtime", "org.freedesktop.Platform", "flathub", "24.08", "x86_64"),
+    ]
+    assert refs[0].source == "flatpak-list"
+
+
+def test_find_system_flatpaks_prefers_flatpak_list(monkeypatch):
+    import subprocess
+    import enroll.accounts as a
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args == ["flatpak", "list", "--columns=help"]:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="application\norigin\nbranch\narch\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="app/org.example.App/x86_64/stable\tacme\tstable\tx86_64\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(a.shutil, "which", lambda cmd: "/usr/bin/flatpak")
+    monkeypatch.setattr(a.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        a,
+        "_find_flatpaks_in_root",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fallback used")),
+    )
+
+    refs = a.find_system_flatpaks()
+
+    assert calls[0] == ["flatpak", "list", "--columns=help"]
+    assert calls[1][:3] == ["flatpak", "list", "--system"]
+    assert refs[0].name == "org.example.App"
+    assert refs[0].method == "system"
+    assert refs[0].remote == "acme"
+
+
+def test_parse_flatpak_list_output_detects_application_columns():
+    from enroll.accounts import _parse_flatpak_list_output
+
+    output = "org.example.App\tflathub\tstable\tx86_64\n"
+    refs = _parse_flatpak_list_output(
+        output, method="system", columns=("application", "origin", "branch", "arch")
+    )
+
+    assert len(refs) == 1
+    assert refs[0].name == "org.example.App"
+    assert refs[0].kind is None
+    assert refs[0].remote == "flathub"
+    assert refs[0].branch == "stable"
+    assert refs[0].arch == "x86_64"
+
+
+def test_parse_plain_flatpak_list_output_like_default_table():
+    from enroll.accounts import _parse_flatpak_list_output
+
+    output = """Name                               Application ID                                  Version           Branch               Installation
+Mesa                               org.freedesktop.Platform.GL.default             26.0.6            25.08                system
+Mesa (Extra)                       org.freedesktop.Platform.GL.default             26.0.6            25.08-extra          system
+Codecs Extra Extension             org.freedesktop.Platform.codecs-extra                             25.08-extra          system
+KDE Application Platform           org.kde.Platform                                                  6.10                 system
+OnionShare                         org.onionshare.OnionShare                       2.6.4             stable               system
+"""
+
+    refs = _parse_flatpak_list_output(output, method="system", columns=None)
+    by_name_branch = {(r.name, r.branch) for r in refs}
+
+    assert ("org.onionshare.OnionShare", "stable") in by_name_branch
+    assert ("org.freedesktop.Platform.GL.default", "25.08") in by_name_branch
+    assert ("org.freedesktop.Platform.GL.default", "25.08-extra") in by_name_branch
+    assert ("org.kde.Platform", "6.10") in by_name_branch
+
+
+def test_parse_flatpak_columns_help_handles_description_table():
+    from enroll.accounts import _parse_flatpak_columns_help
+
+    output = """
+Available columns:
+  application  The application ID
+  branch       The branch
+  installation The installation
+"""
+
+    assert _parse_flatpak_columns_help(output) >= {
+        "application",
+        "branch",
+        "installation",
+    }
+
+
+def test_flatpak_list_attempts_respect_supported_columns():
+    from enroll.accounts import _flatpak_list_attempts
+
+    attempts = _flatpak_list_attempts(
+        "--system", {"application", "branch", "installation"}
+    )
+    command_strings = [" ".join(args) for args, _columns in attempts]
+
+    assert any("--columns=application,branch" in cmd for cmd in command_strings)
+    assert not any("origin" in cmd for cmd in command_strings)
+    assert command_strings[-1] == "flatpak list --system"

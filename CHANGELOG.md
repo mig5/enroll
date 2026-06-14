@@ -1,5 +1,6 @@
 # 0.7.0
 
+ * Add support for detecting flatpaks and snaps
  * Add --merge-simple-packages to reduce the number of roles, for packages that have no config files or services to maintain.
 
 # 0.6.0

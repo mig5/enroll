@@ -286,3 +286,20 @@ def test_collect_firewall_runtime_snapshot_is_per_family_fallback(
     assert (
         tmp_path / "artifacts" / "firewall_runtime" / "firewall" / "iptables.v6"
     ).exists()
+
+
+def test_package_role_names_do_not_collide_with_singleton_roles():
+    from enroll.harvest import _role_name_from_pkg
+
+    assert _role_name_from_pkg("flatpak") == "package_flatpak"
+    assert _role_name_from_pkg("snap") == "package_snap"
+    assert _role_name_from_pkg("users") == "package_users"
+    assert _role_name_from_pkg("nginx") == "nginx"
+
+
+def test_service_role_names_do_not_collide_with_singleton_roles():
+    from enroll.harvest import _role_name_from_unit
+
+    assert _role_name_from_unit("flatpak.service") == "service_flatpak"
+    assert _role_name_from_unit("users.service") == "service_users"
+    assert _role_name_from_unit("nginx.service") == "nginx"

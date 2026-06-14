@@ -10,8 +10,9 @@ import stat
 import subprocess  # nosec
 import time
 from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .role_names import avoid_reserved_role_name
 from .systemd import (
     list_enabled_services,
     list_enabled_timers,
@@ -100,6 +101,23 @@ class UsersSnapshot:
     managed_dirs: List[ManagedDir] = field(default_factory=list)
     managed_files: List[ManagedFile] = field(default_factory=list)
     excluded: List[ExcludedFile] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+    user_flatpaks: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    user_flatpak_remotes: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class FlatpakSnapshot:
+    role_name: str
+    system_flatpaks: List[Dict[str, Any]] = field(default_factory=list)
+    remotes: List[Dict[str, Any]] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+
+@dataclass
+class SnapSnapshot:
+    role_name: str
+    system_snaps: List[Dict[str, Any]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
 
@@ -364,11 +382,11 @@ def _role_id(raw: str) -> str:
 
 def _role_name_from_unit(unit: str) -> str:
     base = _role_id(unit.removesuffix(".service"))
-    return _safe_name(base)
+    return avoid_reserved_role_name(_safe_name(base), prefix="service")
 
 
 def _role_name_from_pkg(pkg: str) -> str:
-    return _safe_name(pkg)
+    return avoid_reserved_role_name(_safe_name(pkg), prefix="package")
 
 
 def _copy_into_bundle(
@@ -1808,6 +1826,30 @@ def harvest(
         user_records = []
         users_notes.append(f"Failed to enumerate users: {e!r}")
 
+    # Detect system-wide Flatpaks/Snaps and configured Flatpak remotes.
+    from .accounts import (
+        find_system_flatpak_remotes,
+        find_system_flatpaks,
+        find_system_snaps,
+        find_user_flatpak_remotes,
+    )
+
+    system_flatpaks = [asdict(f) for f in find_system_flatpaks()]
+    system_snaps = [asdict(s) for s in find_system_snaps()]
+    system_flatpak_remotes = [asdict(r) for r in find_system_flatpak_remotes()]
+    flatpak_notes: List[str] = []
+    snap_notes: List[str] = []
+    if system_flatpaks:
+        flatpak_notes.append(
+            "System-wide flatpaks detected: "
+            + ", ".join(str(f.get("name")) for f in system_flatpaks)
+        )
+    if system_snaps:
+        snap_notes.append(
+            "System-wide snaps detected: "
+            + ", ".join(str(s.get("name")) for s in system_snaps)
+        )
+
     users_role_name = "users"
     users_role_seen = seen_by_role.setdefault(users_role_name, set())
 
@@ -1822,6 +1864,9 @@ def harvest(
     extra_dotfiles = [
         (".bash_aliases", "user_shell_aliases"),
     ]
+
+    user_flatpaks_map: Dict[str, List[Dict[str, Any]]] = {}
+    user_flatpak_remotes: List[Dict[str, Any]] = []
 
     for u in user_records:
         users_list.append(
@@ -1899,12 +1944,36 @@ def harvest(
                     seen_global=captured_global,
                 )
 
+            # Collect per-user Flatpak applications and remotes. Snap packages are
+            # system-wide; ~/snap/* is user data, not an install source.
+            if u.flatpaks:
+                user_flatpaks_map[u.name] = [asdict(fp) for fp in u.flatpaks]
+            if home and home.startswith("/"):
+                user_flatpak_remotes.extend(
+                    asdict(r) for r in find_user_flatpak_remotes(home, user=u.name)
+                )
+
     users_snapshot = UsersSnapshot(
         role_name=users_role_name,
         users=users_list,
         managed_files=users_managed,
         excluded=users_excluded,
         notes=users_notes,
+        user_flatpaks=user_flatpaks_map,
+        user_flatpak_remotes=user_flatpak_remotes,
+    )
+
+    flatpak_snapshot = FlatpakSnapshot(
+        role_name="flatpak",
+        system_flatpaks=system_flatpaks,
+        remotes=system_flatpak_remotes,
+        notes=flatpak_notes,
+    )
+
+    snap_snapshot = SnapSnapshot(
+        role_name="snap",
+        system_snaps=system_snaps,
+        notes=snap_notes,
     )
 
     # -------------------------
@@ -2512,6 +2581,8 @@ def harvest(
         },
         "roles": {
             "users": asdict(users_snapshot),
+            "flatpak": asdict(flatpak_snapshot),
+            "snap": asdict(snap_snapshot),
             "services": [asdict(s) for s in service_snaps],
             "packages": [asdict(p) for p in pkg_snaps],
             "apt_config": asdict(apt_config_snapshot),

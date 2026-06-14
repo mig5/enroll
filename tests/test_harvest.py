@@ -224,6 +224,19 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
 
     monkeypatch.setattr(harvest, "collect_non_system_users", lambda: [])
 
+    import enroll.accounts as accounts
+
+    monkeypatch.setattr(accounts, "find_system_flatpaks", lambda: [])
+    monkeypatch.setattr(accounts, "find_system_flatpak_remotes", lambda: [])
+    monkeypatch.setattr(
+        accounts, "find_user_flatpak_remotes", lambda home, user=None: []
+    )
+    monkeypatch.setattr(
+        accounts,
+        "find_system_snaps",
+        lambda: [accounts.SnapInstall(name="code", channel="latest/stable")],
+    )
+
     def fake_stat_triplet(p: str):
         if p == "/usr/local/bin/myscript":
             return ("root", "root", "0755")
@@ -258,6 +271,9 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
         o.get("kind") == "systemd_unit" and o.get("ref") == "openvpn.service"
         for o in openvpn_obs
     )
+
+    assert st["roles"]["snap"]["role_name"] == "snap"
+    assert st["roles"]["snap"]["system_snaps"][0]["name"] == "code"
 
     # Service role captured modified conffile
     svc = st["roles"]["services"][0]

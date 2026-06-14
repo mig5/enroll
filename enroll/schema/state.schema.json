@@ -575,6 +575,21 @@
                 "$ref": "#/$defs/UserEntry"
               },
               "type": "array"
+            },
+            "user_flatpaks": {
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/FlatpakInstall"
+                }
+              },
+              "type": "object"
+            },
+            "user_flatpak_remotes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FlatpakRemote"
+              }
             }
           },
           "required": [
@@ -654,6 +669,224 @@
         "iptables_v4_save",
         "iptables_v6_save",
         "notes"
+      ],
+      "type": "object"
+    },
+    "FlatpakInstall": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "system",
+            "user"
+          ]
+        },
+        "remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "arch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "app",
+            "runtime",
+            null
+          ]
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "home": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "from_url": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "name",
+        "method"
+      ],
+      "type": "object"
+    },
+    "FlatpakRemote": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "system",
+            "user"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "home": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "method",
+        "url"
+      ],
+      "type": "object"
+    },
+    "SnapInstall": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "channel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "classic": {
+          "type": "boolean"
+        },
+        "devmode": {
+          "type": "boolean"
+        },
+        "dangerous": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source": {
+          "type": "string"
+        },
+        "install_revision": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "FlatpakSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "role_name": {
+          "const": "flatpak"
+        },
+        "system_flatpaks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FlatpakInstall"
+          }
+        },
+        "remotes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FlatpakRemote"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "role_name"
+      ],
+      "type": "object"
+
+    },
+    "SnapSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "role_name": {
+          "const": "snap"
+        },
+        "system_snaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnapInstall"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "role_name"
       ],
       "type": "object"
     }
@@ -766,6 +999,12 @@
         },
         "firewall_runtime": {
           "$ref": "#/$defs/FirewallRuntimeSnapshot"
+        },
+        "flatpak": {
+          "$ref": "#/$defs/FlatpakSnapshot"
+        },
+        "snap": {
+          "$ref": "#/$defs/SnapSnapshot"
         }
       },
       "required": [

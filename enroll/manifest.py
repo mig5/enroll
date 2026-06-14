@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .role_names import avoid_reserved_role_name
+
 from .jinjaturtle import (
     can_jinjify_path,
     find_jinjaturtle_cmd,
@@ -227,6 +229,72 @@ def _ensure_ansible_cfg(cfg_path: str) -> None:
             f.write("pipelining = True\n")
             f.write("scp_if_ssh = True\n")
         return
+
+
+def _ensure_requirements_yaml(req_path: str) -> None:
+    if not os.path.exists(req_path):
+        with open(req_path, "w", encoding="utf-8") as f:
+            f.write("---\n")
+            f.write("collections:\n")
+            f.write("  - name: community.general\n")
+            f.write('    version: ">=13.0.0"\n')
+        return
+
+
+def _normalise_flatpak_item(
+    item: Any,
+    *,
+    method: str,
+    user: Optional[str] = None,
+    home: Optional[str] = None,
+) -> Dict[str, Any]:
+    if isinstance(item, str):
+        out: Dict[str, Any] = {"name": item, "method": method}
+    elif isinstance(item, dict):
+        out = dict(item)
+        out.setdefault("method", method)
+    else:
+        out = {"name": str(item), "method": method}
+    if user:
+        out.setdefault("user", user)
+    if home:
+        out.setdefault("home", home)
+    return out
+
+
+def _normalise_flatpak_remote(item: Any) -> Dict[str, Any]:
+    if isinstance(item, dict):
+        out = dict(item)
+    else:
+        out = {"name": str(item)}
+    out.setdefault("method", "system")
+    return out
+
+
+def _normalise_snap_item(item: Any) -> Dict[str, Any]:
+    if isinstance(item, str):
+        out: Dict[str, Any] = {"name": item}
+    elif isinstance(item, dict):
+        out = dict(item)
+    else:
+        out = {"name": str(item)}
+
+    notes = out.get("notes") or []
+    if isinstance(notes, str):
+        notes = [notes]
+    notes_l = {str(n).lower() for n in notes}
+    out["classic"] = bool(out.get("classic") or "classic" in notes_l)
+    out["devmode"] = bool(out.get("devmode") or "devmode" in notes_l)
+    out["dangerous"] = bool(out.get("dangerous") or "dangerous" in notes_l)
+
+    # The Ansible snap module's revision parameter pins/holds the snap. For
+    # ordinary store snaps that track a channel, preserve the channel instead
+    # of freezing every harvested host at today's revision.
+    if out.get("revision") is not None and not out.get("channel"):
+        out["install_revision"] = True
+    else:
+        out["install_revision"] = False
+    return out
 
 
 def _ensure_inventory_host(inv_path: str, fqdn: str) -> None:
@@ -836,6 +904,8 @@ def _manifest_from_bundle_dir(
     services: List[Dict[str, Any]] = roles.get("services", [])
     package_roles: List[Dict[str, Any]] = roles.get("packages", [])
     users_snapshot: Dict[str, Any] = roles.get("users", {})
+    flatpak_snapshot: Dict[str, Any] = roles.get("flatpak", {})
+    snap_snapshot: Dict[str, Any] = roles.get("snap", {})
     apt_config_snapshot: Dict[str, Any] = roles.get("apt_config", {})
     dnf_config_snapshot: Dict[str, Any] = roles.get("dnf_config", {})
     firewall_runtime_snapshot: Dict[str, Any] = roles.get("firewall_runtime", {})
@@ -871,8 +941,11 @@ def _manifest_from_bundle_dir(
             os.path.join(out_dir, "inventory", "hosts.ini"), fqdn or ""
         )
         _ensure_ansible_cfg(os.path.join(out_dir, "ansible.cfg"))
+        _ensure_requirements_yaml(os.path.join(out_dir, "requirements.yml"))
 
     manifested_users_roles: List[str] = []
+    manifested_flatpak_roles: List[str] = []
+    manifested_snap_roles: List[str] = []
     manifested_apt_config_roles: List[str] = []
     manifested_dnf_config_roles: List[str] = []
     manifested_firewall_runtime_roles: List[str] = []
@@ -885,7 +958,7 @@ def _manifest_from_bundle_dir(
     # -------------------------
     # Users role (non-system users)
     # -------------------------
-    if users_snapshot and users_snapshot.get("users"):
+    if users_snapshot:
         role = users_snapshot.get("role_name", "users")
         role_dir = os.path.join(roles_root, role)
         _write_role_scaffold(role_dir)
@@ -970,6 +1043,33 @@ def _manifest_from_bundle_dir(
                 }
             )
 
+        # Build Flatpak and Snap lists. Flatpak can be installed system-wide or
+        # per-user. Snap packages are system-wide; per-user ~/snap/* directories
+        # are runtime/user data and are not treated as install sources.
+        users_flatpaks: List[Dict[str, Any]] = []
+        user_flatpak_map = users_snapshot.get("user_flatpaks", {}) or {}
+        home_by_user = {
+            str(u.get("name")): str(u.get("home") or "") for u in users_data
+        }
+        for uname, flatpaks in user_flatpak_map.items():
+            for fp in flatpaks or []:
+                users_flatpaks.append(
+                    _normalise_flatpak_item(
+                        fp,
+                        method="user",
+                        user=str(uname),
+                        home=home_by_user.get(str(uname)) or None,
+                    )
+                )
+
+        flatpak_remotes = [
+            _normalise_flatpak_remote(r)
+            for r in (users_snapshot.get("user_flatpak_remotes", []) or [])
+        ]
+        users_needs_community = bool(flatpak_remotes or users_flatpaks)
+        if users_needs_community:
+            _ensure_requirements_yaml(os.path.join(out_dir, "requirements.yml"))
+
         # Variables are host-specific in site mode; in non-site mode they live in role defaults.
         if site_mode:
             _write_role_defaults(
@@ -978,6 +1078,8 @@ def _manifest_from_bundle_dir(
                     "users_groups": [],
                     "users_users": [],
                     "users_ssh_files": [],
+                    "users_flatpaks": [],
+                    "users_flatpak_remotes": [],
                 },
             )
             _write_hostvars(
@@ -988,6 +1090,8 @@ def _manifest_from_bundle_dir(
                     "users_groups": group_names,
                     "users_users": users_data,
                     "users_ssh_files": ssh_files,
+                    "users_flatpaks": users_flatpaks,
+                    "users_flatpak_remotes": flatpak_remotes,
                 },
             )
         else:
@@ -997,13 +1101,23 @@ def _manifest_from_bundle_dir(
                     "users_groups": group_names,
                     "users_users": users_data,
                     "users_ssh_files": ssh_files,
+                    "users_flatpaks": users_flatpaks,
+                    "users_flatpak_remotes": flatpak_remotes,
                 },
             )
 
         with open(
             os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
         ) as f:
-            f.write("---\ndependencies: []\n")
+            if users_needs_community:
+                f.write(
+                    "---\n"
+                    "dependencies: []\n"
+                    "collections:\n"
+                    "  - community.general\n"
+                )
+            else:
+                f.write("---\ndependencies: []\n")
 
         # tasks (data-driven)
         users_tasks = """---
@@ -1056,6 +1170,52 @@ def _manifest_from_bundle_dir(
     group: "{{ item.group }}"
     mode: "{{ item.mode }}"
   loop: "{{ users_ssh_files | default([]) }}"
+
+"""
+
+        if flatpak_remotes or users_flatpaks:
+            users_tasks += """
+- name: Ensure user Flatpak remotes exist
+  ansible.builtin.command:
+    argv:
+      - flatpak
+      - remote-add
+      - --user
+      - --if-not-exists
+      - "{{ item.name }}"
+      - "{{ item.url }}"
+  loop: "{{ users_flatpak_remotes | default([]) | selectattr('method', 'equalto', 'user') | list }}"
+  when:
+    - item.name is defined
+    - item.url is defined
+    - item.url | length > 0
+    - item.user is defined
+  become: true
+  become_user: "{{ item.user }}"
+  environment:
+    HOME: "{{ item.home | default('/home/' ~ item.user, true) }}"
+    XDG_DATA_HOME: "{{ (item.home | default('/home/' ~ item.user, true)) ~ '/.local/share' }}"
+  changed_when: false
+
+- name: Install user Flatpaks
+  community.general.flatpak:
+    name:
+      - "{{ item.name }}"
+    state: present
+    method: user
+    remote: "{{ item.remote | default(omit) }}"
+    from_url: "{{ item.from_url | default(omit) }}"
+  loop: "{{ users_flatpaks | default([]) }}"
+  when:
+    - item.name is defined
+    - item.name | length > 0
+    - item.user is defined
+  become: true
+  become_user: "{{ item.user }}"
+  environment:
+    HOME: "{{ item.home | default('/home/' ~ item.user, true) }}"
+    XDG_DATA_HOME: "{{ (item.home | default('/home/' ~ item.user, true)) ~ '/.local/share' }}"
+
 """
 
         with open(
@@ -1068,10 +1228,67 @@ def _manifest_from_bundle_dir(
         ) as f:
             f.write("---\n")
 
+        def _fmt_app_list(items: List[Dict[str, Any]]) -> str:
+            lines = []
+            for item in items:
+                name = item.get("name")
+                if not name:
+                    continue
+                detail_parts = []
+                for key in ("remote", "channel", "revision", "branch", "arch"):
+                    value = item.get(key)
+                    if value not in (None, "", []):
+                        detail_parts.append(f"{key}={value}")
+                for key in ("classic", "devmode", "dangerous"):
+                    if item.get(key):
+                        detail_parts.append(key)
+                details = f" ({', '.join(detail_parts)})" if detail_parts else ""
+                lines.append(f"- {name}{details}")
+            return "\n".join(lines) or "- (none)"
+
+        def _fmt_user_flatpaks(items: List[Dict[str, Any]]) -> str:
+            lines = []
+            for item in items:
+                name = item.get("name")
+                user = item.get("user")
+                if not name or not user:
+                    continue
+                detail_parts = []
+                for key in ("remote", "branch", "arch"):
+                    value = item.get(key)
+                    if value not in (None, "", []):
+                        detail_parts.append(f"{key}={value}")
+                details = f" ({', '.join(detail_parts)})" if detail_parts else ""
+                lines.append(f"- {user}: {name}{details}")
+            return "\n".join(lines) or "- (none)"
+
+        def _fmt_remotes(items: List[Dict[str, Any]]) -> str:
+            lines = []
+            for item in items:
+                name = item.get("name")
+                url = item.get("url")
+                method = item.get("method") or "system"
+                user = item.get("user")
+                if not name or not url:
+                    continue
+                owner = f"user={user}" if user else "system"
+                lines.append(f"- {name} ({method}, {owner}): {url}")
+            return "\n".join(lines) or "- (none)"
+
         readme = (
             """# users
 
-Generated non-system user accounts and SSH public material.
+Generated non-system user accounts, SSH public material, and per-user Flatpak
+applications/remotes.
+
+**Note:** User Flatpak tasks require the `community.general` Ansible collection.
+Install it with: `ansible-galaxy collection install -r requirements.yml`.
+
+Flatpak `remote` is harvested from the installed deployment where detectable.
+The original `.flatpakref` URL is generally not preserved by Flatpak after
+installation, so `from_url` is only emitted if a future/hand-edited state file
+contains it.
+
 
 ## Users
 """
@@ -1089,6 +1306,14 @@ Generated non-system user accounts and SSH public material.
                 or "- (none)"
             )
             + """\n
+## Flatpak remotes
+"""
+            + _fmt_remotes(flatpak_remotes)
+            + """\n
+## User Flatpaks
+"""
+            + _fmt_user_flatpaks(users_flatpaks)
+            + """\n
 ## Excluded
 """
             + (
@@ -1105,6 +1330,274 @@ Generated non-system user accounts and SSH public material.
             f.write(readme)
 
         manifested_users_roles.append(role)
+
+    # -------------------------
+    # Flatpak role (system-wide Flatpak remotes and applications)
+    # -------------------------
+    raw_flatpak_apps = flatpak_snapshot.get("system_flatpaks", []) or []
+    raw_flatpak_remotes = flatpak_snapshot.get("remotes", []) or []
+
+    if flatpak_snapshot:
+        role = flatpak_snapshot.get("role_name", "flatpak")
+        role_dir = os.path.join(roles_root, role)
+        _write_role_scaffold(role_dir)
+        _ensure_requirements_yaml(os.path.join(out_dir, "requirements.yml"))
+
+        flatpak_system_flatpaks = [
+            _normalise_flatpak_item(fp, method="system") for fp in raw_flatpak_apps
+        ]
+        flatpak_remotes = [_normalise_flatpak_remote(r) for r in raw_flatpak_remotes]
+
+        vars_map = {
+            "flatpak_system_flatpaks": flatpak_system_flatpaks,
+            "flatpak_remotes": flatpak_remotes,
+        }
+        if site_mode:
+            _write_role_defaults(
+                role_dir,
+                {"flatpak_system_flatpaks": [], "flatpak_remotes": []},
+            )
+            _write_hostvars(out_dir, fqdn or "", role, vars_map)
+        else:
+            _write_role_defaults(role_dir, vars_map)
+
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(
+                "---\n" "dependencies: []\n" "collections:\n" "  - community.general\n"
+            )
+
+        tasks = """---
+
+- name: Ensure system Flatpak remotes exist
+  ansible.builtin.command:
+    argv:
+      - flatpak
+      - remote-add
+      - --system
+      - --if-not-exists
+      - "{{ item.name }}"
+      - "{{ item.url }}"
+  loop: "{{ flatpak_remotes | default([]) }}"
+  when:
+    - item.name is defined
+    - item.url is defined
+    - item.url | length > 0
+  become: true
+  changed_when: false
+
+- name: Install system-wide Flatpaks
+  community.general.flatpak:
+    name:
+      - "{{ item.name }}"
+    state: present
+    method: system
+    remote: "{{ item.remote | default(omit) }}"
+    from_url: "{{ item.from_url | default(omit) }}"
+  loop: "{{ flatpak_system_flatpaks | default([]) }}"
+  when:
+    - item.name is defined
+    - item.name | length > 0
+  become: true
+"""
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(tasks)
+
+        with open(
+            os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\n")
+
+        def _fmt_flatpak_apps(items: List[Dict[str, Any]]) -> str:
+            lines = []
+            for item in items:
+                name = item.get("name")
+                if not name:
+                    continue
+                detail_parts = []
+                for key in ("remote", "branch", "arch"):
+                    value = item.get(key)
+                    if value not in (None, "", []):
+                        detail_parts.append(f"{key}={value}")
+                details = f" ({', '.join(detail_parts)})" if detail_parts else ""
+                lines.append(f"- {name}{details}")
+            return "\n".join(lines) or "- (none)"
+
+        def _fmt_flatpak_remotes(items: List[Dict[str, Any]]) -> str:
+            lines = []
+            for item in items:
+                name = item.get("name")
+                url = item.get("url")
+                if not name or not url:
+                    continue
+                lines.append(f"- {name}: {url}")
+            return "\n".join(lines) or "- (none)"
+
+        notes = flatpak_snapshot.get("notes", []) or []
+        readme = (
+            """# flatpak
+
+Generated system-wide Flatpak remotes and applications.
+
+**Note:** This role requires the `community.general` Ansible collection.
+Install it with: `ansible-galaxy collection install -r requirements.yml`.
+
+Flatpak `remote` is harvested from the installed deployment where detectable.
+The original `.flatpakref` URL is generally not preserved by Flatpak after
+installation, so `from_url` is only emitted if a future/hand-edited state file
+contains it.
+
+## System Flatpak remotes
+"""
+            + _fmt_flatpak_remotes(flatpak_remotes)
+            + """\n
+## System-wide Flatpaks
+"""
+            + _fmt_flatpak_apps(flatpak_system_flatpaks)
+            + """\n
+## Notes
+"""
+            + ("\n".join([f"- {n}" for n in notes]) or "- (none)")
+            + """\n"""
+        )
+        with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write(readme)
+
+        manifested_flatpak_roles.append(role)
+
+    # -------------------------
+    # Snap role (system-wide snap packages)
+    # -------------------------
+    raw_system_snaps = snap_snapshot.get("system_snaps", []) or []
+
+    if raw_system_snaps:
+        role = snap_snapshot.get("role_name", "snap") if snap_snapshot else "snap"
+        role_dir = os.path.join(roles_root, role)
+        _write_role_scaffold(role_dir)
+        _ensure_requirements_yaml(os.path.join(out_dir, "requirements.yml"))
+
+        snap_system_snaps = [_normalise_snap_item(s) for s in raw_system_snaps]
+
+        vars_map = {"snap_system_snaps": snap_system_snaps}
+        if site_mode:
+            _write_role_defaults(role_dir, {"snap_system_snaps": []})
+            _write_hostvars(out_dir, fqdn or "", role, vars_map)
+        else:
+            _write_role_defaults(role_dir, vars_map)
+
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(
+                "---\n" "dependencies: []\n" "collections:\n" "  - community.general\n"
+            )
+
+        tasks = """---
+
+- name: Install system-wide snaps with full detected attributes
+  community.general.snap:
+    name:
+      - "{{ item.name }}"
+    state: present
+    channel: "{{ item.channel | default(omit) if not (item.install_revision | default(false)) else omit }}"
+    revision: "{{ item.revision | default(omit) if (item.install_revision | default(false)) else omit }}"
+    classic: "{{ item.classic | default(false) }}"
+    devmode: "{{ item.devmode | default(false) }}"
+    dangerous: "{{ item.dangerous | default(false) }}"
+  loop: "{{ snap_system_snaps | default([]) }}"
+  when:
+    - item.name is defined
+    - item.name | length > 0
+  become: true
+  register: _enroll_snap_full_results
+  ignore_errors: true
+
+- name: Install system-wide snaps with compatibility options
+  community.general.snap:
+    name:
+      - "{{ item.item.name }}"
+    state: present
+    channel: "{{ item.item.channel | default(omit) if not (item.item.install_revision | default(false)) else omit }}"
+    classic: "{{ item.item.classic | default(false) }}"
+  loop: "{{ (_enroll_snap_full_results | default({})).results | default([]) }}"
+  when:
+    - item.failed | default(false)
+    - item.item.name is defined
+    - item.item.name | length > 0
+  become: true
+  register: _enroll_snap_compat_results
+  ignore_errors: true
+
+- name: Install system-wide snaps with minimal options
+  community.general.snap:
+    name:
+      - "{{ item.item.item.name }}"
+    state: present
+  loop: "{{ (_enroll_snap_compat_results | default({})).results | default([]) }}"
+  when:
+    - item.failed | default(false)
+    - item.item.item.name is defined
+    - item.item.item.name | length > 0
+  become: true
+  ignore_errors: true
+"""
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(tasks)
+
+        with open(
+            os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\n")
+
+        def _fmt_snap_apps(items: List[Dict[str, Any]]) -> str:
+            lines = []
+            for item in items:
+                name = item.get("name")
+                if not name:
+                    continue
+                detail_parts = []
+                for key in ("channel", "revision"):
+                    value = item.get(key)
+                    if value not in (None, "", []):
+                        detail_parts.append(f"{key}={value}")
+                for key in ("classic", "devmode", "dangerous"):
+                    if item.get(key):
+                        detail_parts.append(key)
+                details = f" ({', '.join(detail_parts)})" if detail_parts else ""
+                lines.append(f"- {name}{details}")
+            return "\n".join(lines) or "- (none)"
+
+        notes = snap_snapshot.get("notes", []) or []
+        readme = (
+            """# snap
+
+Generated system-wide snap packages.
+
+**Note:** This role requires the `community.general` Ansible collection.
+Install it with: `ansible-galaxy collection install -r requirements.yml`.
+
+The first install task uses all harvested attributes. If the installed
+`community.general.snap` module is too old for some parameters, the generated
+role falls back to reduced then minimal install tasks on a best-effort basis.
+
+## System-wide snaps
+"""
+            + _fmt_snap_apps(snap_system_snaps)
+            + """\n
+## Notes
+"""
+            + ("\n".join([f"- {n}" for n in notes]) or "- (none)")
+            + """\n"""
+        )
+        with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write(readme)
+
+        manifested_snap_roles.append(role)
 
     # -------------------------
     # apt_config role (APT sources, pinning, and keyrings)
@@ -1880,7 +2373,8 @@ User-requested extra file harvesting.
     # Service roles
     # -------------------------
     for svc in services:
-        role = svc["role_name"]
+        source_role = svc["role_name"]
+        role = avoid_reserved_role_name(source_role, prefix="service")
         unit = svc["unit"]
         pkgs = svc.get("packages", []) or []
         managed_files = svc.get("managed_files", []) or []
@@ -1899,7 +2393,7 @@ User-requested extra file harvesting.
 
         templated, jt_vars = _jinjify_managed_files(
             bundle_dir,
-            role,
+            source_role,
             role_dir,
             managed_files,
             jt_exe=jt_exe,
@@ -1911,14 +2405,14 @@ User-requested extra file harvesting.
         if site_mode:
             _copy_artifacts(
                 bundle_dir,
-                role,
+                source_role,
                 _host_role_files_dir(out_dir, fqdn or "", role),
                 exclude_rels=templated,
             )
         else:
             _copy_artifacts(
                 bundle_dir,
-                role,
+                source_role,
                 os.path.join(role_dir, "files"),
                 exclude_rels=templated,
             )
@@ -2152,7 +2646,8 @@ This role was created by merging simple packages using the `--merge-simple-packa
 
     # Process package roles (those with configuration files)
     for pr in package_roles:
-        role = pr["role_name"]
+        source_role = pr["role_name"]
+        role = avoid_reserved_role_name(source_role, prefix="package")
         pkg = pr.get("package") or ""
         managed_files = pr.get("managed_files", []) or []
         managed_dirs = pr.get("managed_dirs", []) or []
@@ -2165,7 +2660,7 @@ This role was created by merging simple packages using the `--merge-simple-packa
 
         templated, jt_vars = _jinjify_managed_files(
             bundle_dir,
-            role,
+            source_role,
             role_dir,
             managed_files,
             jt_exe=jt_exe,
@@ -2177,14 +2672,14 @@ This role was created by merging simple packages using the `--merge-simple-packa
         if site_mode:
             _copy_artifacts(
                 bundle_dir,
-                role,
+                source_role,
                 _host_role_files_dir(out_dir, fqdn or "", role),
                 exclude_rels=templated,
             )
         else:
             _copy_artifacts(
                 bundle_dir,
-                role,
+                source_role,
                 os.path.join(role_dir, "files"),
                 exclude_rels=templated,
             )
@@ -2294,6 +2789,8 @@ Generated for package `{pkg}`.
         + manifested_etc_custom_roles
         + manifested_usr_local_custom_roles
         + manifested_extra_paths_roles
+        + manifested_flatpak_roles
+        + manifested_snap_roles
         + manifested_users_roles
         + tail_roles
         + manifested_firewall_runtime_roles
