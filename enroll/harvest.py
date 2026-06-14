@@ -367,6 +367,10 @@ def _role_name_from_unit(unit: str) -> str:
     return _safe_name(base)
 
 
+def _role_name_from_pkg(pkg: str) -> str:
+    return _safe_name(pkg)
+
+
 def _copy_into_bundle(
     bundle_dir: str, role_name: str, abs_path: str, src_rel: str
 ) -> None:
@@ -1643,6 +1647,8 @@ def harvest(
         if logrotate_snapshot is not None and pkg == logrotate_pkg:
             manual_pkgs_skipped.append(pkg)
             continue
+
+        role = _role_name_from_pkg(pkg)
 
         notes: List[str] = []
         excluded: List[ExcludedFile] = []
