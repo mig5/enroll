@@ -1121,14 +1121,35 @@ _SYSCTL_GENERATED_SRC_REL = "sysctl/99-enroll.conf"
 # config. This avoids generating a file that tries to replay one-shot triggers or
 # host identity that should be managed elsewhere (e.g. /etc/hostname).
 _SYSCTL_VOLATILE_KEYS = {
+    "fs.binfmt_misc.status",
     "kernel.domainname",
     "kernel.hostname",
+    "kernel.kexec_load_disabled",
+    "kernel.kexec_load_limit_panic",
+    "kernel.kexec_load_limit_reboot",
+    "kernel.max_rcu_stall_to_panic",
+    "kernel.modules_disabled",
     "kernel.ns_last_pid",
     "net.ipv4.route.flush",
     "net.ipv6.route.flush",
     "vm.compact_memory",
     "vm.drop_caches",
     "vm.stat_refresh",
+}
+
+_SYSCTL_VOLATILE_PREFIXES = (
+    "fs.binfmt_misc.",
+    "kernel.sched_domain.",
+)
+
+# These are paired with ratio/byte counterparts. The inactive side appears as 0
+# when read; replaying that 0 through sysctl -p is noisy and can be rejected by
+# kernels that enforce minimum values.
+_SYSCTL_SKIP_ZERO_VALUE_KEYS = {
+    "vm.dirty_background_bytes",
+    "vm.dirty_background_ratio",
+    "vm.dirty_bytes",
+    "vm.dirty_ratio",
 }
 
 
@@ -1139,7 +1160,9 @@ def _sysctl_proc_path(key: str) -> str:
 def _sysctl_key_is_persistable(key: str) -> tuple[bool, str]:
     if not key or not _SYSCTL_KEY_RE.fullmatch(key):
         return False, "invalid key"
-    if key in _SYSCTL_VOLATILE_KEYS:
+    if key in _SYSCTL_VOLATILE_KEYS or any(
+        key.startswith(prefix) for prefix in _SYSCTL_VOLATILE_PREFIXES
+    ):
         return False, "volatile/action key"
 
     proc_path = _sysctl_proc_path(key)
@@ -1152,6 +1175,17 @@ def _sysctl_key_is_persistable(key: str) -> tuple[bool, str]:
         return False, "not a regular /proc/sys entry"
     if (stat.S_IMODE(st.st_mode) & 0o222) == 0:
         return False, "read-only /proc/sys entry"
+    return True, ""
+
+
+def _sysctl_entry_is_persistable(key: str, value: str) -> tuple[bool, str]:
+    ok, reason = _sysctl_key_is_persistable(key)
+    if not ok:
+        return ok, reason
+
+    if key in _SYSCTL_SKIP_ZERO_VALUE_KEYS and str(value).strip() == "0":
+        return False, "inactive mutually-exclusive zero value"
+
     return True, ""
 
 
@@ -1199,7 +1233,7 @@ def _parse_sysctl_a_output(
             skipped["duplicate"] += 1
             continue
         if require_persistable:
-            ok, _reason = _sysctl_key_is_persistable(key)
+            ok, _reason = _sysctl_entry_is_persistable(key, value)
             if not ok:
                 skipped["non_persistable"] += 1
                 continue

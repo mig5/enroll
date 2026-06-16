@@ -327,6 +327,52 @@ def test_parse_sysctl_a_output_keeps_persistable_values(monkeypatch):
     assert skipped["duplicate"] == 1
 
 
+def test_sysctl_filter_skips_non_replayable_runtime_keys(monkeypatch):
+    for key in (
+        "fs.binfmt_misc.status",
+        "fs.binfmt_misc.register",
+        "kernel.kexec_load_disabled",
+        "kernel.kexec_load_limit_panic",
+        "kernel.kexec_load_limit_reboot",
+        "kernel.max_rcu_stall_to_panic",
+        "kernel.modules_disabled",
+        "kernel.sched_domain.cpu0.domain0.flags",
+    ):
+        ok, reason = h._sysctl_key_is_persistable(key)
+        assert ok is False
+        assert reason == "volatile/action key"
+
+    monkeypatch.setattr(h, "_sysctl_key_is_persistable", lambda key: (True, ""))
+    for key in (
+        "vm.dirty_background_bytes",
+        "vm.dirty_background_ratio",
+        "vm.dirty_bytes",
+        "vm.dirty_ratio",
+    ):
+        ok, reason = h._sysctl_entry_is_persistable(key, "0")
+        assert ok is False
+        assert reason == "inactive mutually-exclusive zero value"
+        assert h._sysctl_entry_is_persistable(key, "10")[0] is True
+
+
+def test_parse_sysctl_a_output_skips_non_replayable_values(monkeypatch):
+    monkeypatch.setattr(
+        h,
+        "_sysctl_key_is_persistable",
+        lambda key: (key != "kernel.modules_disabled", "volatile/action key"),
+    )
+
+    params, skipped = h._parse_sysctl_a_output(
+        "kernel.modules_disabled = 0\n"
+        "vm.dirty_background_bytes = 0\n"
+        "vm.dirty_ratio = 20\n"
+        "net.ipv4.ip_forward = 1\n"
+    )
+
+    assert params == {"net.ipv4.ip_forward": "1", "vm.dirty_ratio": "20"}
+    assert skipped["non_persistable"] == 2
+
+
 def test_collect_sysctl_snapshot_writes_generated_artifact(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         h,
