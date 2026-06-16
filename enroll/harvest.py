@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import glob
 import os
+from importlib import import_module
 import re
 import shutil
 import shlex
@@ -20,8 +21,29 @@ from .ignore import IgnorePolicy
 from .pathfilter import PathFilter
 from .version import get_enroll_version
 from .state import write_state
+from .harvest_collectors.context import HarvestContext
 
 UnitQueryError = _systemd.UnitQueryError
+
+_COLLECTOR_REEXPORTS = {
+    "CronLogrotateCollector": ".harvest_collectors.cron_logrotate",
+    "ExtraPathsCollector": ".harvest_collectors.paths",
+    "PackageManagerConfigCollector": ".harvest_collectors.package_manager",
+    "RuntimeStateCollector": ".harvest_collectors.runtime",
+    "ServicePackageCollector": ".harvest_collectors.services",
+    "UsersCollector": ".harvest_collectors.users",
+    "UsrLocalCustomCollector": ".harvest_collectors.paths",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _COLLECTOR_REEXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(module_name, __package__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
 
 
 def list_enabled_services() -> List[str]:
@@ -1457,18 +1479,6 @@ def _collect_firewall_runtime_snapshot(
     )
 
 
-from .harvest_collectors import (
-    CronLogrotateCollector,
-    ExtraPathsCollector,
-    HarvestContext,
-    PackageManagerConfigCollector,
-    RuntimeStateCollector,
-    ServicePackageCollector,
-    UsersCollector,
-    UsrLocalCustomCollector,
-)
-
-
 def harvest(
     bundle_dir: str,
     policy: Optional[IgnorePolicy] = None,
@@ -1490,6 +1500,13 @@ def harvest(
     # User-provided includes/excludes. Excludes apply to all harvesting;
     # includes are harvested into an extra role.
     path_filter = PathFilter(include=include_paths or (), exclude=exclude_paths or ())
+
+    from .harvest_collectors.cron_logrotate import CronLogrotateCollector
+    from .harvest_collectors.package_manager import PackageManagerConfigCollector
+    from .harvest_collectors.paths import ExtraPathsCollector, UsrLocalCustomCollector
+    from .harvest_collectors.runtime import RuntimeStateCollector
+    from .harvest_collectors.services import ServicePackageCollector
+    from .harvest_collectors.users import UsersCollector
 
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         print(
