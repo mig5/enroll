@@ -48,6 +48,7 @@ def test_cli_manifest_subcommand_calls_manifest(monkeypatch, tmp_path):
         called["fqdn"] = kwargs.get("fqdn")
         called["jinjaturtle"] = kwargs.get("jinjaturtle")
         called["no_common_roles"] = kwargs.get("no_common_roles")
+        called["target"] = kwargs.get("target")
 
     monkeypatch.setattr(cli, "manifest", fake_manifest)
     monkeypatch.setattr(
@@ -69,6 +70,37 @@ def test_cli_manifest_subcommand_calls_manifest(monkeypatch, tmp_path):
     assert called["fqdn"] is None
     assert called["jinjaturtle"] == "auto"
     assert called["no_common_roles"] is False
+    assert called["target"] == "ansible"
+
+
+def test_cli_manifest_target_puppet_is_forwarded(monkeypatch, tmp_path):
+    called = {}
+
+    def fake_manifest(harvest_dir: str, out_dir: str, **kwargs):
+        called["harvest"] = harvest_dir
+        called["out"] = out_dir
+        called["target"] = kwargs.get("target")
+
+    monkeypatch.setattr(cli, "manifest", fake_manifest)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "enroll",
+            "manifest",
+            "--harvest",
+            str(tmp_path / "bundle"),
+            "--out",
+            str(tmp_path / "puppet"),
+            "--target",
+            "puppet",
+        ],
+    )
+
+    cli.main()
+    assert called["harvest"] == str(tmp_path / "bundle")
+    assert called["out"] == str(tmp_path / "puppet")
+    assert called["target"] == "puppet"
 
 
 def test_cli_manifest_no_common_roles_is_forwarded(monkeypatch, tmp_path):

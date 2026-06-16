@@ -4,7 +4,7 @@
   <img src="https://git.mig5.net/mig5/enroll/raw/branch/main/enroll.svg" alt="Enroll logo" width="240" />
 </div>
 
-**enroll** inspects a Linux machine (Debian-like or RedHat-like) and generates Ansible roles/playbooks (and optionally inventory) for what it finds.
+**enroll** inspects a Linux machine (Debian-like or RedHat-like) and generates configuration-management code: Ansible roles/playbooks by default, or Puppet control-repo style output for what it finds.
 
 - Detects packages that have been installed.
 - Detects package ownership of `/etc` files where possible
@@ -26,7 +26,7 @@
 `enroll` works in two phases:
 
 1) **Harvest**: collect host facts + relevant files into a harvest bundle (`state.json` + harvested artifacts)
-2) **Manifest**: turn that harvest into Ansible roles/playbooks (and optionally inventory)
+2) **Manifest**: turn that harvest into configuration-management code such as Ansible roles/playbooks or Puppet manifests
 
 Additionally, some other functionalities exist:
 
@@ -37,7 +37,7 @@ Additionally, some other functionalities exist:
 
 ## Output modes: single-site vs multi-site (`--fqdn`)
 
-`enroll manifest` (and `enroll single-shot`) support two distinct output styles.
+`enroll manifest` (and `enroll single-shot`) support multiple output targets. Ansible is the default target and supports two distinct output styles.
 
 ### Single-site mode (default: *no* `--fqdn`)
 Use when enrolling **one server** (or generating a “golden” role set you intend to reuse).
@@ -120,18 +120,20 @@ enroll single-shot --remote-host myhost.example.com --remote-user myuser --ssh-k
 ---
 
 ### `enroll manifest`
-Generate Ansible output from an existing harvest bundle.
+Generate configuration-management output from an existing harvest bundle. Ansible remains the default; use `--target puppet` for Puppet output.
 
 **Inputs**
 - `--harvest /path/to/harvest` (directory)
   or `--harvest /path/to/harvest.tar.gz.sops` (if using `--sops`)
 
 **Output**
-- In plaintext mode: an Ansible repo-like directory structure (roles/playbooks, and inventory in multi-site mode).
+- In plaintext Ansible mode: an Ansible repo-like directory structure (roles/playbooks, and inventory in multi-site mode).
+- In plaintext Puppet mode: a Puppet control-repo style layout with `manifests/site.pp` and generated modules under `modules/`. By default, package and service resources are grouped by Debian Section/RPM Group where possible; `--fqdn` or `--no-common-roles` preserves one generated module per Enroll role/snapshot.
 - In `--sops` mode: a single encrypted file `manifest.tar.gz.sops` containing the generated output.
 
 **Common flags**
-- `--fqdn <host>`: enables **multi-site** output style
+- `--target ansible|puppet`: choose the manifest target (`ansible` is the default).
+- `--fqdn <host>`: enables **multi-site** output style for Ansible, or emits a Puppet `node '<host>'` block. Without `--fqdn`, Puppet emits `node default { ... }`.
 - `--no-common-roles`: disables the default grouping of package and systemd-unit roles into Debian Section/RPM Group roles, preserving one generated role per package/unit. `--fqdn` implies this behaviour.
 
 **Role tags**
@@ -152,7 +154,7 @@ Convenience wrapper that runs **harvest → manifest** in one command.
 
 Use this when you want “get me something workable ASAP”.
 
-Supports the same general flags as harvest/manifest, including `--fqdn`, `--no-common-roles`, remote harvest flags, and `--sops`.
+Supports the same general flags as harvest/manifest, including `--target`, `--fqdn`, `--no-common-roles`, remote harvest flags, and `--sops`.
 
 ---
 
@@ -437,6 +439,26 @@ enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```bash
 enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn "$(hostname -f)"
 ```
+
+### Puppet target
+```bash
+enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-puppet --target puppet
+```
+
+The Puppet target renders native packages, users/groups, managed directories/files/symlinks, basic service state, and the generated sysctl file/apply exec when present. Without `--fqdn`, `site.pp` uses `node default { ... }`; with `--fqdn`, it uses `node '<host>' { ... }`. Run from the generated output directory with the generated modules on Puppet's module path, for example:
+
+```bash
+cd /tmp/enroll-puppet
+sudo puppet apply --modulepath ./modules manifests/site.pp --noop
+```
+
+Or with absolute paths:
+
+```bash
+sudo puppet apply --modulepath /tmp/enroll-puppet/modules /tmp/enroll-puppet/manifests/site.pp --noop
+```
+
+Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Puppet README rather than converted into Puppet resources.
 
 ### Manifest with `--sops`
 ```bash

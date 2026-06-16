@@ -5,6 +5,7 @@
  * BREAKING CHANGE: Only capture user-specific .bashrc style files when using `--dangerous` mode, in case they contain sensitive env vars.
  * Detect active sysctl parameters and write them to a `/etc/sysctl.d/99-enroll.conf` file
  * Use `no_log` on systemd unit interrogations to suppress potential sensitive output when applying Ansible
+ * Support manifesting Puppet code, as well as Ansible!
 
 # 0.6.0
 

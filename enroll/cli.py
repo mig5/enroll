@@ -309,6 +309,12 @@ def _encrypt_harvest_dir_to_sops(
 
 def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
+        "--target",
+        choices=["ansible", "puppet"],
+        default="ansible",
+        help="Manifest target to generate (default: ansible). Puppet output is an initial conservative target.",
+    )
+    p.add_argument(
         "--fqdn",
         help="Host FQDN/name for site-mode output (creates inventory/, inventory/host_vars/, playbooks/).",
     )
@@ -482,7 +488,9 @@ def main() -> None:
         help="Don't use sudo on the remote host (when using --remote options). This may result in a limited harvest due to permission restrictions.",
     )
 
-    m = sub.add_parser("manifest", help="Render Ansible roles from a harvest")
+    m = sub.add_parser(
+        "manifest", help="Render configuration-management code from a harvest"
+    )
     _add_config_args(m)
     m.add_argument(
         "--harvest",
@@ -514,7 +522,8 @@ def main() -> None:
     _add_common_manifest_args(m)
 
     s = sub.add_parser(
-        "single-shot", help="Harvest state, then manifest Ansible code, in one shot"
+        "single-shot",
+        help="Harvest state, then manifest configuration-management code, in one shot",
     )
     _add_config_args(s)
     _add_remote_args(s)
@@ -920,6 +929,7 @@ def main() -> None:
                 jinjaturtle=_jt_mode(args),
                 sops_fingerprints=getattr(args, "sops", None),
                 no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                target=getattr(args, "target", "ansible"),
             )
             if getattr(args, "sops", None) and out_enc:
                 print(str(out_enc))
@@ -1058,6 +1068,7 @@ def main() -> None:
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                        target=getattr(args, "target", "ansible"),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1089,6 +1100,7 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                        target=getattr(args, "target", "ansible"),
                     )
                     # For usability (when --harvest wasn't provided), print the harvest path.
                     if not args.harvest:
@@ -1120,6 +1132,7 @@ def main() -> None:
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                        target=getattr(args, "target", "ansible"),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1140,6 +1153,7 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                        target=getattr(args, "target", "ansible"),
                     )
     except RemoteSudoPasswordRequired:
         raise SystemExit(
