@@ -59,7 +59,7 @@ poetry run \
 	--harvest "${BUNDLE_DIR}3" \
         --out "${PUPPET_DIR}3" \
 	--target puppet
-sudo puppet apply --modulepath "${PUPPET_DIR}3/modules" "${PUPPET_DIR}3/manifests/site.pp" --noop
+puppet apply --modulepath "${PUPPET_DIR}3/modules" "${PUPPET_DIR}3/manifests/site.pp" --noop
 
 # Ansible mode!
 builtin cd "${ANSIBLE_DIR}"
