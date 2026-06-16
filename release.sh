@@ -10,8 +10,7 @@ poetry build
 poetry publish
 
 # Make AppImage
-poetry run pyproject-appimage
-mv Enroll.AppImage dist/
+poetry run pyproject-appimage --output dist/Enroll.AppImage
 
 # Sign packages
 for file in `ls -1 dist/`; do qubes-gpg-client --batch  --armor --detach-sign dist/$file > dist/$file.asc; done
