@@ -11,7 +11,7 @@
 - Captures config that has **changed from packaged defaults** where possible (e.g dpkg conffile hashes + package md5sums when available).
 - Also captures **service-relevant custom/unowned files** under `/etc/<service>/...` (e.g. drop-in config includes).
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
-- Captures non-system users and their SSH public keys and any .bashrc or .bash_aliases or .profile files that deviate from the skel defaults.
+- Captures non-system users and their SSH public keys. In `--dangerous` mode, it also auto-harvests common shell dotfiles such as `.bashrc`, `.profile`, `.bash_logout`, and `.bash_aliases` when appropriate.
 - Captures miscellaneous `/etc` files it can't attribute to a package and installs them in an `etc_custom` role.
 - Captures live ipset and iptables runtime state into a fallback `firewall_runtime` role, when active ipsets/iptables rules are present *and* no corresponding persistent ipset/iptables *files* were found.
 - Captures symlinks in common applications that rely on them, e.g apache2/nginx 'sites-enabled'
@@ -70,6 +70,7 @@ Harvest state about a host and write a harvest bundle.
 - “Manual” packages
 - Changed-from-default config (plus related custom/unowned files under service dirs)
 - Non-system users + SSH public keys
+- In `--dangerous` mode: common per-user shell dotfiles that are likely to represent deliberate account customisation
 - Misc `/etc` that can't be attributed to a package (`etc_custom` role)
 - Static firewall config files such as nftables, UFW, firewalld, `/etc/iptables/rules.v4`, `/etc/iptables/rules.v6`, and `/etc/ipset*`
 - Live kernel ipset/iptables state via `ipset save`, `iptables-save`, and `ip6tables-save` as a fallback, but only when the corresponding persistent config was not found (`firewall_runtime` role at manifest time)
@@ -269,6 +270,8 @@ enroll validate ./harvest --fail-on-warnings
 ## Sensitive data
 
 By default, `enroll` does **not** assume how you handle secrets in Ansible. It will attempt to avoid harvesting likely sensitive data (private keys, passwords, tokens, etc.). This can mean it skips some config files you may ultimately want to manage.
+
+Automatic harvesting of per-user shell dotfiles is also disabled by default, even when those files differ from `/etc/skel`, because `.bashrc`, `.profile`, `.bash_aliases`, and similar files commonly contain exported tokens, credentials, or aliases/functions with embedded secrets. Use `--dangerous` for automatic shell-dotfile capture, or use targeted `--include-path` patterns for narrower safe-mode review.
 
 If you opt in to collecting everything:
 

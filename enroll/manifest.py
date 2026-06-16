@@ -1133,7 +1133,8 @@ def _manifest_from_bundle_dir(
 
         group_names = sorted(group_set)
 
-        # SSH-related files (authorized_keys, known_hosts, config, etc.)
+        # User-managed files (authorized_keys plus dangerous-mode shell dotfiles).
+        # Keep the variable name for compatibility with existing generated data.
         ssh_files: List[Dict[str, Any]] = []
         for mf in managed_files:
             dest = mf.get("path") or ""
@@ -1280,7 +1281,7 @@ def _manifest_from_bundle_dir(
     mode: "0700"
   loop: "{{ users_users | default([]) }}"
 
-- name: Deploy SSH-related files
+- name: Deploy user-managed files
   vars:
     _enroll_ff:
       files:

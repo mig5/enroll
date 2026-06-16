@@ -1056,5 +1056,78 @@ class TestCaptureFile:
         assert len(managed) == 0
 
 
+def test_user_shell_dotfiles_are_not_auto_captured_without_dangerous(tmp_path: Path):
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    (home / ".bashrc").write_text("export DEMO=value\n", encoding="utf-8")
+    (home / ".bash_aliases").write_text("alias ll='ls -la'\n", encoding="utf-8")
+
+    managed: list[ManagedFile] = []
+    excluded: list[ExcludedFile] = []
+
+    captured = harvest._capture_user_shell_dotfiles(
+        bundle_dir=str(tmp_path / "bundle"),
+        role_name="users",
+        home=str(home),
+        skel_dir=str(tmp_path / "skel"),
+        enabled=False,
+        policy=IgnorePolicy(dangerous=False),
+        path_filter=PathFilter(),
+        managed_out=managed,
+        excluded_out=excluded,
+        seen_role=set(),
+        seen_global=set(),
+    )
+
+    assert captured == 0
+    assert managed == []
+    assert excluded == []
+    assert not (tmp_path / "bundle" / "artifacts" / "users").exists()
+
+
+def test_user_shell_dotfiles_dangerous_captures_changed_files_only(tmp_path: Path):
+    skel = tmp_path / "skel"
+    home = tmp_path / "home" / "alice"
+    skel.mkdir(parents=True)
+    home.mkdir(parents=True)
+
+    (skel / ".bashrc").write_text("# default bashrc\n", encoding="utf-8")
+    (home / ".bashrc").write_text("# customised bashrc\n", encoding="utf-8")
+
+    (skel / ".profile").write_text("# default profile\n", encoding="utf-8")
+    (home / ".profile").write_text("# default profile\n", encoding="utf-8")
+
+    (home / ".bash_aliases").write_text("alias ll='ls -la'\n", encoding="utf-8")
+
+    target = home / "target"
+    target.write_text("# symlink target\n", encoding="utf-8")
+    os.symlink(target, home / ".bash_logout")
+
+    managed: list[ManagedFile] = []
+    excluded: list[ExcludedFile] = []
+
+    captured = harvest._capture_user_shell_dotfiles(
+        bundle_dir=str(tmp_path / "bundle"),
+        role_name="users",
+        home=str(home),
+        skel_dir=str(skel),
+        enabled=True,
+        policy=IgnorePolicy(dangerous=True),
+        path_filter=PathFilter(),
+        managed_out=managed,
+        excluded_out=excluded,
+        seen_role=set(),
+        seen_global=set(),
+    )
+
+    captured_paths = {mf.path for mf in managed}
+    assert captured == 2
+    assert str(home / ".bashrc") in captured_paths
+    assert str(home / ".bash_aliases") in captured_paths
+    assert str(home / ".profile") not in captured_paths
+    assert str(home / ".bash_logout") not in captured_paths
+    assert excluded == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

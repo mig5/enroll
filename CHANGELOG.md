@@ -2,6 +2,7 @@
 
  * Add support for detecting flatpaks and snaps
  * BREAKING CHANGE: Group all package and systemd-unit roles into Debian Section/RPM Group roles by default, including managed config files and unit state. This mode is not used if `--fqdn` or `--no-common-roles` is set, in which case, the traditional behaviour of preserving one role per package/unit is used instead.
+ * BREAKING CHANGE: Only capture user-specific .bashrc style files when using `--dangerous` mode, in case they contain sensitive env vars.
 
 # 0.6.0
 

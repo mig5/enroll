@@ -498,6 +498,93 @@ def _capture_file(
     return True
 
 
+USER_SHELL_DOTFILES_WITH_SKEL_BASELINE = [
+    (".bashrc", "user_shell_rc"),
+    (".profile", "user_profile"),
+    (".bash_logout", "user_shell_logout"),
+]
+
+USER_SHELL_DOTFILES_WITHOUT_SKEL_BASELINE = [
+    (".bash_aliases", "user_shell_aliases"),
+]
+
+
+def _capture_user_shell_dotfiles(
+    *,
+    bundle_dir: str,
+    role_name: str,
+    home: str,
+    skel_dir: str,
+    enabled: bool,
+    policy: IgnorePolicy,
+    path_filter: PathFilter,
+    managed_out: List[ManagedFile],
+    excluded_out: List[ExcludedFile],
+    seen_role: Optional[Set[str]],
+    seen_global: Optional[Set[str]],
+) -> int:
+    """Capture selected per-user shell dotfiles when explicitly enabled.
+
+    Shell startup files are useful for reproducing interactive accounts, but they
+    commonly contain exported tokens, passwords, command aliases with embedded
+    credentials, and other private context. For that reason, automatic capture is
+    gated by harvest's dangerous mode. Users who want a narrower safe-mode
+    selection can still use --include-path, which lands in the extra_paths role
+    and remains subject to IgnorePolicy content checks.
+    """
+
+    if not enabled:
+        return 0
+
+    home = (home or "").rstrip("/")
+    if not home or not home.startswith("/"):
+        return 0
+
+    captured = 0
+    max_compare_bytes = int(getattr(policy, "max_file_bytes", 256_000))
+
+    for rel, reason in USER_SHELL_DOTFILES_WITH_SKEL_BASELINE:
+        upath = os.path.join(home, rel)
+        if not os.path.isfile(upath) or os.path.islink(upath):
+            continue
+        skel_path = os.path.join(skel_dir, rel)
+        if not _files_differ(upath, skel_path, max_bytes=max_compare_bytes):
+            continue
+        if _capture_file(
+            bundle_dir=bundle_dir,
+            role_name=role_name,
+            abs_path=upath,
+            reason=reason,
+            policy=policy,
+            path_filter=path_filter,
+            managed_out=managed_out,
+            excluded_out=excluded_out,
+            seen_role=seen_role,
+            seen_global=seen_global,
+        ):
+            captured += 1
+
+    for rel, reason in USER_SHELL_DOTFILES_WITHOUT_SKEL_BASELINE:
+        upath = os.path.join(home, rel)
+        if not os.path.isfile(upath) or os.path.islink(upath):
+            continue
+        if _capture_file(
+            bundle_dir=bundle_dir,
+            role_name=role_name,
+            abs_path=upath,
+            reason=reason,
+            policy=policy,
+            path_filter=path_filter,
+            managed_out=managed_out,
+            excluded_out=excluded_out,
+            seen_role=seen_role,
+            seen_global=seen_global,
+        ):
+            captured += 1
+
+    return captured
+
+
 def _capture_link(
     *,
     role_name: str,
@@ -1888,16 +1975,12 @@ def harvest(
     users_role_seen = seen_by_role.setdefault(users_role_name, set())
 
     skel_dir = "/etc/skel"
-    # Dotfiles to harvest for non-system users. For the common "skeleton"
-    # files, only capture if the user's copy differs from /etc/skel.
-    skel_dotfiles = [
-        (".bashrc", "user_shell_rc"),
-        (".profile", "user_profile"),
-        (".bash_logout", "user_shell_logout"),
-    ]
-    extra_dotfiles = [
-        (".bash_aliases", "user_shell_aliases"),
-    ]
+    auto_capture_user_dotfiles = bool(getattr(policy, "dangerous", False))
+    if user_records and not auto_capture_user_dotfiles:
+        users_notes.append(
+            "User shell dotfiles were not auto-harvested because --dangerous was not set; "
+            "use --dangerous for automatic shell-dotfile capture, or targeted --include-path patterns for safe-mode review."
+        )
 
     user_flatpaks_map: Dict[str, List[Dict[str, Any]]] = {}
     user_flatpak_remotes: List[Dict[str, Any]] = []
@@ -1936,56 +2019,31 @@ def harvest(
                 seen_global=captured_global,
             )
 
-        # Capture common per-user shell dotfiles when they differ from /etc/skel.
-        # These still go through IgnorePolicy and user path filters.
+        # Capture common per-user shell dotfiles only in dangerous mode. They
+        # often contain exported tokens or aliases/functions with embedded secrets.
         home = (u.home or "").rstrip("/")
         if home and home.startswith("/"):
-            for rel, reason in skel_dotfiles:
-                upath = os.path.join(home, rel)
-                if not os.path.exists(upath):
-                    continue
-                skel_path = os.path.join(skel_dir, rel)
-                if not _files_differ(upath, skel_path, max_bytes=policy.max_file_bytes):
-                    continue
-                _capture_file(
-                    bundle_dir=bundle_dir,
-                    role_name=users_role_name,
-                    abs_path=upath,
-                    reason=reason,
-                    policy=policy,
-                    path_filter=path_filter,
-                    managed_out=users_managed,
-                    excluded_out=users_excluded,
-                    seen_role=users_role_seen,
-                    seen_global=captured_global,
-                )
-
-            # Capture other common per-user shell files unconditionally if present.
-            for rel, reason in extra_dotfiles:
-                upath = os.path.join(home, rel)
-                if not os.path.exists(upath):
-                    continue
-                _capture_file(
-                    bundle_dir=bundle_dir,
-                    role_name=users_role_name,
-                    abs_path=upath,
-                    reason=reason,
-                    policy=policy,
-                    path_filter=path_filter,
-                    managed_out=users_managed,
-                    excluded_out=users_excluded,
-                    seen_role=users_role_seen,
-                    seen_global=captured_global,
-                )
+            _capture_user_shell_dotfiles(
+                bundle_dir=bundle_dir,
+                role_name=users_role_name,
+                home=home,
+                skel_dir=skel_dir,
+                enabled=auto_capture_user_dotfiles,
+                policy=policy,
+                path_filter=path_filter,
+                managed_out=users_managed,
+                excluded_out=users_excluded,
+                seen_role=users_role_seen,
+                seen_global=captured_global,
+            )
 
             # Collect per-user Flatpak applications and remotes. Snap packages are
             # system-wide; ~/snap/* is user data, not an install source.
             if u.flatpaks:
                 user_flatpaks_map[u.name] = [asdict(fp) for fp in u.flatpaks]
-            if home and home.startswith("/"):
-                user_flatpak_remotes.extend(
-                    asdict(r) for r in find_user_flatpak_remotes(home, user=u.name)
-                )
+            user_flatpak_remotes.extend(
+                asdict(r) for r in find_user_flatpak_remotes(home, user=u.name)
+            )
 
     users_snapshot = UsersSnapshot(
         role_name=users_role_name,
