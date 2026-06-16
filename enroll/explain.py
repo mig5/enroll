@@ -383,6 +383,7 @@ def explain_state(
     for rname in [
         "apt_config",
         "dnf_config",
+        "sysctl",
         "etc_custom",
         "usr_local_custom",
         "extra_paths",
@@ -435,6 +436,7 @@ def explain_state(
     for rname in [
         "apt_config",
         "dnf_config",
+        "sysctl",
         "etc_custom",
         "usr_local_custom",
         "extra_paths",

@@ -692,6 +692,39 @@
       ],
       "type": "object"
     },
+    "SysctlSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "role_name": {
+          "const": "sysctl"
+        },
+        "managed_files": {
+          "items": {
+            "$ref": "#/$defs/ManagedFile"
+          },
+          "type": "array"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "role_name",
+        "managed_files",
+        "parameters",
+        "notes"
+      ],
+      "type": "object"
+    },
     "FlatpakInstall": {
       "additionalProperties": false,
       "properties": {
@@ -884,7 +917,6 @@
         "role_name"
       ],
       "type": "object"
-
     },
     "SnapSnapshot": {
       "additionalProperties": false,
@@ -1019,6 +1051,9 @@
         },
         "firewall_runtime": {
           "$ref": "#/$defs/FirewallRuntimeSnapshot"
+        },
+        "sysctl": {
+          "$ref": "#/$defs/SysctlSnapshot"
         },
         "flatpak": {
           "$ref": "#/$defs/FlatpakSnapshot"

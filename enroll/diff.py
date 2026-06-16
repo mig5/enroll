@@ -303,6 +303,12 @@ def _iter_managed_files(state: Dict[str, Any]) -> Iterable[Tuple[str, Dict[str, 
     for mf in ac.get("managed_files", []) or []:
         yield str(ac_role), mf
 
+    # sysctl
+    sc = _roles(state).get("sysctl") or {}
+    sc_role = sc.get("role_name") or "sysctl"
+    for mf in sc.get("managed_files", []) or []:
+        yield str(sc_role), mf
+
     # etc_custom
     ec = _roles(state).get("etc_custom") or {}
     ec_role = ec.get("role_name") or "etc_custom"

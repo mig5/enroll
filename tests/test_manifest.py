@@ -260,6 +260,7 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     # Service role: systemd management should be gated on foo_manage_unit and a probe.
     tasks = (out / "roles" / "foo" / "tasks" / "main.yml").read_text(encoding="utf-8")
     assert "- name: Probe whether systemd unit exists and is manageable" in tasks
+    assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
     assert "when: foo_manage_unit | default(false)" in tasks
     assert (
         "when:\n    - foo_manage_unit | default(false)\n    - _unit_probe is succeeded\n"
@@ -618,6 +619,7 @@ def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
     assert "dest: /etc/NetworkManager/NetworkManager.conf" in defaults
     tasks = (out / "roles" / "net" / "tasks" / "main.yml").read_text(encoding="utf-8")
     assert "Ensure grouped unit enablement matches harvest" in tasks
+    assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
 
 
 def test_manifest_fqdn_implies_no_common_roles(tmp_path: Path):
@@ -1811,3 +1813,111 @@ def test_manifest_avoids_package_role_collision_with_flatpak_singleton(tmp_path)
     assert (out / "roles" / "package_flatpak" / "tasks" / "main.yml").exists()
     assert "role: flatpak" in playbook
     assert "role: package_flatpak" in playbook
+
+
+def test_manifest_writes_sysctl_role(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    (bundle / "artifacts" / "sysctl" / "sysctl").mkdir(parents=True, exist_ok=True)
+    (bundle / "artifacts" / "sysctl" / "sysctl" / "99-enroll.conf").write_text(
+        "net.ipv4.ip_forward = 1\n",
+        encoding="utf-8",
+    )
+
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "sysctl": {
+                "role_name": "sysctl",
+                "managed_files": [
+                    {
+                        "path": "/etc/sysctl.d/99-enroll.conf",
+                        "src_rel": "sysctl/99-enroll.conf",
+                        "owner": "root",
+                        "group": "root",
+                        "mode": "0644",
+                        "reason": "system_sysctl",
+                    }
+                ],
+                "parameters": {"net.ipv4.ip_forward": "1"},
+                "notes": ["Captured 1 live writable sysctl parameter(s)."],
+            },
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "packages": [],
+                "ipset_save": None,
+                "ipset_sets": [],
+                "iptables_v4_save": None,
+                "iptables_v6_save": None,
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+        },
+    }
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out))
+
+    tasks = (out / "roles" / "sysctl" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "dest: /etc/sysctl.d/99-enroll.conf" in tasks
+    assert "notify: Apply captured sysctl configuration" in tasks
+
+    handlers = (out / "roles" / "sysctl" / "handlers" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "- -p" in handlers
+    assert "- /etc/sysctl.d/99-enroll.conf" in handlers
+
+    defaults = (out / "roles" / "sysctl" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "sysctl_conf_src_rel: sysctl/99-enroll.conf" in defaults
+    assert "sysctl_ignore_apply_errors: true" in defaults
+
+    pb = (out / "playbook.yml").read_text(encoding="utf-8")
+    assert "role: sysctl" in pb
+    assert (out / "roles" / "sysctl" / "files" / "sysctl" / "99-enroll.conf").exists()

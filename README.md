@@ -13,6 +13,7 @@
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
 - Captures non-system users and their SSH public keys. In `--dangerous` mode, it also auto-harvests common shell dotfiles such as `.bashrc`, `.profile`, `.bash_logout`, and `.bash_aliases` when appropriate.
 - Captures miscellaneous `/etc` files it can't attribute to a package and installs them in an `etc_custom` role.
+- When running as root/sudo, captures live writable sysctl state into a `sysctl` role that manages `/etc/sysctl.d/99-enroll.conf`.
 - Captures live ipset and iptables runtime state into a fallback `firewall_runtime` role, when active ipsets/iptables rules are present *and* no corresponding persistent ipset/iptables *files* were found.
 - Captures symlinks in common applications that rely on them, e.g apache2/nginx 'sites-enabled'
 - Ditto for /usr/local/bin (for non-binary files) and /usr/local/etc
@@ -73,6 +74,7 @@ Harvest state about a host and write a harvest bundle.
 - In `--dangerous` mode: common per-user shell dotfiles that are likely to represent deliberate account customisation
 - Misc `/etc` that can't be attributed to a package (`etc_custom` role)
 - Static firewall config files such as nftables, UFW, firewalld, `/etc/iptables/rules.v4`, `/etc/iptables/rules.v6`, and `/etc/ipset*`
+- Live writable sysctl state via `sysctl -a`, emitted as `/etc/sysctl.d/99-enroll.conf` at manifest time when running as root/sudo (`sysctl` role)
 - Live kernel ipset/iptables state via `ipset save`, `iptables-save`, and `ip6tables-save` as a fallback, but only when the corresponding persistent config was not found (`firewall_runtime` role at manifest time)
 - Optional user-specified extra files/dirs via `--include-path` (emitted as an `extra_paths` role at manifest time)
 

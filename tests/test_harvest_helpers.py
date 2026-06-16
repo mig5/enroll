@@ -303,3 +303,48 @@ def test_service_role_names_do_not_collide_with_singleton_roles():
     assert _role_name_from_unit("flatpak.service") == "service_flatpak"
     assert _role_name_from_unit("users.service") == "service_users"
     assert _role_name_from_unit("nginx.service") == "nginx"
+
+
+def test_parse_sysctl_a_output_keeps_persistable_values(monkeypatch):
+    monkeypatch.setattr(
+        h,
+        "_sysctl_key_is_persistable",
+        lambda key: (key != "kernel.hostname", "test"),
+    )
+
+    params, skipped = h._parse_sysctl_a_output(
+        "net.ipv4.ip_forward = 1\n"
+        "kernel.hostname = example\n"
+        "malformed line\n"
+        "dev.cdrom.info = \n"
+        "net.ipv4.ip_forward = 0\n"
+    )
+
+    assert params == {"net.ipv4.ip_forward": "1"}
+    assert skipped["non_persistable"] == 1
+    assert skipped["malformed"] == 1
+    assert skipped["empty_value"] == 1
+    assert skipped["duplicate"] == 1
+
+
+def test_collect_sysctl_snapshot_writes_generated_artifact(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        h,
+        "_run_capture_command",
+        lambda command_key, *, timeout=10: (
+            "net.ipv4.ip_forward = 1\nvm.swappiness = 10\n",
+            None,
+        ),
+    )
+    monkeypatch.setattr(h, "_sysctl_key_is_persistable", lambda key: (True, ""))
+
+    snap = h._collect_sysctl_snapshot(str(tmp_path))
+
+    assert snap.role_name == "sysctl"
+    assert snap.parameters == {"net.ipv4.ip_forward": "1", "vm.swappiness": "10"}
+    assert len(snap.managed_files) == 1
+    assert snap.managed_files[0].path == "/etc/sysctl.d/99-enroll.conf"
+    conf = tmp_path / "artifacts" / "sysctl" / "sysctl" / "99-enroll.conf"
+    text = conf.read_text(encoding="utf-8")
+    assert "net.ipv4.ip_forward = 1" in text
+    assert "vm.swappiness = 10" in text

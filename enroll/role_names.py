@@ -7,6 +7,7 @@ RESERVED_SINGLETON_ROLE_NAMES = {
     "apt_config",
     "dnf_config",
     "firewall_runtime",
+    "sysctl",
     "etc_custom",
     "usr_local_custom",
     "extra_paths",

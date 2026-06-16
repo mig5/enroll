@@ -728,6 +728,7 @@ def _render_grouped_systemd_tasks(var_prefix: str) -> str:
     return f"""- name: Probe whether grouped systemd units exist and are manageable
   ansible.builtin.systemd:
     name: "{{{{ item.name }}}}"
+  no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   check_mode: true
   loop: "{{{{ {var_prefix}_systemd_units | default([]) }}}}"
   register: _enroll_unit_probes
@@ -739,6 +740,7 @@ def _render_grouped_systemd_tasks(var_prefix: str) -> str:
   ansible.builtin.systemd:
     name: "{{{{ item.item.name }}}}"
     enabled: "{{{{ item.item.enabled | bool }}}}"
+  no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   loop: "{{{{ _enroll_unit_probes.results | default([]) }}}}"
   when:
     - item.item.manage | default(false)
@@ -748,10 +750,55 @@ def _render_grouped_systemd_tasks(var_prefix: str) -> str:
   ansible.builtin.systemd:
     name: "{{{{ item.item.name }}}}"
     state: "{{{{ item.item.state }}}}"
+  no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   loop: "{{{{ _enroll_unit_probes.results | default([]) }}}}"
   when:
     - item.item.manage | default(false)
     - not (item.failed | default(false))
+"""
+
+
+def _render_sysctl_tasks(var_prefix: str) -> str:
+    return f"""- name: Ensure sysctl.d exists
+  ansible.builtin.file:
+    path: /etc/sysctl.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy captured sysctl configuration
+  vars:
+    _enroll_ff:
+      files:
+        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ {var_prefix}_conf_src_rel }}}}"
+        - "{{{{ role_path }}}}/files/{{{{ {var_prefix}_conf_src_rel }}}}"
+  ansible.builtin.copy:
+    src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
+    dest: /etc/sysctl.d/99-enroll.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: ({var_prefix}_conf_src_rel | default('') | length) > 0
+  notify: Apply captured sysctl configuration
+"""
+
+
+def _render_sysctl_handlers(var_prefix: str) -> str:
+    return f"""---
+- name: Apply captured sysctl configuration
+  ansible.builtin.command:
+    argv:
+      - sysctl
+      - -e
+      - -p
+      - /etc/sysctl.d/99-enroll.conf
+  register: _enroll_sysctl_apply
+  changed_when: false
+  failed_when:
+    - not ({var_prefix}_ignore_apply_errors | default(true) | bool)
+    - _enroll_sysctl_apply.rc != 0
+  when: {var_prefix}_apply | default(true) | bool
 """
 
 
@@ -1017,6 +1064,7 @@ def _manifest_from_bundle_dir(
     apt_config_snapshot: Dict[str, Any] = roles.get("apt_config", {})
     dnf_config_snapshot: Dict[str, Any] = roles.get("dnf_config", {})
     firewall_runtime_snapshot: Dict[str, Any] = roles.get("firewall_runtime", {})
+    sysctl_snapshot: Dict[str, Any] = roles.get("sysctl", {})
     etc_custom_snapshot: Dict[str, Any] = roles.get("etc_custom", {})
     usr_local_custom_snapshot: Dict[str, Any] = roles.get("usr_local_custom", {})
     extra_paths_snapshot: Dict[str, Any] = roles.get("extra_paths", {})
@@ -1058,6 +1106,7 @@ def _manifest_from_bundle_dir(
     manifested_apt_config_roles: List[str] = []
     manifested_dnf_config_roles: List[str] = []
     manifested_firewall_runtime_roles: List[str] = []
+    manifested_sysctl_roles: List[str] = []
     manifested_etc_custom_roles: List[str] = []
     manifested_usr_local_custom_roles: List[str] = []
     manifested_extra_paths_roles: List[str] = []
@@ -2042,6 +2091,104 @@ DNF/YUM configuration harvested from the system (repos, config files, and RPM GP
         manifested_dnf_config_roles.append(role)
 
     # -------------------------
+    # sysctl role (live writable sysctl state)
+    # -------------------------
+    if sysctl_snapshot and (sysctl_snapshot.get("managed_files") or []):
+        role = sysctl_snapshot.get("role_name", "sysctl")
+        role_dir = os.path.join(roles_root, role)
+        _write_role_scaffold(role_dir)
+
+        var_prefix = role
+        managed_files = sysctl_snapshot.get("managed_files", []) or []
+        conf_src_rel = ""
+        for mf in managed_files:
+            if mf.get("path") == "/etc/sysctl.d/99-enroll.conf":
+                conf_src_rel = mf.get("src_rel") or ""
+                break
+        if not conf_src_rel and managed_files:
+            conf_src_rel = managed_files[0].get("src_rel") or ""
+
+        parameters = sysctl_snapshot.get("parameters", {}) or {}
+        notes = sysctl_snapshot.get("notes", []) or []
+
+        # Generated sysctl snapshots are host-specific in site mode.
+        if site_mode:
+            _copy_artifacts(
+                bundle_dir,
+                role,
+                _host_role_files_dir(out_dir, fqdn or "", role),
+            )
+        else:
+            _copy_artifacts(bundle_dir, role, os.path.join(role_dir, "files"))
+
+        vars_map: Dict[str, Any] = {
+            f"{var_prefix}_conf_src_rel": conf_src_rel,
+            f"{var_prefix}_apply": True,
+            f"{var_prefix}_ignore_apply_errors": True,
+        }
+
+        if site_mode:
+            _write_role_defaults(
+                role_dir,
+                {
+                    f"{var_prefix}_conf_src_rel": "",
+                    f"{var_prefix}_apply": True,
+                    f"{var_prefix}_ignore_apply_errors": True,
+                },
+            )
+            _write_hostvars(out_dir, fqdn or "", role, vars_map)
+        else:
+            _write_role_defaults(role_dir, vars_map)
+
+        tasks = "---\n" + _render_sysctl_tasks(var_prefix)
+        with open(
+            os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(tasks.rstrip() + "\n")
+
+        handlers_dir = os.path.join(role_dir, "handlers")
+        os.makedirs(handlers_dir, exist_ok=True)
+        with open(os.path.join(handlers_dir, "main.yml"), "w", encoding="utf-8") as f:
+            f.write(_render_sysctl_handlers(var_prefix))
+
+        with open(
+            os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("---\ndependencies: []\n")
+
+        param_count = len(parameters) if isinstance(parameters, dict) else 0
+        sample_params = []
+        if isinstance(parameters, dict):
+            sample_params = sorted(parameters.keys())[:25]
+
+        readme = f"""# {role}
+
+Generated from live writable sysctl state captured during harvest.
+
+This role deploys the captured values to `/etc/sysctl.d/99-enroll.conf`. The generated file intentionally contains writable, single-line sysctl values only; read-only, multiline, action-like, and host-identity keys are skipped to avoid creating a noisy or brittle boot-time configuration.
+
+## Captured parameters
+
+Captured parameter count: {param_count}
+
+{os.linesep.join("- " + x for x in sample_params) or "- (none)"}
+
+{"- ..." if param_count > len(sample_params) else ""}
+
+## Notes
+{os.linesep.join("- " + n for n in notes) or "- (none)"}
+
+## Safety notes
+- `sysctl_apply` defaults to `true` and applies `/etc/sysctl.d/99-enroll.conf` when the file changes.
+- `sysctl_ignore_apply_errors` defaults to `true`, because sysctl availability and writability can vary across kernels, containers, and hardware.
+- Review this role before applying it broadly across unlike hosts.
+"""
+        with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write(readme)
+
+        manifested_sysctl_roles.append(role)
+
+    # -------------------------
     # firewall_runtime role (live ipset/iptables kernel state)
     # -------------------------
     if firewall_runtime_snapshot and (
@@ -2217,6 +2364,7 @@ This role restores live ipset and iptables state only for firewall families wher
 - name: Run systemd daemon-reload
   ansible.builtin.systemd:
     daemon_reload: true
+  no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"
 """
         with open(
             os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
@@ -2586,6 +2734,7 @@ User-requested extra file harvesting.
 - name: Run systemd daemon-reload
   ansible.builtin.systemd:
     daemon_reload: true
+  no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"
 
 - name: Restart service
   ansible.builtin.service:
@@ -2611,6 +2760,7 @@ User-requested extra file harvesting.
             f"""- name: Probe whether systemd unit exists and is manageable
   ansible.builtin.systemd:
     name: "{{{{ {var_prefix}_unit_name }}}}"
+  no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   check_mode: true
   register: _unit_probe
   failed_when: false
@@ -2621,6 +2771,7 @@ User-requested extra file harvesting.
   ansible.builtin.systemd:
     name: "{{{{ {var_prefix}_unit_name }}}}"
     enabled: "{{{{ {var_prefix}_systemd_enabled | bool }}}}"
+  no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   when:
     - {var_prefix}_manage_unit | default(false)
     - _unit_probe is succeeded
@@ -2629,6 +2780,7 @@ User-requested extra file harvesting.
   ansible.builtin.systemd:
     name: "{{{{ {var_prefix}_unit_name }}}}"
     state: "{{{{ {var_prefix}_systemd_state }}}}"
+  no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   when:
     - {var_prefix}_manage_unit | default(false)
     - _unit_probe is succeeded
@@ -2700,6 +2852,7 @@ Generated from `{unit}`.
         + manifested_snap_roles
         + manifested_service_roles
         + manifested_firewall_runtime_roles
+        + manifested_sysctl_roles
         + manifested_etc_custom_roles
         + manifested_usr_local_custom_roles
         + manifested_extra_paths_roles
@@ -2854,6 +3007,7 @@ Generated from `{unit}`.
 - name: Run systemd daemon-reload
   ansible.builtin.systemd:
     daemon_reload: true
+  no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"
 
 - name: Restart managed services
   ansible.builtin.service:
@@ -3000,6 +3154,7 @@ Common role for package section/group `{section_label}`.
 - name: Run systemd daemon-reload
   ansible.builtin.systemd:
     daemon_reload: true
+  no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"
 """
         with open(
             os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
@@ -3072,6 +3227,7 @@ Generated for package `{pkg}`.
         + manifested_snap_roles
         + manifested_users_roles
         + tail_roles
+        + manifested_sysctl_roles
         + manifested_firewall_runtime_roles
     )
 

@@ -96,6 +96,7 @@ def _iter_managed_files(state: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]
         "users",
         "apt_config",
         "dnf_config",
+        "sysctl",
         "etc_custom",
         "usr_local_custom",
         "extra_paths",
