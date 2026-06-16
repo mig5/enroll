@@ -13,15 +13,35 @@ def _load_state(bundle_dir: str) -> Dict[str, Any]:
         return json.load(f)
 
 
+# https://help.puppet.com/core/current/Content/PuppetCore/lang_reserved_words.htm
 _RESERVED_PUPPET_NAMES = {
+    "and",
     "application",
-    "class",
+    "attr",
+    "case",
+    "component",
+    "consumes",
     "default",
     "define",
+    "elsif",
+    "environment",
+    "false",
+    "function",
+    "if",
     "import",
+    "in",
     "inherits",
     "node",
+    "or",
+    "private",
+    "produces",
+    "regexp",
     "site",
+    "true",
+    "type",
+    "undef",
+    "unit",
+    "unless",
 }
 
 
