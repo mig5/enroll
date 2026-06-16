@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .remote import _safe_extract_tar
+from .state import (
+    inventory_packages_from_state as _packages_inventory,
+    load_state as _load_state,
+    roles_from_state as _roles,
+    state_path,
+)
 from .pathfilter import PathFilter
 from .sopsutil import decrypt_file_binary_to, require_sops_cmd
 
@@ -116,7 +122,7 @@ class BundleRef:
 
     @property
     def state_path(self) -> Path:
-        return self.dir / "state.json"
+        return state_path(self.dir)
 
 
 def _bundle_from_input(path: str, *, sops_mode: bool) -> BundleRef:
@@ -189,22 +195,8 @@ def _bundle_from_input(path: str, *, sops_mode: bool) -> BundleRef:
     )
 
 
-def _load_state(bundle_dir: Path) -> Dict[str, Any]:
-    sp = bundle_dir / "state.json"
-    with open(sp, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _packages_inventory(state: Dict[str, Any]) -> Dict[str, Any]:
-    return (state.get("inventory") or {}).get("packages") or {}
-
-
 def _all_packages(state: Dict[str, Any]) -> List[str]:
     return sorted(_packages_inventory(state).keys())
-
-
-def _roles(state: Dict[str, Any]) -> Dict[str, Any]:
-    return state.get("roles") or {}
 
 
 def _pkg_version_key(entry: Dict[str, Any]) -> Optional[str]:

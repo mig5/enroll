@@ -312,7 +312,7 @@ def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
         "--target",
         choices=["ansible", "puppet"],
         default="ansible",
-        help="Manifest target to generate (default: ansible). Puppet output is an initial conservative target.",
+        help="Manifest target to generate (default: ansible).",
     )
     p.add_argument(
         "--fqdn",

@@ -5,7 +5,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Tuple
 
-from .diff import _bundle_from_input, _load_state  # reuse existing bundle handling
+from .diff import _bundle_from_input  # reuse existing bundle handling
+from .state import load_state
 
 
 @dataclass(frozen=True)
@@ -289,7 +290,7 @@ def explain_state(
       - a SOPS-encrypted bundle (.sops)
     """
     bundle = _bundle_from_input(harvest, sops_mode=sops_mode)
-    state = _load_state(bundle.dir)
+    state = load_state(bundle.dir)
 
     host = state.get("host") or {}
     enroll = state.get("enroll") or {}

@@ -1,16 +1,137 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from .cm import (
+    CMModule,
+    package_section_label,
+    resolve_catalog_conflicts,
+    role_order_key,
+    section_label_for_packages,
+)
+from .state import inventory_packages_from_state, roles_from_state
 
 
-def _load_state(bundle_dir: str) -> Dict[str, Any]:
-    with open(os.path.join(bundle_dir, "state.json"), "r", encoding="utf-8") as f:
-        return json.load(f)
+class PuppetRole(CMModule):
+    """Puppet-specific view of a renderer-neutral CMModule."""
+
+    def __init__(self, role_name: str) -> None:
+        super().__init__(
+            role_name=role_name,
+            module_name=_puppet_name(role_name, fallback="enroll_role"),
+        )
+
+    def add_package_snapshot(self, snap: Dict[str, Any]) -> None:
+        pkg = str(snap.get("package") or "").strip()
+        if pkg:
+            self.packages.add(pkg)
+
+    def add_service_snapshot(self, snap: Dict[str, Any]) -> None:
+        for pkg in snap.get("packages", []) or []:
+            pkg_s = str(pkg or "").strip()
+            if pkg_s:
+                self.packages.add(pkg_s)
+        unit = str(snap.get("unit") or "").strip()
+        if unit:
+            unit_file_state = str(snap.get("unit_file_state") or "")
+            self.services[unit] = {
+                "name": unit,
+                "ensure": (
+                    "running" if snap.get("active_state") == "active" else "stopped"
+                ),
+                "enable": unit_file_state in ("enabled", "enabled-runtime"),
+            }
+
+    def add_users_snapshot(self, snap: Dict[str, Any]) -> None:
+        for u in snap.get("users", []) or []:
+            if not isinstance(u, dict):
+                continue
+            name = str(u.get("name") or "").strip()
+            if not name:
+                continue
+            primary_group = str(u.get("primary_group") or name).strip()
+            if primary_group:
+                self.groups.add(primary_group)
+            supplementary = sorted(
+                {
+                    str(g).strip()
+                    for g in (u.get("supplementary_groups") or [])
+                    if str(g).strip()
+                }
+            )
+            self.groups.update(supplementary)
+            self.users[name] = {
+                "name": name,
+                "uid": u.get("uid"),
+                "gid": u.get("gid"),
+                "primary_group": primary_group or None,
+                "home": u.get("home") or f"/home/{name}",
+                "shell": u.get("shell"),
+                "gecos": u.get("gecos"),
+                "supplementary_groups": supplementary,
+            }
+
+        if snap.get("user_flatpaks") or snap.get("user_flatpak_remotes"):
+            self.notes.append(
+                "Per-user Flatpak resources were detected but are not yet rendered as native Puppet resources."
+            )
+
+    def add_managed_content(
+        self,
+        snap: Dict[str, Any],
+        *,
+        bundle_dir: str,
+        artifact_role: str,
+        module_files_dir: Path,
+    ) -> None:
+        for d in self.managed_dirs_from_snapshot(snap):
+            path = str(d.get("path") or "").strip()
+            self.add_managed_dir(
+                path,
+                owner=d.get("owner") or "root",
+                group=d.get("group") or "root",
+                mode=d.get("mode") or "0755",
+                reason=d.get("reason") or "managed_dir",
+            )
+
+        for mf in self.managed_files_from_snapshot(snap):
+            path = str(mf.get("path") or "").strip()
+            src_rel = str(mf.get("src_rel") or "").strip()
+            if not path or not src_rel:
+                continue
+            module_rel = _copy_artifact(
+                bundle_dir, artifact_role, src_rel, module_files_dir
+            )
+            if not module_rel:
+                self.notes.append(
+                    f"Skipped {path}: harvested artifact {artifact_role}/{src_rel} was not present."
+                )
+                continue
+            self.add_managed_file(
+                path,
+                owner=mf.get("owner") or "root",
+                group=mf.get("group") or "root",
+                mode=mf.get("mode") or "0644",
+                source=_source_uri(self.module_name, module_rel),
+                reason=mf.get("reason") or "managed_file",
+            )
+
+        for ml in self.managed_links_from_snapshot(snap):
+            path = str(ml.get("path") or "").strip()
+            target = str(ml.get("target") or "").strip()
+            if not path or not target:
+                continue
+            self.add_managed_link(
+                path,
+                target=target,
+                reason=ml.get("reason") or "managed_link",
+            )
+
+        self.remove_directory_resource_conflicts()
 
 
 # https://help.puppet.com/core/current/Content/PuppetCore/lang_reserved_words.htm
@@ -99,230 +220,18 @@ def _source_uri(module_name: str, module_rel: str) -> str:
     return f"puppet:///modules/{module_name}/{module_rel}"
 
 
-def _roles(state: Dict[str, Any]) -> Dict[str, Any]:
-    roles = state.get("roles")
-    return roles if isinstance(roles, dict) else {}
-
-
-def _inventory_packages(state: Dict[str, Any]) -> Dict[str, Any]:
-    inventory = state.get("inventory")
-    if not isinstance(inventory, dict):
-        return {}
-    packages = inventory.get("packages")
-    return packages if isinstance(packages, dict) else {}
-
-
-def _package_section_label(
-    package_role: Dict[str, Any], inventory_packages: Dict[str, Any]
-) -> str:
-    pkg = str(package_role.get("package") or "").strip()
-    inv = inventory_packages.get(pkg) or {}
-    candidates: List[str] = []
-    for value in (package_role.get("section"), inv.get("section"), inv.get("group")):
-        if isinstance(value, str) and value.strip():
-            candidates.append(value.strip())
-    for inst in inv.get("installations", []) or []:
-        if not isinstance(inst, dict):
-            continue
-        for key in ("section", "group"):
-            value = inst.get(key)
-            if isinstance(value, str) and value.strip():
-                candidates.append(value.strip())
-    for value in candidates:
-        if value.lower() not in {"(none)", "none", "unspecified"}:
-            return value
-    return "misc"
-
-
-def _section_label_for_packages(
-    packages: List[str], inventory_packages: Dict[str, Any]
-) -> str:
-    for pkg in packages or []:
-        label = _package_section_label({"package": pkg}, inventory_packages)
-        if label and label.lower() != "misc":
-            return label
-    return "misc"
-
-
-class _PuppetRole:
-    def __init__(self, role_name: str) -> None:
-        self.role_name = role_name
-        self.module_name = _puppet_name(role_name, fallback="enroll_role")
-        self.packages: Set[str] = set()
-        self.groups: Set[str] = set()
-        self.users: Dict[str, Dict[str, Any]] = {}
-        self.dirs: Dict[str, Dict[str, Any]] = {}
-        self.files: Dict[str, Dict[str, Any]] = {}
-        self.links: Dict[str, Dict[str, Any]] = {}
-        self.services: Dict[str, Dict[str, Any]] = {}
-        self.notes: List[str] = []
-
-    def has_resources(self) -> bool:
-        return bool(
-            self.packages
-            or self.groups
-            or self.users
-            or self.dirs
-            or self.files
-            or self.links
-            or self.services
-            or self.notes
-        )
-
-
-def _role_order_key(role: str) -> tuple[int, str]:
-    # Keep broadly similar ordering to generated Ansible playbooks: package/config
-    # scaffolding first, then services/users, then host-specific runtime state.
-    priority = {
-        "apt_config": 10,
-        "dnf_config": 11,
-        "etc_custom": 80,
-        "usr_local_custom": 81,
-        "extra_paths": 82,
-        "users": 90,
-        "sysctl": 95,
-        "firewall_runtime": 99,
-    }
-    return (priority.get(role, 50), role)
-
-
-def _add_managed_content(
-    prole: _PuppetRole,
-    snap: Dict[str, Any],
-    *,
-    bundle_dir: str,
-    artifact_role: str,
-    module_files_dir: Path,
-) -> None:
-    for d in snap.get("managed_dirs", []) or []:
-        if not isinstance(d, dict):
-            continue
-        path = str(d.get("path") or "").strip()
-        if not path:
-            continue
-        prole.dirs.setdefault(
-            path,
-            {
-                "owner": d.get("owner") or "root",
-                "group": d.get("group") or "root",
-                "mode": d.get("mode") or "0755",
-                "reason": d.get("reason") or "managed_dir",
-            },
-        )
-
-    for mf in snap.get("managed_files", []) or []:
-        if not isinstance(mf, dict):
-            continue
-        path = str(mf.get("path") or "").strip()
-        src_rel = str(mf.get("src_rel") or "").strip()
-        if not path or not src_rel:
-            continue
-        module_rel = _copy_artifact(
-            bundle_dir, artifact_role, src_rel, module_files_dir
-        )
-        if not module_rel:
-            prole.notes.append(
-                f"Skipped {path}: harvested artifact {artifact_role}/{src_rel} was not present."
-            )
-            continue
-        prole.files.setdefault(
-            path,
-            {
-                "owner": mf.get("owner") or "root",
-                "group": mf.get("group") or "root",
-                "mode": mf.get("mode") or "0644",
-                "source": _source_uri(prole.module_name, module_rel),
-                "reason": mf.get("reason") or "managed_file",
-            },
-        )
-
-    for ml in snap.get("managed_links", []) or []:
-        if not isinstance(ml, dict):
-            continue
-        path = str(ml.get("path") or "").strip()
-        target = str(ml.get("target") or "").strip()
-        if not path or not target:
-            continue
-        prole.links.setdefault(
-            path,
-            {
-                "target": target,
-                "reason": ml.get("reason") or "managed_link",
-            },
-        )
-
-    for path in set(prole.files) | set(prole.links):
-        prole.dirs.pop(path, None)
-
-
-def _build_users_role(prole: _PuppetRole, snap: Dict[str, Any]) -> None:
-    for u in snap.get("users", []) or []:
-        if not isinstance(u, dict):
-            continue
-        name = str(u.get("name") or "").strip()
-        if not name:
-            continue
-        primary_group = str(u.get("primary_group") or name).strip()
-        if primary_group:
-            prole.groups.add(primary_group)
-        supplementary = sorted(
-            {
-                str(g).strip()
-                for g in (u.get("supplementary_groups") or [])
-                if str(g).strip()
-            }
-        )
-        prole.groups.update(supplementary)
-        prole.users[name] = {
-            "name": name,
-            "uid": u.get("uid"),
-            "gid": u.get("gid"),
-            "primary_group": primary_group or None,
-            "home": u.get("home") or f"/home/{name}",
-            "shell": u.get("shell"),
-            "gecos": u.get("gecos"),
-            "supplementary_groups": supplementary,
-        }
-
-    if snap.get("user_flatpaks") or snap.get("user_flatpak_remotes"):
-        prole.notes.append(
-            "Per-user Flatpak resources were detected but are not yet rendered as native Puppet resources."
-        )
-
-
-def _build_service_role(prole: _PuppetRole, snap: Dict[str, Any]) -> None:
-    for pkg in snap.get("packages", []) or []:
-        pkg_s = str(pkg or "").strip()
-        if pkg_s:
-            prole.packages.add(pkg_s)
-    unit = str(snap.get("unit") or "").strip()
-    if unit:
-        unit_file_state = str(snap.get("unit_file_state") or "")
-        prole.services[unit] = {
-            "name": unit,
-            "ensure": "running" if snap.get("active_state") == "active" else "stopped",
-            "enable": unit_file_state in ("enabled", "enabled-runtime"),
-        }
-
-
-def _build_package_role(prole: _PuppetRole, snap: Dict[str, Any]) -> None:
-    pkg = str(snap.get("package") or "").strip()
-    if pkg:
-        prole.packages.add(pkg)
-
-
-def _add_flatpak_snap_notes(roles: Dict[str, Any], out: Dict[str, _PuppetRole]) -> None:
+def _add_flatpak_snap_notes(roles: Dict[str, Any], out: Dict[str, PuppetRole]) -> None:
     flatpak = roles.get("flatpak") or {}
     if isinstance(flatpak, dict) and (
         flatpak.get("system_flatpaks") or flatpak.get("remotes")
     ):
-        prole = out.setdefault("flatpak", _PuppetRole("flatpak"))
+        prole = out.setdefault("flatpak", PuppetRole("flatpak"))
         prole.notes.append(
             "Flatpak resources were detected but are not yet rendered as native Puppet resources."
         )
     snap = roles.get("snap") or {}
     if isinstance(snap, dict) and snap.get("system_snaps"):
-        prole = out.setdefault("snap", _PuppetRole("snap"))
+        prole = out.setdefault("snap", PuppetRole("snap"))
         prole.notes.append(
             "Snap resources were detected but are not yet rendered as native Puppet resources."
         )
@@ -335,15 +244,15 @@ def _collect_puppet_roles(
     *,
     fqdn: Optional[str] = None,
     no_common_roles: bool = False,
-) -> List[_PuppetRole]:
-    roles = _roles(state)
-    inventory_packages = _inventory_packages(state)
+) -> List[PuppetRole]:
+    roles = roles_from_state(state)
+    inventory_packages = inventory_packages_from_state(state)
     use_common_modules = not fqdn and not no_common_roles
-    out: Dict[str, _PuppetRole] = {}
+    out: Dict[str, PuppetRole] = {}
 
-    def ensure_role(role_name: str) -> _PuppetRole:
+    def ensure_role(role_name: str) -> PuppetRole:
         role_name = _puppet_name(role_name, fallback="enroll_role")
-        return out.setdefault(role_name, _PuppetRole(role_name))
+        return out.setdefault(role_name, PuppetRole(role_name))
 
     for key in (
         "apt_config",
@@ -361,8 +270,7 @@ def _collect_puppet_roles(
         )
         prole = ensure_role(role_name)
         module_files_dir = modules_dir / prole.module_name / "files"
-        _add_managed_content(
-            prole,
+        prole.add_managed_content(
             snap,
             bundle_dir=bundle_dir,
             artifact_role=str(snap.get("role_name") or key),
@@ -375,9 +283,8 @@ def _collect_puppet_roles(
             str(users_snap.get("role_name") or "users"), fallback="enroll_role"
         )
         prole = ensure_role(role_name)
-        _build_users_role(prole, users_snap)
-        _add_managed_content(
-            prole,
+        prole.add_users_snapshot(users_snap)
+        prole.add_managed_content(
             users_snap,
             bundle_dir=bundle_dir,
             artifact_role=str(users_snap.get("role_name") or "users"),
@@ -393,7 +300,7 @@ def _collect_puppet_roles(
         )
         if use_common_modules:
             role_name = _puppet_name(
-                _section_label_for_packages(
+                section_label_for_packages(
                     [
                         str(p).strip()
                         for p in (svc.get("packages") or [])
@@ -406,9 +313,8 @@ def _collect_puppet_roles(
         else:
             role_name = original_role_name
         prole = ensure_role(role_name)
-        _build_service_role(prole, svc)
-        _add_managed_content(
-            prole,
+        prole.add_service_snapshot(svc)
+        prole.add_managed_content(
             svc,
             bundle_dir=bundle_dir,
             artifact_role=str(svc.get("role_name") or original_role_name),
@@ -424,15 +330,14 @@ def _collect_puppet_roles(
         )
         if use_common_modules:
             role_name = _puppet_name(
-                _package_section_label(pkg, inventory_packages),
+                package_section_label(pkg, inventory_packages),
                 fallback="package_group",
             )
         else:
             role_name = original_role_name
         prole = ensure_role(role_name)
-        _build_package_role(prole, pkg)
-        _add_managed_content(
-            prole,
+        prole.add_package_snapshot(pkg)
+        prole.add_managed_content(
             pkg,
             bundle_dir=bundle_dir,
             artifact_role=str(pkg.get("role_name") or original_role_name),
@@ -459,71 +364,12 @@ def _collect_puppet_roles(
 
     _add_flatpak_snap_notes(roles, out)
 
-    puppet_roles = sorted(out.values(), key=lambda r: _role_order_key(r.role_name))
-    _dedupe_puppet_roles(puppet_roles)
+    puppet_roles = sorted(out.values(), key=lambda r: role_order_key(r.role_name))
+    resolve_catalog_conflicts(puppet_roles)
     return [r for r in puppet_roles if r.has_resources()]
 
 
-def _dedupe_puppet_roles(puppet_roles: List[_PuppetRole]) -> None:
-    """Remove duplicate catalog resources across generated Puppet classes.
-
-    Ansible can repeat the same directory task in multiple roles. Puppet cannot:
-    a resource title such as File['/etc/default'] may appear only once in the
-    compiled catalog. Keep the first declaration in manifest order and drop
-    later duplicates.
-    """
-
-    concrete_file_paths: Set[str] = set()
-    for prole in puppet_roles:
-        concrete_file_paths.update(prole.files)
-        concrete_file_paths.update(prole.links)
-
-    seen_packages: Set[str] = set()
-    seen_groups: Set[str] = set()
-    seen_users: Set[str] = set()
-    seen_dirs: Set[str] = set()
-    seen_files: Set[str] = set()
-    seen_links: Set[str] = set()
-    seen_services: Set[str] = set()
-
-    for prole in puppet_roles:
-        prole.packages = {p for p in prole.packages if p not in seen_packages}
-        seen_packages.update(prole.packages)
-
-        prole.groups = {g for g in prole.groups if g not in seen_groups}
-        seen_groups.update(prole.groups)
-
-        prole.users = {k: v for k, v in prole.users.items() if k not in seen_users}
-        seen_users.update(prole.users)
-
-        prole.dirs = {
-            k: v
-            for k, v in prole.dirs.items()
-            if k not in seen_dirs and k not in concrete_file_paths
-        }
-        seen_dirs.update(prole.dirs)
-
-        prole.files = {
-            k: v
-            for k, v in prole.files.items()
-            if k not in seen_files and k not in seen_links
-        }
-        seen_files.update(prole.files)
-
-        prole.links = {
-            k: v
-            for k, v in prole.links.items()
-            if k not in seen_links and k not in seen_files
-        }
-        seen_links.update(prole.links)
-
-        prole.services = {
-            k: v for k, v in prole.services.items() if k not in seen_services
-        }
-        seen_services.update(prole.services)
-
-
-def _render_role_class(prole: _PuppetRole) -> str:
+def _render_role_class(prole: PuppetRole) -> str:
     has_sysctl_conf = "/etc/sysctl.d/99-enroll.conf" in prole.files
     if has_sysctl_conf:
         lines: List[str] = [
@@ -643,7 +489,7 @@ def _render_role_class(prole: _PuppetRole) -> str:
     return "\n".join(lines)
 
 
-def _render_site_pp(puppet_roles: List[_PuppetRole], fqdn: Optional[str]) -> str:
+def _render_site_pp(puppet_roles: List[PuppetRole], fqdn: Optional[str]) -> str:
     node_name = _pp_quote(fqdn) if fqdn else "default"
     if not puppet_roles:
         return f"node {node_name} {{\n  # No Puppet classes were generated from this harvest.\n}}\n"
@@ -671,7 +517,7 @@ def _write_metadata(module_dir: Path, module_name: str) -> None:
     )
 
 
-def _render_readme(state: Dict[str, Any], puppet_roles: List[_PuppetRole]) -> str:
+def _render_readme(state: Dict[str, Any], puppet_roles: List[PuppetRole]) -> str:
     host = state.get("host", {}) if isinstance(state.get("host"), dict) else {}
     hostname = host.get("hostname") or "unknown"
     role_lines = (
@@ -726,7 +572,7 @@ sudo puppet apply --modulepath /path/to/generated/modules /path/to/generated/man
 ## Current limitations
 
 - Flatpak, Snap, and live firewall runtime snapshots are listed as notes when present rather than rendered as Puppet resources.
-- JinjaTurtle templating is Ansible-oriented and is not applied to Puppet output.
+- JinjaTurtle templating is currently Ansible-oriented and is not applied to Puppet output.
 - Review generated resources before applying them broadly across unlike hosts.
 
 ## Notes
@@ -735,45 +581,75 @@ sudo puppet apply --modulepath /path/to/generated/modules /path/to/generated/man
 """
 
 
-def manifest_puppet_from_bundle_dir(
+class PuppetManifestRenderer:
+    """Render Puppet modules and site manifest from a harvest bundle."""
+
+    def __init__(
+        self,
+        bundle_dir: str,
+        out_dir: str,
+        *,
+        fqdn: Optional[str] = None,
+        no_common_roles: bool = False,
+    ) -> None:
+        self.bundle_dir = bundle_dir
+        self.out_dir = out_dir
+        self.fqdn = fqdn
+        self.no_common_roles = no_common_roles
+
+    def render(self) -> None:
+        """Render Puppet modules/site.pp from a harvest bundle."""
+
+        bundle_dir = self.bundle_dir
+        out_dir = self.out_dir
+        fqdn = self.fqdn
+        no_common_roles = self.no_common_roles
+
+        state = PuppetRole.load_state(bundle_dir)
+        out = Path(out_dir)
+        if out.exists():
+            shutil.rmtree(out)
+        manifests_dir = out / "manifests"
+        modules_dir = out / "modules"
+        manifests_dir.mkdir(parents=True, exist_ok=True)
+        modules_dir.mkdir(parents=True, exist_ok=True)
+
+        puppet_roles = _collect_puppet_roles(
+            state,
+            bundle_dir,
+            modules_dir,
+            fqdn=fqdn,
+            no_common_roles=no_common_roles,
+        )
+        for prole in puppet_roles:
+            module_dir = modules_dir / prole.module_name
+            module_manifests = module_dir / "manifests"
+            module_files = module_dir / "files"
+            module_manifests.mkdir(parents=True, exist_ok=True)
+            module_files.mkdir(parents=True, exist_ok=True)
+            (module_manifests / "init.pp").write_text(
+                _render_role_class(prole), encoding="utf-8"
+            )
+            _write_metadata(module_dir, prole.module_name)
+
+        (manifests_dir / "site.pp").write_text(
+            _render_site_pp(puppet_roles, fqdn), encoding="utf-8"
+        )
+        (out / "README.md").write_text(
+            _render_readme(state, puppet_roles), encoding="utf-8"
+        )
+
+
+def manifest_from_bundle_dir(
     bundle_dir: str,
     out_dir: str,
     *,
     fqdn: Optional[str] = None,
     no_common_roles: bool = False,
 ) -> None:
-    """Render Puppet modules/site.pp from a harvest bundle."""
-
-    state = _load_state(bundle_dir)
-    out = Path(out_dir)
-    if out.exists():
-        shutil.rmtree(out)
-    manifests_dir = out / "manifests"
-    modules_dir = out / "modules"
-    manifests_dir.mkdir(parents=True, exist_ok=True)
-    modules_dir.mkdir(parents=True, exist_ok=True)
-
-    puppet_roles = _collect_puppet_roles(
-        state,
+    PuppetManifestRenderer(
         bundle_dir,
-        modules_dir,
+        out_dir,
         fqdn=fqdn,
         no_common_roles=no_common_roles,
-    )
-    for prole in puppet_roles:
-        module_dir = modules_dir / prole.module_name
-        module_manifests = module_dir / "manifests"
-        module_files = module_dir / "files"
-        module_manifests.mkdir(parents=True, exist_ok=True)
-        module_files.mkdir(parents=True, exist_ok=True)
-        (module_manifests / "init.pp").write_text(
-            _render_role_class(prole), encoding="utf-8"
-        )
-        _write_metadata(module_dir, prole.module_name)
-
-    (manifests_dir / "site.pp").write_text(
-        _render_site_pp(puppet_roles, fqdn), encoding="utf-8"
-    )
-    (out / "README.md").write_text(
-        _render_readme(state, puppet_roles), encoding="utf-8"
-    )
+    ).render()

@@ -7,6 +7,7 @@ import tarfile
 import pytest
 
 import enroll.manifest as manifest
+from enroll import ansible as ansible_mod
 
 
 def _minimal_package_state(packages):
@@ -824,7 +825,7 @@ def test_copy2_replace_overwrites_readonly_destination(tmp_path: Path):
     import os
     import stat
 
-    from enroll.manifest import _copy2_replace
+    from enroll.ansible import _copy2_replace
 
     src = tmp_path / "src"
     dst = tmp_path / "dst"
@@ -935,7 +936,7 @@ def test_manifest_includes_dnf_config_role_when_present(tmp_path: Path):
 
 
 def test_render_install_packages_tasks_contains_dnf_branch():
-    from enroll.manifest import _render_install_packages_tasks
+    from enroll.ansible import _render_install_packages_tasks
 
     txt = _render_install_packages_tasks("role", "role")
     assert "ansible.builtin.apt" in txt
@@ -1073,9 +1074,9 @@ def test_manifest_orders_cron_and_logrotate_at_playbook_tail(tmp_path: Path):
 
 
 def test_yaml_helpers_fallback_when_yaml_unavailable(monkeypatch):
-    monkeypatch.setattr(manifest, "_try_yaml", lambda: None)
-    assert manifest._yaml_load_mapping("foo: 1\n") == {}
-    out = manifest._yaml_dump_mapping({"b": 2, "a": 1})
+    monkeypatch.setattr(ansible_mod, "_try_yaml", lambda: None)
+    assert ansible_mod._yaml_load_mapping("foo: 1\n") == {}
+    out = ansible_mod._yaml_dump_mapping({"b": 2, "a": 1})
     # Best-effort fallback is key: repr(value)
     assert out.splitlines()[0].startswith("a: ")
     assert out.endswith("\n")
@@ -1090,7 +1091,7 @@ def test_copy2_replace_makes_readonly_sources_user_writable(
     # Make source read-only; copy2 preserves mode, so tmp will be read-only too.
     os.chmod(src, 0o444)
 
-    manifest._copy2_replace(str(src), str(dst))
+    ansible_mod._copy2_replace(str(src), str(dst))
 
     st = os.stat(dst, follow_symlinks=False)
     assert stat.S_IMODE(st.st_mode) & stat.S_IWUSR
@@ -1208,13 +1209,13 @@ def test_manifest_applies_jinjaturtle_to_jinjifyable_managed_file(
         __import__("json").dumps(state), encoding="utf-8"
     )
 
-    monkeypatch.setattr(manifest, "find_jinjaturtle_cmd", lambda: "jinjaturtle")
+    monkeypatch.setattr(ansible_mod, "find_jinjaturtle_cmd", lambda: "jinjaturtle")
 
     class _Res:
         template_text = "key={{ foo }}\n"
         vars_text = "foo: 123\n"
 
-    monkeypatch.setattr(manifest, "run_jinjaturtle", lambda *a, **k: _Res())
+    monkeypatch.setattr(ansible_mod, "run_jinjaturtle", lambda *a, **k: _Res())
 
     out_dir = tmp_path / "out"
     manifest.manifest(str(bundle), str(out_dir), jinjaturtle="on")
@@ -1330,7 +1331,7 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
 
 
 def test_try_yaml_with_yaml_installed():
-    result = manifest._try_yaml()
+    result = ansible_mod._try_yaml()
     # PyYAML should be installed for tests
     if result is None:
         pytest.skip("PyYAML not installed")
@@ -1347,55 +1348,55 @@ list:
   - item1
   - item2
 """
-    result = manifest._yaml_load_mapping(text)
+    result = ansible_mod._yaml_load_mapping(text)
     assert result["key1"] == "value1"
     assert result["key2"]["nested"] == "value"
     assert result["list"] == ["item1", "item2"]
 
 
 def test_yaml_load_mapping_empty():
-    result = manifest._yaml_load_mapping("")
+    result = ansible_mod._yaml_load_mapping("")
     assert result == {}
 
 
 def test_yaml_load_mapping_invalid():
-    result = manifest._yaml_load_mapping("invalid: yaml: :")
+    result = ansible_mod._yaml_load_mapping("invalid: yaml: :")
     assert result == {}
 
 
 def test_yaml_load_mapping_not_dict():
-    result = manifest._yaml_load_mapping("- item1\n- item2")
+    result = ansible_mod._yaml_load_mapping("- item1\n- item2")
     assert result == {}
 
 
 def test_yaml_load_mapping_none():
-    result = manifest._yaml_load_mapping("~")
+    result = ansible_mod._yaml_load_mapping("~")
     assert result == {}
 
 
 def test_yaml_dump_mapping_with_yaml(tmp_path: Path):
     obj = {"key1": "value1", "key2": 123}
-    result = manifest._yaml_dump_mapping(obj)
+    result = ansible_mod._yaml_dump_mapping(obj)
     assert "key1: value1" in result
     assert "key2:" in result
 
 
 def test_yaml_dump_mapping_empty():
-    result = manifest._yaml_dump_mapping({})
+    result = ansible_mod._yaml_dump_mapping({})
     # Empty dict produces '{}'
     assert result.strip() == "{}"
 
 
 def test_yaml_dump_mapping_with_nested(tmp_path: Path):
     obj = {"key1": {"nested": "value"}}
-    result = manifest._yaml_dump_mapping(obj)
+    result = ansible_mod._yaml_dump_mapping(obj)
     assert "nested:" in result
 
 
 def test_merge_mappings_overwrite_simple():
     existing = {"key1": "old", "key2": "keep"}
     incoming = {"key1": "new", "key3": "added"}
-    result = manifest._merge_mappings_overwrite(existing, incoming)
+    result = ansible_mod._merge_mappings_overwrite(existing, incoming)
     assert result["key1"] == "new"
     assert result["key2"] == "keep"
     assert result["key3"] == "added"
@@ -1404,16 +1405,16 @@ def test_merge_mappings_overwrite_simple():
 def test_merge_mappings_overwrite_nested():
     existing = {"key1": {"a": 1}}
     incoming = {"key1": {"b": 2}}
-    result = manifest._merge_mappings_overwrite(existing, incoming)
+    result = ansible_mod._merge_mappings_overwrite(existing, incoming)
     # Nested dicts are replaced, not merged
     assert result["key1"] == {"b": 2}
 
 
 def test_merge_mappings_overwrite_empty():
-    result = manifest._merge_mappings_overwrite({}, {"key": "value"})
+    result = ansible_mod._merge_mappings_overwrite({}, {"key": "value"})
     assert result == {"key": "value"}
 
-    result = manifest._merge_mappings_overwrite({"key": "value"}, {})
+    result = ansible_mod._merge_mappings_overwrite({"key": "value"}, {})
     assert result == {"key": "value"}
 
 
@@ -1422,7 +1423,7 @@ def test_copy2_replace(tmp_path: Path):
     src.write_text("content", encoding="utf-8")
     dst = tmp_path / "dst" / "subdir" / "dst.txt"
 
-    manifest._copy2_replace(str(src), str(dst))
+    ansible_mod._copy2_replace(str(src), str(dst))
 
     assert dst.exists()
     assert dst.read_text(encoding="utf-8") == "content"
@@ -1434,7 +1435,7 @@ def test_copy2_replace_preserves_metadata(tmp_path: Path):
     os.chmod(str(src), 0o644)
     dst = tmp_path / "dst.txt"
 
-    manifest._copy2_replace(str(src), str(dst))
+    ansible_mod._copy2_replace(str(src), str(dst))
 
     assert dst.exists()
     st = dst.stat()
@@ -1449,55 +1450,30 @@ def test_copy2_replace_atomic(tmp_path: Path):
     # Write initial content
     dst.write_text("old", encoding="utf-8")
 
-    manifest._copy2_replace(str(src), str(dst))
+    ansible_mod._copy2_replace(str(src), str(dst))
 
     assert dst.read_text(encoding="utf-8") == "content"
 
 
 def test_render_firewall_runtime_tasks_empty():
-    state = {"roles": {}}
-    result = manifest._render_firewall_runtime_tasks(state)
+    result = ansible_mod._render_firewall_runtime_tasks("firewall_runtime")
     # Function always returns at least a basic playbook structure
     assert isinstance(result, str)
     assert len(result) > 0
 
 
 def test_render_firewall_runtime_tasks_with_iptables():
-    state = {
-        "roles": {
-            "firewall_runtime": {
-                "role_name": "firewall_runtime",
-                "iptables_v4_save": "artifacts/firewall_runtime/iptables.save",
-            }
-        }
-    }
-    result = manifest._render_firewall_runtime_tasks(state)
+    result = ansible_mod._render_firewall_runtime_tasks("firewall_runtime")
     assert len(result) >= 1
 
 
 def test_render_firewall_runtime_tasks_with_ipset():
-    state = {
-        "roles": {
-            "firewall_runtime": {
-                "role_name": "firewall_runtime",
-                "ipset_save": "artifacts/firewall_runtime/ipset.save",
-            }
-        }
-    }
-    result = manifest._render_firewall_runtime_tasks(state)
+    result = ansible_mod._render_firewall_runtime_tasks("firewall_runtime")
     assert len(result) >= 1
 
 
 def test_render_firewall_runtime_tasks_with_ipv6():
-    state = {
-        "roles": {
-            "firewall_runtime": {
-                "role_name": "firewall_runtime",
-                "iptables_v6_save": "artifacts/firewall_runtime/ip6tables.save",
-            }
-        }
-    }
-    result = manifest._render_firewall_runtime_tasks(state)
+    result = ansible_mod._render_firewall_runtime_tasks("firewall_runtime")
     assert len(result) >= 1
 
 
@@ -1706,6 +1682,93 @@ def test_users_role_without_portable_apps_omits_community_general_tasks(tmp_path
     assert "community.general.flatpak" not in users_tasks
     assert "community.general.snap" not in users_tasks
     assert "collections:" not in users_meta
+
+
+def test_users_role_only_creates_ssh_dir_when_managed_ssh_files_exist(tmp_path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "out"
+    (bundle / "artifacts" / "users" / "alice" / ".ssh").mkdir(
+        parents=True, exist_ok=True
+    )
+    (bundle / "artifacts" / "users" / "bob").mkdir(parents=True, exist_ok=True)
+    (bundle / "artifacts" / "users" / "alice" / ".ssh" / "authorized_keys").write_text(
+        "ssh-ed25519 example alice\n", encoding="utf-8"
+    )
+    (bundle / "artifacts" / "users" / "bob" / ".bashrc").write_text(
+        "alias ll='ls -l'\n", encoding="utf-8"
+    )
+    state = {
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [
+                    {
+                        "name": "alice",
+                        "uid": 1000,
+                        "home": "/home/alice",
+                        "primary_group": "alice",
+                        "supplementary_groups": [],
+                    },
+                    {
+                        "name": "bob",
+                        "uid": 1001,
+                        "home": "/home/bob",
+                        "primary_group": "bob",
+                        "supplementary_groups": [],
+                    },
+                    {
+                        "name": "carol",
+                        "uid": 1002,
+                        "home": "/home/carol",
+                        "primary_group": "carol",
+                        "supplementary_groups": [],
+                    },
+                ],
+                "managed_files": [
+                    {
+                        "path": "/home/alice/.ssh/authorized_keys",
+                        "src_rel": "alice/.ssh/authorized_keys",
+                        "mode": "0644",
+                        "reason": "authorized_keys",
+                    },
+                    {
+                        "path": "/home/bob/.bashrc",
+                        "src_rel": "bob/.bashrc",
+                        "mode": "0644",
+                        "reason": "dangerous_user_dotfile",
+                    },
+                ],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+        },
+    }
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out))
+
+    users_defaults_text = (out / "roles" / "users" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    users_defaults = ansible_mod._yaml_load_mapping(users_defaults_text)
+    users_tasks = (out / "roles" / "users" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert users_defaults["users_ssh_dirs"] == [
+        {
+            "dest": "/home/alice/.ssh",
+            "group": "alice",
+            "mode": "0700",
+            "owner": "alice",
+        }
+    ]
+    assert 'loop: "{{ users_ssh_dirs | default([]) }}"' in users_tasks
+    assert 'path: "{{ item.ssh_dir }}"' not in users_tasks
+    assert "users_ssh_files" in users_defaults
 
 
 def test_manifest_emits_flatpak_role_even_when_no_flatpaks(tmp_path):

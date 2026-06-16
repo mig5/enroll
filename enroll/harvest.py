@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import glob
-import json
 import os
 import re
 import shutil
@@ -12,20 +11,37 @@ import time
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from . import accounts as _accounts
+from . import systemd as _systemd
 from .role_names import avoid_reserved_role_name
-from .systemd import (
-    list_enabled_services,
-    list_enabled_timers,
-    get_unit_info,
-    get_timer_info,
-    UnitQueryError,
-)
 from .fsutil import stat_triplet
 from .platform import detect_platform, get_backend
 from .ignore import IgnorePolicy
-from .pathfilter import PathFilter, expand_includes
-from .accounts import collect_non_system_users
+from .pathfilter import PathFilter
 from .version import get_enroll_version
+from .state import write_state
+
+UnitQueryError = _systemd.UnitQueryError
+
+
+def list_enabled_services() -> List[str]:
+    return _systemd.list_enabled_services()
+
+
+def list_enabled_timers() -> List[str]:
+    return _systemd.list_enabled_timers()
+
+
+def get_unit_info(unit: str) -> Any:
+    return _systemd.get_unit_info(unit)
+
+
+def get_timer_info(timer: str) -> Any:
+    return _systemd.get_timer_info(timer)
+
+
+def collect_non_system_users() -> List[Any]:
+    return _accounts.collect_non_system_users()
 
 
 @dataclass
@@ -1441,6 +1457,18 @@ def _collect_firewall_runtime_snapshot(
     )
 
 
+from .harvest_collectors import (
+    CronLogrotateCollector,
+    ExtraPathsCollector,
+    HarvestContext,
+    PackageManagerConfigCollector,
+    RuntimeStateCollector,
+    ServicePackageCollector,
+    UsersCollector,
+    UsrLocalCustomCollector,
+)
+
+
 def harvest(
     bundle_dir: str,
     policy: Optional[IgnorePolicy] = None,
@@ -1502,845 +1530,72 @@ def harvest(
         _PERSISTENT_IPTABLES_V6_GLOBS
     )
 
-    running_as_root = not hasattr(os, "geteuid") or os.geteuid() == 0
-    if not running_as_root:
-        firewall_runtime_snapshot = FirewallRuntimeSnapshot(
-            role_name="firewall_runtime",
-            notes=[
-                "Live ipset/iptables runtime capture skipped because harvest is not running as root."
-            ],
-        )
-        sysctl_snapshot = SysctlSnapshot(
-            role_name="sysctl",
-            notes=[
-                "Live sysctl runtime capture skipped because harvest is not running as root."
-            ],
-        )
-    else:
-        firewall_runtime_snapshot = _collect_firewall_runtime_snapshot(
-            bundle_dir,
-            persistent_ipset_files=persistent_ipset_files,
-            persistent_iptables_v4_files=persistent_iptables_v4_files,
-            persistent_iptables_v6_files=persistent_iptables_v6_files,
-        )
-        sysctl_snapshot = _collect_sysctl_snapshot(bundle_dir)
+    context = HarvestContext(
+        bundle_dir=bundle_dir,
+        policy=policy,
+        path_filter=path_filter,
+        platform=platform,
+        backend=backend,
+        installed_pkgs=installed_pkgs,
+        installed_names=installed_names,
+        owned_etc=owned_etc,
+        etc_owner_map=etc_owner_map,
+        topdir_to_pkgs=topdir_to_pkgs,
+        pkg_to_etc_paths=pkg_to_etc_paths,
+        captured_global=captured_global,
+    )
+
+    runtime_collection = RuntimeStateCollector(
+        context,
+        persistent_ipset_files=persistent_ipset_files,
+        persistent_iptables_v4_files=persistent_iptables_v4_files,
+        persistent_iptables_v6_files=persistent_iptables_v6_files,
+    ).collect()
+    firewall_runtime_snapshot = runtime_collection.firewall_runtime_snapshot
+    sysctl_snapshot = runtime_collection.sysctl_snapshot
 
     # The generated sysctl role owns /etc/sysctl.d/99-enroll.conf; do not also
     # capture an existing file at that path into etc_custom/package roles.
     for mf in sysctl_snapshot.managed_files:
         captured_global.add(mf.path)
 
-    def _pick_installed(cands: List[str]) -> Optional[str]:
-        for c in cands:
-            if c in installed_names:
-                return c
-        return None
+    cron_logrotate_collection = CronLogrotateCollector(context).collect()
+    cron_pkg = cron_logrotate_collection.cron_pkg
+    logrotate_pkg = cron_logrotate_collection.logrotate_pkg
+    cron_snapshot = cron_logrotate_collection.cron_snapshot
+    logrotate_snapshot = cron_logrotate_collection.logrotate_snapshot
 
-    cron_pkg = _pick_installed(
-        ["cron", "cronie", "cronie-anacron", "vixie-cron", "fcron"]
-    )
-    logrotate_pkg = _pick_installed(["logrotate"])
-
-    cron_role_name = "cron"
-    logrotate_role_name = "logrotate"
-
-    def _is_cron_path(p: str) -> bool:
-        return (
-            p == "/etc/crontab"
-            or p == "/etc/anacrontab"
-            or p in ("/etc/cron.allow", "/etc/cron.deny")
-            or p.startswith("/etc/cron.")
-            or p.startswith("/etc/cron.d/")
-            or p.startswith("/etc/anacron/")
-            or p.startswith("/var/spool/cron/")
-            or p.startswith("/var/spool/crontabs/")
-            or p.startswith("/var/spool/anacron/")
-        )
-
-    def _is_logrotate_path(p: str) -> bool:
-        return p == "/etc/logrotate.conf" or p.startswith("/etc/logrotate.d/")
-
-    cron_snapshot: Optional[PackageSnapshot] = None
-    logrotate_snapshot: Optional[PackageSnapshot] = None
-
-    if cron_pkg:
-        cron_managed: List[ManagedFile] = []
-        cron_excluded: List[ExcludedFile] = []
-        cron_notes: List[str] = []
-        cron_seen: Set[str] = set()
-
-        cron_globs = [
-            "/etc/crontab",
-            "/etc/cron.d/*",
-            "/etc/cron.hourly/*",
-            "/etc/cron.daily/*",
-            "/etc/cron.weekly/*",
-            "/etc/cron.monthly/*",
-            "/etc/cron.allow",
-            "/etc/cron.deny",
-            "/etc/anacrontab",
-            "/etc/anacron/*",
-            # user crontabs / spool state
-            "/var/spool/cron/*",
-            "/var/spool/cron/crontabs/*",
-            "/var/spool/crontabs/*",
-            "/var/spool/anacron/*",
-        ]
-        for spec in cron_globs:
-            for path in _iter_matching_files(spec):
-                if not os.path.isfile(path) or os.path.islink(path):
-                    continue
-                _capture_file(
-                    bundle_dir=bundle_dir,
-                    role_name=cron_role_name,
-                    abs_path=path,
-                    reason="system_cron",
-                    policy=policy,
-                    path_filter=path_filter,
-                    managed_out=cron_managed,
-                    excluded_out=cron_excluded,
-                    seen_role=cron_seen,
-                    seen_global=captured_global,
-                )
-
-        cron_snapshot = PackageSnapshot(
-            package=cron_pkg,
-            role_name=cron_role_name,
-            section=_package_section_from_installations(
-                installed_pkgs.get(cron_pkg, [])
-            ),
-            managed_files=cron_managed,
-            excluded=cron_excluded,
-            notes=cron_notes,
-        )
-
-    if logrotate_pkg:
-        lr_managed: List[ManagedFile] = []
-        lr_excluded: List[ExcludedFile] = []
-        lr_notes: List[str] = []
-        lr_seen: Set[str] = set()
-
-        lr_globs = [
-            "/etc/logrotate.conf",
-            "/etc/logrotate.d/*",
-        ]
-        for spec in lr_globs:
-            for path in _iter_matching_files(spec):
-                if not os.path.isfile(path) or os.path.islink(path):
-                    continue
-                _capture_file(
-                    bundle_dir=bundle_dir,
-                    role_name=logrotate_role_name,
-                    abs_path=path,
-                    reason="system_logrotate",
-                    policy=policy,
-                    path_filter=path_filter,
-                    managed_out=lr_managed,
-                    excluded_out=lr_excluded,
-                    seen_role=lr_seen,
-                    seen_global=captured_global,
-                )
-
-        logrotate_snapshot = PackageSnapshot(
-            package=logrotate_pkg,
-            role_name=logrotate_role_name,
-            section=_package_section_from_installations(
-                installed_pkgs.get(logrotate_pkg, [])
-            ),
-            managed_files=lr_managed,
-            excluded=lr_excluded,
-            notes=lr_notes,
-        )
-    # -------------------------
-    # Service roles
-    # -------------------------
-    service_snaps: List[ServiceSnapshot] = []
-    # Track alias strings (service names, package names, stems) that should map
-    # back to the service role for shared snippet attribution (cron.d/logrotate.d).
-    service_role_aliases: Dict[str, Set[str]] = {}
-    # De-dupe per-role captures (avoids duplicate tasks in manifest generation).
-    seen_by_role: Dict[str, Set[str]] = {}
-    # Managed/excluded lists keyed by role so helper services can attribute shared
-    # configuration to their parent service role.
-    managed_by_role: Dict[str, List[ManagedFile]] = {}
-    excluded_by_role: Dict[str, List[ExcludedFile]] = {}
-
-    enabled_services = list_enabled_services()
-
-    # Avoid role-name collisions with dedicated cron/logrotate package roles.
-    if cron_snapshot is not None or logrotate_snapshot is not None:
-        blocked_roles = set()
-        if cron_snapshot is not None:
-            blocked_roles.add(cron_role_name)
-        if logrotate_snapshot is not None:
-            blocked_roles.add(logrotate_role_name)
-        enabled_services = [
-            u for u in enabled_services if _role_name_from_unit(u) not in blocked_roles
-        ]
-    enabled_set = set(enabled_services)
-
-    def _service_sort_key(unit: str) -> tuple[int, str, str]:
-        # Prefer "parent" services over helpers (e.g. NetworkManager.service before
-        # NetworkManager-dispatcher.service) so shared config lands in the main role.
-        base = unit.removesuffix(".service")
-        base = base.split("@", 1)[0]
-        return (base.count("-"), base.lower(), unit.lower())
-
-    def _parent_service_unit(unit: str) -> Optional[str]:
-        # If unit name contains '-' segments, treat dashed prefixes as potential parents.
-        # Example: NetworkManager-dispatcher.service -> NetworkManager.service (if enabled).
-        if not unit.endswith(".service"):
-            return None
-        base = unit.removesuffix(".service")
-        base = base.split("@", 1)[0]
-        parts = base.split("-")
-        for i in range(len(parts) - 1, 0, -1):
-            cand = "-".join(parts[:i]) + ".service"
-            if cand in enabled_set:
-                return cand
-        return None
-
-    parent_unit_for: Dict[str, str] = {}
-    for u in enabled_services:
-        pu = _parent_service_unit(u)
-        if pu:
-            parent_unit_for[u] = pu
-
-    for unit in sorted(enabled_services, key=_service_sort_key):
-        role = _role_name_from_unit(unit)
-        parent_unit = parent_unit_for.get(unit)
-        parent_role = _role_name_from_unit(parent_unit) if parent_unit else None
-
-        try:
-            ui = get_unit_info(unit)
-        except UnitQueryError as e:
-            # Even when we can't query the unit, keep a minimal alias mapping so
-            # shared snippets can still be attributed to this role by name.
-            service_role_aliases.setdefault(role, _hint_names(unit, set()) | {role})
-            seen_by_role.setdefault(role, set())
-            managed = managed_by_role.setdefault(role, [])
-            excluded = excluded_by_role.setdefault(role, [])
-            service_snaps.append(
-                ServiceSnapshot(
-                    unit=unit,
-                    role_name=role,
-                    packages=[],
-                    active_state=None,
-                    sub_state=None,
-                    unit_file_state=None,
-                    condition_result=None,
-                    managed_files=managed,
-                    excluded=excluded,
-                    notes=[str(e)],
-                )
-            )
-            continue
-
-        pkgs: Set[str] = set()
-        notes: List[str] = []
-        excluded = excluded_by_role.setdefault(role, [])
-        managed = managed_by_role.setdefault(role, [])
-        candidates: Dict[str, str] = {}
-
-        if ui.fragment_path:
-            p = backend.owner_of_path(ui.fragment_path)
-            if p:
-                pkgs.add(p)
-
-        for exe in ui.exec_paths:
-            p = backend.owner_of_path(exe)
-            if p:
-                pkgs.add(p)
-
-        for pth in ui.dropin_paths:
-            if pth.startswith("/etc/"):
-                candidates[pth] = "systemd_dropin"
-
-        for ef in ui.env_files:
-            ef = ef.lstrip("-")
-            if any(ch in ef for ch in "*?["):
-                for g in glob.glob(ef):
-                    if g.startswith("/etc/") and os.path.isfile(g):
-                        candidates[g] = "systemd_envfile"
-            else:
-                if ef.startswith("/etc/") and os.path.isfile(ef):
-                    candidates[ef] = "systemd_envfile"
-
-        hints = _hint_names(unit, pkgs)
-        _add_pkgs_from_etc_topdirs(hints, topdir_to_pkgs, pkgs)
-        # Keep a stable set of aliases for this service role. Include current
-        # packages as well, so that package-named snippets (e.g. cron.d or
-        # logrotate.d entries) can still be attributed back to this service.
-        service_role_aliases[role] = set(hints) | set(pkgs) | {role}
-
-        for sp in _maybe_add_specific_paths(hints, backend):
-            if not os.path.exists(sp):
-                continue
-            if sp in etc_owner_map:
-                pkgs.add(etc_owner_map[sp])
-            else:
-                candidates.setdefault(sp, "custom_specific_path")
-
-        for pkg in sorted(pkgs):
-            etc_paths = pkg_to_etc_paths.get(pkg, [])
-            for path, reason in backend.modified_paths(pkg, etc_paths).items():
-                if not os.path.isfile(path) or os.path.islink(path):
-                    continue
-                if cron_snapshot is not None and _is_cron_path(path):
-                    continue
-                if logrotate_snapshot is not None and _is_logrotate_path(path):
-                    continue
-                if backend.is_pkg_config_path(path):
-                    continue
-                candidates.setdefault(path, reason)
-
-        # Capture custom/unowned files living under /etc/<name> for this service.
-        #
-        # Historically we only captured "config-ish" files (by extension). That
-        # misses important runtime-generated artifacts like certificates and
-        # key material under service directories (e.g. /etc/openvpn/*.crt).
-        #
-        # To avoid exploding output for shared trees (e.g. /etc/systemd), keep
-        # the older "config-ish only" behaviour for known shared topdirs.
-        any_roots: List[str] = []
-        confish_roots: List[str] = []
-        for h in hints:
-            roots_for_h = [f"/etc/{h}", f"/etc/{h}.d"]
-            if h in SHARED_ETC_TOPDIRS:
-                confish_roots.extend(roots_for_h)
-            else:
-                any_roots.extend(roots_for_h)
-
-        found: List[str] = []
-        found.extend(
-            _scan_unowned_under_roots(
-                any_roots,
-                owned_etc,
-                limit=MAX_UNOWNED_FILES_PER_ROLE,
-                confish_only=False,
-            )
-        )
-        if len(found) < MAX_UNOWNED_FILES_PER_ROLE:
-            found.extend(
-                _scan_unowned_under_roots(
-                    confish_roots,
-                    owned_etc,
-                    limit=MAX_UNOWNED_FILES_PER_ROLE - len(found),
-                    confish_only=True,
-                )
-            )
-        for pth in found:
-            candidates.setdefault(pth, "custom_unowned")
-
-        if not pkgs and not candidates:
-            notes.append(
-                "No packages or /etc candidates detected (unexpected for enabled service)."
-            )
-
-        # De-dupe within this role while capturing. This also avoids emitting
-        # duplicate Ansible tasks for the same destination path.
-        # Attribute shared /etc config to the parent service role when this unit looks
-        # like a helper (e.g. NetworkManager-dispatcher.service -> NetworkManager.service).
-        for path, reason in sorted(candidates.items()):
-            dest_role = role
-            if (
-                parent_role
-                and path.startswith("/etc/")
-                and reason not in ("systemd_dropin", "systemd_envfile")
-            ):
-                dest_role = parent_role
-
-            dest_managed = managed_by_role.setdefault(dest_role, [])
-            dest_excluded = excluded_by_role.setdefault(dest_role, [])
-            dest_seen = seen_by_role.setdefault(dest_role, set())
-            _capture_file(
-                bundle_dir=bundle_dir,
-                role_name=dest_role,
-                abs_path=path,
-                reason=reason,
-                policy=policy,
-                path_filter=path_filter,
-                managed_out=dest_managed,
-                excluded_out=dest_excluded,
-                seen_role=dest_seen,
-                seen_global=captured_global,
-            )
-
-        service_snaps.append(
-            ServiceSnapshot(
-                unit=unit,
-                role_name=role,
-                packages=sorted(pkgs),
-                active_state=ui.active_state,
-                sub_state=ui.sub_state,
-                unit_file_state=ui.unit_file_state,
-                condition_result=ui.condition_result,
-                managed_files=managed,
-                excluded=excluded,
-                notes=notes,
-            )
-        )
+    service_package_collection = ServicePackageCollector(
+        context,
+        cron_snapshot=cron_snapshot,
+        logrotate_snapshot=logrotate_snapshot,
+        cron_pkg=cron_pkg,
+        logrotate_pkg=logrotate_pkg,
+    ).collect()
+    service_snaps = service_package_collection.service_snaps
+    pkg_snaps = service_package_collection.pkg_snaps
+    manual_pkgs = service_package_collection.manual_pkgs
+    service_role_aliases = service_package_collection.service_role_aliases
+    seen_by_role = service_package_collection.seen_by_role
 
     # -------------------------
-    # Enabled systemd timers
-    #
-    # Timers are typically related to a service/package, so we try to attribute
-    # timer unit overrides to their associated role rather than creating a
-    # standalone timer role. If we can't attribute a timer, it will fall back
-    # to etc_custom (if it's a custom /etc unit).
+    # Users role, Flatpak and Snap state
     # -------------------------
-    timer_extra_by_pkg: Dict[str, List[str]] = {}
-    try:
-        enabled_timers = list_enabled_timers()
-    except Exception:
-        enabled_timers = []
-
-    service_snap_by_unit: Dict[str, ServiceSnapshot] = {
-        s.unit: s for s in service_snaps
-    }
-
-    for t in sorted(enabled_timers):
-        try:
-            ti = get_timer_info(t)
-        except Exception:  # nosec
-            continue
-
-        timer_paths: List[str] = []
-        for pth in [ti.fragment_path, *ti.dropin_paths, *ti.env_files]:
-            if not pth:
-                continue
-            if not pth.startswith("/etc/"):
-                # Prefer capturing only custom/overridden units.
-                continue
-            if os.path.islink(pth) or not os.path.isfile(pth):
-                continue
-            timer_paths.append(pth)
-
-        if not timer_paths:
-            continue
-
-        # Primary attribution: timer -> trigger service role
-        snap = None
-        if ti.trigger_unit:
-            snap = service_snap_by_unit.get(ti.trigger_unit)
-
-        if snap is not None:
-            role_seen = seen_by_role.setdefault(snap.role_name, set())
-            for path in timer_paths:
-                _capture_file(
-                    bundle_dir=bundle_dir,
-                    role_name=snap.role_name,
-                    abs_path=path,
-                    reason="related_timer",
-                    policy=policy,
-                    path_filter=path_filter,
-                    managed_out=snap.managed_files,
-                    excluded_out=snap.excluded,
-                    seen_role=role_seen,
-                    seen_global=captured_global,
-                )
-            continue
-
-        # Secondary attribution: associate timer overrides with a package role
-        # (useful when a timer triggers a service that isn't enabled).
-        pkgs: Set[str] = set()
-        if ti.fragment_path:
-            p = backend.owner_of_path(ti.fragment_path)
-            if p:
-                pkgs.add(p)
-        if ti.trigger_unit and ti.trigger_unit.endswith(".service"):
-            try:
-                ui = get_unit_info(ti.trigger_unit)
-                if ui.fragment_path:
-                    p = backend.owner_of_path(ui.fragment_path)
-                    if p:
-                        pkgs.add(p)
-                for exe in ui.exec_paths:
-                    p = backend.owner_of_path(exe)
-                    if p:
-                        pkgs.add(p)
-            except Exception:  # nosec
-                pass
-
-        for pkg in pkgs:
-            timer_extra_by_pkg.setdefault(pkg, []).extend(timer_paths)
-
-    # -------------------------
-    # Manually installed package roles
-    # -------------------------
-    manual_pkgs = backend.list_manual_packages()
-    # Avoid duplicate roles: if a manual package is already managed by any service role, skip its pkg_<name> role.
-    covered_by_services: Set[str] = set()
-    for s in service_snaps:
-        for p in s.packages:
-            covered_by_services.add(p)
-
-    manual_pkgs_skipped: List[str] = []
-    pkg_snaps: List[PackageSnapshot] = []
-    simple_packages: List[str] = []  # Packages with no config/systemd/cron files
-
-    # Add dedicated cron/logrotate roles (if detected) as package roles.
-    # These roles centralise all cron/logrotate managed files so they aren't scattered
-    # across unrelated roles.
-    if cron_snapshot is not None:
-        pkg_snaps.append(cron_snapshot)
-    if logrotate_snapshot is not None:
-        pkg_snaps.append(logrotate_snapshot)
-    for pkg in sorted(manual_pkgs):
-        # Skip packages that are already managed by service roles
-        if pkg in covered_by_services:
-            manual_pkgs_skipped.append(pkg)
-            continue
-        # Skip cron/logrotate packages (they have dedicated roles)
-        if cron_snapshot is not None and pkg == cron_pkg:
-            manual_pkgs_skipped.append(pkg)
-            continue
-        if logrotate_snapshot is not None and pkg == logrotate_pkg:
-            manual_pkgs_skipped.append(pkg)
-            continue
-
-        role = _role_name_from_pkg(pkg)
-
-        notes: List[str] = []
-        excluded: List[ExcludedFile] = []
-        managed: List[ManagedFile] = []
-        candidates: Dict[str, str] = {}
-
-        for tpath in timer_extra_by_pkg.get(pkg, []):
-            candidates.setdefault(tpath, "related_timer")
-
-        etc_paths = pkg_to_etc_paths.get(pkg, [])
-        for path, reason in backend.modified_paths(pkg, etc_paths).items():
-            if not os.path.isfile(path) or os.path.islink(path):
-                continue
-            if cron_snapshot is not None and _is_cron_path(path):
-                continue
-            if logrotate_snapshot is not None and _is_logrotate_path(path):
-                continue
-            if backend.is_pkg_config_path(path):
-                continue
-            candidates.setdefault(path, reason)
-
-        topdirs = _topdirs_for_package(pkg, pkg_to_etc_paths)
-        roots: List[str] = []
-        # Collect candidate directories plus backend-specific common files.
-        for td in sorted(topdirs):
-            if td in SHARED_ETC_TOPDIRS:
-                continue
-            if backend.is_pkg_config_path(f"/etc/{td}/") or backend.is_pkg_config_path(
-                f"/etc/{td}"
-            ):
-                continue
-            roots.extend([f"/etc/{td}", f"/etc/{td}.d"])
-        roots.extend(_maybe_add_specific_paths(set(topdirs), backend))
-
-        # Capture any custom/unowned files under /etc/<topdir> for this
-        # manually-installed package. This may include runtime-generated
-        # artifacts like certificates, key files, and helper scripts which are
-        # not owned by any .deb.
-        for pth in _scan_unowned_under_roots(
-            [r for r in roots if os.path.isdir(r)],
-            owned_etc,
-            confish_only=False,
-        ):
-            candidates.setdefault(pth, "custom_unowned")
-
-        for r in roots:
-            if os.path.isfile(r) and not os.path.islink(r):
-                if r not in owned_etc and _is_confish(r):
-                    candidates.setdefault(r, "custom_specific_path")
-
-        role_seen = seen_by_role.setdefault(role, set())
-        for path, reason in sorted(candidates.items()):
-            _capture_file(
-                bundle_dir=bundle_dir,
-                role_name=role,
-                abs_path=path,
-                reason=reason,
-                policy=policy,
-                path_filter=path_filter,
-                managed_out=managed,
-                excluded_out=excluded,
-                seen_role=role_seen,
-                seen_global=captured_global,
-            )
-
-        has_config = bool(managed or excluded)
-
-        if not has_config:
-            notes.append(
-                "No changed or custom configuration detected for this package."
-            )
-            simple_packages.append(pkg)
-
-        pkg_snaps.append(
-            PackageSnapshot(
-                package=pkg,
-                role_name=role,
-                section=_package_section_from_installations(
-                    installed_pkgs.get(pkg, [])
-                ),
-                managed_files=managed,
-                managed_links=[],
-                excluded=excluded,
-                notes=notes,
-                has_config=has_config,
-            )
-        )
-
-    # -------------------------
-    # Web server enablement symlinks (nginx/apache2)
-    #
-    # Debian-style nginx/apache2 configurations often use *-enabled directories
-    # populated with symlinks pointing back into *-available. The symlinks
-    # represent the enablement state and are important to reproduce.
-    #
-    # We only harvest these when the relevant service/package has already been
-    # detected in this run (i.e. we have a role that will manage nginx/apache2).
-    # -------------------------
-
-    def _find_role_snapshot(role_name: str):
-        for s in service_snaps:
-            if s.role_name == role_name:
-                return s
-        for p in pkg_snaps:
-            if p.role_name == role_name:
-                return p
-        return None
-
-    def _capture_enabled_symlinks(role_name: str, dirs: List[str]) -> None:
-        snap = _find_role_snapshot(role_name)
-        if snap is None:
-            return
-
-        role_seen = seen_by_role.setdefault(role_name, set())
-        for d in dirs:
-            if not os.path.isdir(d):
-                continue
-            for pth in sorted(glob.glob(os.path.join(d, "*"))):
-                if not os.path.islink(pth):
-                    continue
-                _capture_link(
-                    role_name=role_name,
-                    abs_path=pth,
-                    reason="enabled_symlink",
-                    policy=policy,
-                    path_filter=path_filter,
-                    managed_out=snap.managed_links,
-                    excluded_out=snap.excluded,
-                    seen_role=role_seen,
-                    seen_global=captured_global,
-                )
-
-    _capture_enabled_symlinks(
-        "nginx",
-        [
-            "/etc/nginx/modules-enabled",
-            "/etc/nginx/sites-enabled",
-        ],
-    )
-    _capture_enabled_symlinks(
-        "apache2",
-        [
-            "/etc/apache2/conf-enabled",
-            "/etc/apache2/mods-enabled",
-            "/etc/apache2/sites-enabled",
-        ],
-    )
-
-    # -------------------------
-    # Users role (non-system users)
-    # -------------------------
-    users_notes: List[str] = []
-    users_excluded: List[ExcludedFile] = []
-    users_managed: List[ManagedFile] = []
-    users_list: List[dict] = []
-
-    try:
-        user_records = collect_non_system_users()
-    except Exception as e:
-        user_records = []
-        users_notes.append(f"Failed to enumerate users: {e!r}")
-
-    # Detect system-wide Flatpaks/Snaps and configured Flatpak remotes.
-    from .accounts import (
-        find_system_flatpak_remotes,
-        find_system_flatpaks,
-        find_system_snaps,
-        find_user_flatpak_remotes,
-    )
-
-    system_flatpaks = [asdict(f) for f in find_system_flatpaks()]
-    system_snaps = [asdict(s) for s in find_system_snaps()]
-    system_flatpak_remotes = [asdict(r) for r in find_system_flatpak_remotes()]
-    flatpak_notes: List[str] = []
-    snap_notes: List[str] = []
-    if system_flatpaks:
-        flatpak_notes.append(
-            "System-wide flatpaks detected: "
-            + ", ".join(str(f.get("name")) for f in system_flatpaks)
-        )
-    if system_snaps:
-        snap_notes.append(
-            "System-wide snaps detected: "
-            + ", ".join(str(s.get("name")) for s in system_snaps)
-        )
-
-    users_role_name = "users"
-    users_role_seen = seen_by_role.setdefault(users_role_name, set())
-
-    skel_dir = "/etc/skel"
-    auto_capture_user_dotfiles = bool(getattr(policy, "dangerous", False))
-    if user_records and not auto_capture_user_dotfiles:
-        users_notes.append(
-            "User shell dotfiles were not auto-harvested because --dangerous was not set; "
-            "use --dangerous for automatic shell-dotfile capture, or targeted --include-path patterns for safe-mode review."
-        )
-
-    user_flatpaks_map: Dict[str, List[Dict[str, Any]]] = {}
-    user_flatpak_remotes: List[Dict[str, Any]] = []
-
-    for u in user_records:
-        users_list.append(
-            {
-                "name": u.name,
-                "uid": u.uid,
-                "gid": u.gid,
-                "gecos": u.gecos,
-                "home": u.home,
-                "shell": u.shell,
-                "primary_group": u.primary_group,
-                "supplementary_groups": u.supplementary_groups,
-            }
-        )
-
-        # Copy only safe SSH public material: authorized_keys + *.pub
-        for sf in u.ssh_files:
-            reason = (
-                "authorized_keys"
-                if sf.endswith("/authorized_keys")
-                else "ssh_public_key"
-            )
-            _capture_file(
-                bundle_dir=bundle_dir,
-                role_name=users_role_name,
-                abs_path=sf,
-                reason=reason,
-                policy=policy,
-                path_filter=path_filter,
-                managed_out=users_managed,
-                excluded_out=users_excluded,
-                seen_role=users_role_seen,
-                seen_global=captured_global,
-            )
-
-        # Capture common per-user shell dotfiles only in dangerous mode. They
-        # often contain exported tokens or aliases/functions with embedded secrets.
-        home = (u.home or "").rstrip("/")
-        if home and home.startswith("/"):
-            _capture_user_shell_dotfiles(
-                bundle_dir=bundle_dir,
-                role_name=users_role_name,
-                home=home,
-                skel_dir=skel_dir,
-                enabled=auto_capture_user_dotfiles,
-                policy=policy,
-                path_filter=path_filter,
-                managed_out=users_managed,
-                excluded_out=users_excluded,
-                seen_role=users_role_seen,
-                seen_global=captured_global,
-            )
-
-            # Collect per-user Flatpak applications and remotes. Snap packages are
-            # system-wide; ~/snap/* is user data, not an install source.
-            if u.flatpaks:
-                user_flatpaks_map[u.name] = [asdict(fp) for fp in u.flatpaks]
-            user_flatpak_remotes.extend(
-                asdict(r) for r in find_user_flatpak_remotes(home, user=u.name)
-            )
-
-    users_snapshot = UsersSnapshot(
-        role_name=users_role_name,
-        users=users_list,
-        managed_files=users_managed,
-        excluded=users_excluded,
-        notes=users_notes,
-        user_flatpaks=user_flatpaks_map,
-        user_flatpak_remotes=user_flatpak_remotes,
-    )
-
-    flatpak_snapshot = FlatpakSnapshot(
-        role_name="flatpak",
-        system_flatpaks=system_flatpaks,
-        remotes=system_flatpak_remotes,
-        notes=flatpak_notes,
-    )
-
-    snap_snapshot = SnapSnapshot(
-        role_name="snap",
-        system_snaps=system_snaps,
-        notes=snap_notes,
-    )
+    users_collection = UsersCollector(context, seen_by_role).collect()
+    users_snapshot = users_collection.users_snapshot
+    flatpak_snapshot = users_collection.flatpak_snapshot
+    snap_snapshot = users_collection.snap_snapshot
 
     # -------------------------
     # Package manager config role
     #   - Debian: apt_config
     #   - Fedora/RHEL-like: dnf_config
     # -------------------------
-    apt_notes: List[str] = []
-    apt_excluded: List[ExcludedFile] = []
-    apt_managed: List[ManagedFile] = []
-    dnf_notes: List[str] = []
-    dnf_excluded: List[ExcludedFile] = []
-    dnf_managed: List[ManagedFile] = []
-
-    apt_role_name = "apt_config"
-    dnf_role_name = "dnf_config"
-
-    if backend.name == "dpkg":
-        apt_role_seen = seen_by_role.setdefault(apt_role_name, set())
-        for path, reason in _iter_apt_capture_paths():
-            _capture_file(
-                bundle_dir=bundle_dir,
-                role_name=apt_role_name,
-                abs_path=path,
-                reason=reason,
-                policy=policy,
-                path_filter=path_filter,
-                managed_out=apt_managed,
-                excluded_out=apt_excluded,
-                seen_role=apt_role_seen,
-                seen_global=captured_global,
-            )
-    elif backend.name == "rpm":
-        dnf_role_seen = seen_by_role.setdefault(dnf_role_name, set())
-        for path, reason in _iter_dnf_capture_paths():
-            _capture_file(
-                bundle_dir=bundle_dir,
-                role_name=dnf_role_name,
-                abs_path=path,
-                reason=reason,
-                policy=policy,
-                path_filter=path_filter,
-                managed_out=dnf_managed,
-                excluded_out=dnf_excluded,
-                seen_role=dnf_role_seen,
-                seen_global=captured_global,
-            )
-
-    apt_config_snapshot = AptConfigSnapshot(
-        role_name=apt_role_name,
-        managed_files=apt_managed,
-        excluded=apt_excluded,
-        notes=apt_notes,
-    )
-    dnf_config_snapshot = DnfConfigSnapshot(
-        role_name=dnf_role_name,
-        managed_files=dnf_managed,
-        excluded=dnf_excluded,
-        notes=dnf_notes,
-    )
+    package_manager_config = PackageManagerConfigCollector(
+        context, seen_by_role
+    ).collect()
+    apt_config_snapshot = package_manager_config.apt_config_snapshot
+    dnf_config_snapshot = package_manager_config.dnf_config_snapshot
 
     # -------------------------
     # etc_custom role (unowned /etc files not already attributed elsewhere)
@@ -2550,217 +1805,25 @@ def harvest(
     )
 
     # -------------------------
-    # usr_local_custom role (/usr/local/etc + /usr/local/bin scripts)
+    # usr_local_custom and extra_paths roles
     # -------------------------
-    ul_notes: List[str] = []
-    ul_excluded: List[ExcludedFile] = []
-    ul_managed: List[ManagedFile] = []
-    ul_role_name = "usr_local_custom"
-
-    # Extend the already-captured set with etc_custom.
     already_all: Set[str] = set(already)
     for mf in etc_managed:
         already_all.add(mf.path)
 
-    def _scan_usr_local_tree(
-        root: str, *, require_executable: bool, cap: int, reason: str
-    ) -> None:
-        scanned = 0
-        if not os.path.isdir(root):
-            return
-        role_seen = seen_by_role.setdefault(ul_role_name, set())
-        for dirpath, _, filenames in os.walk(root):
-            for fn in filenames:
-                path = os.path.join(dirpath, fn)
-                if path in already_all:
-                    continue
-                if not os.path.isfile(path) or os.path.islink(path):
-                    continue
-                try:
-                    owner, group, mode = stat_triplet(path)
-                except OSError:
-                    ul_excluded.append(ExcludedFile(path=path, reason="unreadable"))
-                    continue
+    usr_local_custom_snapshot = UsrLocalCustomCollector(
+        context,
+        seen_by_role,
+        already_all,
+    ).collect()
 
-                if require_executable:
-                    try:
-                        if (int(mode, 8) & 0o111) == 0:
-                            continue
-                    except ValueError:
-                        # If mode parsing fails, be conservative and skip.
-                        continue
-
-                if _capture_file(
-                    bundle_dir=bundle_dir,
-                    role_name=ul_role_name,
-                    abs_path=path,
-                    reason=reason,
-                    policy=policy,
-                    path_filter=path_filter,
-                    managed_out=ul_managed,
-                    excluded_out=ul_excluded,
-                    seen_role=role_seen,
-                    seen_global=captured_global,
-                    metadata=(owner, group, mode),
-                ):
-                    already_all.add(path)
-                    scanned += 1
-                if scanned >= cap:
-                    ul_notes.append(f"Reached file cap ({cap}) while scanning {root}.")
-                    return
-
-    # /usr/local/etc: capture all non-binary regular files (filtered by IgnorePolicy)
-    _scan_usr_local_tree(
-        "/usr/local/etc",
-        require_executable=False,
-        cap=MAX_FILES_CAP,
-        reason="usr_local_etc_custom",
-    )
-
-    # /usr/local/bin: capture executable scripts only (skip non-executable text)
-    _scan_usr_local_tree(
-        "/usr/local/bin",
-        require_executable=True,
-        cap=MAX_FILES_CAP,
-        reason="usr_local_bin_script",
-    )
-
-    usr_local_custom_snapshot = UsrLocalCustomSnapshot(
-        role_name=ul_role_name,
-        managed_files=ul_managed,
-        excluded=ul_excluded,
-        notes=ul_notes,
-    )
-
-    # -------------------------
-    # extra_paths role (user-requested includes)
-    # -------------------------
-    extra_notes: List[str] = []
-    extra_excluded: List[ExcludedFile] = []
-    extra_managed: List[ManagedFile] = []
-    extra_managed_dirs: List[ManagedDir] = []
-    extra_dir_seen: Set[str] = set()
-
-    def _walk_and_capture_dirs(root: str) -> None:
-        root = os.path.normpath(root)
-        if not root.startswith("/"):
-            root = "/" + root
-        if not os.path.isdir(root) or os.path.islink(root):
-            return
-        for dirpath, dirnames, _ in os.walk(root, followlinks=False):
-            if len(extra_managed_dirs) >= MAX_FILES_CAP:
-                extra_notes.append(
-                    f"Reached directory cap ({MAX_FILES_CAP}) while scanning {root}."
-                )
-                return
-            dirpath = os.path.normpath(dirpath)
-            if not dirpath.startswith("/"):
-                dirpath = "/" + dirpath
-            if path_filter.is_excluded(dirpath):
-                # Prune excluded subtrees.
-                dirnames[:] = []
-                continue
-            if os.path.islink(dirpath) or not os.path.isdir(dirpath):
-                dirnames[:] = []
-                continue
-
-            if dirpath not in extra_dir_seen:
-                deny = None
-                deny_dir = getattr(policy, "deny_reason_dir", None)
-                if callable(deny_dir):
-                    deny = deny_dir(dirpath)
-                else:
-                    deny = policy.deny_reason(dirpath)
-                    if deny in ("not_regular_file", "not_file", "not_regular"):
-                        deny = None
-                if not deny:
-                    try:
-                        owner, group, mode = stat_triplet(dirpath)
-                        extra_managed_dirs.append(
-                            ManagedDir(
-                                path=dirpath,
-                                owner=owner,
-                                group=group,
-                                mode=mode,
-                                reason="user_include_dir",
-                            )
-                        )
-                    except OSError:
-                        pass
-                extra_dir_seen.add(dirpath)
-
-            # Prune excluded dirs and symlinks early.
-            pruned: List[str] = []
-            for d in dirnames:
-                p = os.path.join(dirpath, d)
-                if os.path.islink(p) or path_filter.is_excluded(p):
-                    continue
-                pruned.append(d)
-            dirnames[:] = pruned
-
-    extra_role_name = "extra_paths"
-    extra_role_seen = seen_by_role.setdefault(extra_role_name, set())
-
-    include_specs = list(include_paths or [])
-    exclude_specs = list(exclude_paths or [])
-
-    # If any include pattern points at a directory, capture that directory tree's
-    # ownership/mode so the manifest can recreate it accurately.
-    include_pats = path_filter.iter_include_patterns()
-    for pat in include_pats:
-        if pat.kind == "prefix":
-            p = pat.value
-            if os.path.isdir(p) and not os.path.islink(p):
-                _walk_and_capture_dirs(p)
-        elif pat.kind == "glob":
-            for h in glob.glob(pat.value, recursive=True):
-                if os.path.isdir(h) and not os.path.islink(h):
-                    _walk_and_capture_dirs(h)
-
-    if include_specs:
-        extra_notes.append("User include patterns:")
-        extra_notes.extend([f"- {p}" for p in include_specs])
-    if exclude_specs:
-        extra_notes.append("User exclude patterns:")
-        extra_notes.extend([f"- {p}" for p in exclude_specs])
-
-    included_files: List[str] = []
-    if include_specs:
-        files, inc_notes = expand_includes(
-            path_filter.iter_include_patterns(),
-            exclude=path_filter,
-            max_files=MAX_FILES_CAP,
-        )
-        included_files = files
-        extra_notes.extend(inc_notes)
-
-    for path in included_files:
-        if path in already_all:
-            continue
-
-        if _capture_file(
-            bundle_dir=bundle_dir,
-            role_name=extra_role_name,
-            abs_path=path,
-            reason="user_include",
-            policy=policy,
-            path_filter=path_filter,
-            managed_out=extra_managed,
-            excluded_out=extra_excluded,
-            seen_role=extra_role_seen,
-            seen_global=captured_global,
-        ):
-            already_all.add(path)
-
-    extra_paths_snapshot = ExtraPathsSnapshot(
-        role_name=extra_role_name,
-        include_patterns=include_specs,
-        exclude_patterns=exclude_specs,
-        managed_dirs=extra_managed_dirs,
-        managed_files=extra_managed,
-        excluded=extra_excluded,
-        notes=extra_notes,
-    )
+    extra_paths_snapshot = ExtraPathsCollector(
+        context,
+        seen_by_role,
+        already_all,
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
+    ).collect()
 
     # -------------------------
     # Inventory: packages (SBOM-ish)
@@ -2904,7 +1967,4 @@ def harvest(
         },
     }
 
-    state_path = os.path.join(bundle_dir, "state.json")
-    with open(state_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
-    return state_path
+    return str(write_state(bundle_dir, state))

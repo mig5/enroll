@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import enroll.manifest as manifest_mod
+from enroll import ansible as ansible_mod
 from enroll.jinjaturtle import JinjifyResult
 
 
@@ -106,7 +107,7 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
 
     # Pretend jinjaturtle exists.
     monkeypatch.setattr(
-        manifest_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
+        ansible_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
     )
 
     # Stub jinjaturtle output.
@@ -119,7 +120,7 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
             vars_text="foo_key: 1\n",
         )
 
-    monkeypatch.setattr(manifest_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+    monkeypatch.setattr(ansible_mod, "run_jinjaturtle", fake_run_jinjaturtle)
 
     manifest_mod.manifest(str(bundle), str(out), jinjaturtle="on")
 

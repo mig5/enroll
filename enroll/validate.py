@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import jsonschema
 
 from .diff import BundleRef, _bundle_from_input
+from .state import load_state
 
 
 @dataclass
@@ -153,7 +154,7 @@ def validate_harvest(
             )
 
         try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = load_state(bundle.dir)
         except Exception as e:  # noqa: BLE001
             return ValidationResult(
                 errors=[f"failed to parse state.json: {e!r}"], warnings=[]
