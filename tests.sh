@@ -1,75 +1,211 @@
 #!/bin/bash
 
-set -eo pipefail
+set -Eeuo pipefail
 
-# Pytests
-poetry run pytest -vvvv --cov=enroll --cov-report=term-missing --disable-warnings
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TMP_PARENT="${TMPDIR:-/tmp}"
+KEEP_WORKDIR=0
+if [[ -n "${ENROLL_TEST_WORKDIR:-}" ]]; then
+  WORK_DIR="${ENROLL_TEST_WORKDIR}"
+  KEEP_WORKDIR=1
+  mkdir -p "${WORK_DIR}"
+else
+  WORK_DIR="$(mktemp -d "${TMP_PARENT%/}/enroll-tests.XXXXXX")"
+fi
 
-BUNDLE_DIR="/tmp/bundle"
-ANSIBLE_DIR="/tmp/ansible"
-PUPPET_DIR="/tmp/puppet"
-rm -rf "${BUNDLE_DIR}" "${ANSIBLE_DIR}" "${PUPPET_DIR}"
+BUNDLE_DIR="${WORK_DIR}/bundle"
+BUNDLE_DIFF_DIR="${WORK_DIR}/bundle-diff"
+ANSIBLE_DIR="${WORK_DIR}/ansible"
+ANSIBLE_NO_COMMON_DIR="${WORK_DIR}/ansible-no-common"
+ANSIBLE_FQDN_DIR="${WORK_DIR}/ansible-fqdn"
+PUPPET_DIR="${WORK_DIR}/puppet"
+PUPPET_FQDN_DIR="${WORK_DIR}/puppet-fqdn"
+SALT_DIR="${WORK_DIR}/salt"
+SALT_FQDN_DIR="${WORK_DIR}/salt-fqdn"
+TEST_FQDN="${ENROLL_TEST_FQDN:-enroll-ci.example.test}"
 
-# Install something that has symlinks like apache2,
-# to extend the manifests that will be linted later
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2
+cleanup() {
+  if [[ "${KEEP_WORKDIR}" -eq 0 ]]; then
+    rm -rf "${WORK_DIR}"
+  else
+    printf '\nKeeping ENROLL_TEST_WORKDIR: %s\n' "${WORK_DIR}"
+  fi
+}
+trap cleanup EXIT
 
-# Generate data
-poetry run \
-	enroll single-shot \
-	  --harvest "${BUNDLE_DIR}" \
-	  --out "${ANSIBLE_DIR}"
+section() {
+  printf '\n================================================================================\n'
+  printf '%s\n' "$1"
+  printf '================================================================================\n'
+}
 
-# Analyse
-poetry run \
-	enroll explain "${BUNDLE_DIR}"
-poetry run \
-        enroll explain "${BUNDLE_DIR}" --format json | jq
+run() {
+  printf '+ '
+  printf '%q ' "$@"
+  printf '\n'
+  "$@"
+}
 
-# Validate
-poetry run \
-	enroll validate --fail-on-warnings "${BUNDLE_DIR}"
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
 
-# Install/remove something, harvest again and diff the harvests
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cowsay
-poetry run \
-	enroll harvest --out "${BUNDLE_DIR}2"
-# Validate
-poetry run \
-	enroll validate --fail-on-warnings "${BUNDLE_DIR}2"
-# Diff
-poetry run \
-	enroll diff \
-	  --old "${BUNDLE_DIR}" \
-	  --new "${BUNDLE_DIR}2" \
-	  --format json | jq
-DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge cowsay
+require_root() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    fail "tests.sh must be run as root so harvest and CM noop tests can inspect/apply system state."
+  fi
+}
 
-# No common roles mode (tested later)
-poetry run \
- 	enroll manifest \
- 	--harvest "${BUNDLE_DIR}2" \
- 	--out "${ANSIBLE_DIR}2" \
-	--no-common-roles
+require_debian_ci() {
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    if [[ "${ID:-}" != "debian" || "${VERSION_ID:-}" != "13" ]]; then
+      printf 'WARNING: tests.sh is maintained for Debian 13 CI; detected %s %s.\n' "${ID:-unknown}" "${VERSION_ID:-unknown}" >&2
+    fi
+  fi
+}
 
-# Puppet mode!
-DEBIAN_FRONTEND=noninteractive apt-get install -y puppet
-poetry run \
-        enroll single-shot \
-	--harvest "${BUNDLE_DIR}3" \
-        --out "${PUPPET_DIR}3" \
-	--target puppet
-puppet apply --modulepath "${PUPPET_DIR}3/modules" "${PUPPET_DIR}3/manifests/site.pp" --noop
+apt_update_once() {
+  if [[ -z "${APT_UPDATED:-}" ]]; then
+    section "Setup: apt metadata"
+    run apt-get update
+    APT_UPDATED=1
+  fi
+}
 
-# Ansible mode!
-builtin cd "${ANSIBLE_DIR}"
-# Lint
-ansible-lint "${ANSIBLE_DIR}"
+apt_install() {
+  apt_update_once
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+}
 
-# Run
-ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+apt_remove_purge() {
+  run env DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge "$@"
+}
 
-# Test the --no-common-roles mode
-builtin cd "${ANSIBLE_DIR}2"
-ls "${ANSIBLE_DIR}2/roles"
-ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+require_cmd() {
+  local cmd="$1"
+  local hint="$2"
+  if ! command -v "${cmd}" >/dev/null 2>&1; then
+    fail "Required command '${cmd}' was not found. ${hint}"
+  fi
+}
+
+ensure_ansible() {
+  if ! command -v ansible-playbook >/dev/null 2>&1 || ! command -v ansible-lint >/dev/null 2>&1; then
+    apt_install ansible ansible-lint
+  fi
+  require_cmd ansible-playbook "Install the Debian ansible package."
+  require_cmd ansible-lint "Install the Debian ansible-lint package."
+}
+
+ensure_puppet() {
+  if ! command -v puppet >/dev/null 2>&1; then
+    apt_install puppet || apt_install puppet-agent
+  fi
+  require_cmd puppet "Install Puppet before running the Puppet noop integration tests."
+}
+
+ensure_salt() {
+  if ! command -v salt-call >/dev/null 2>&1; then
+    apt_install salt-minion || true
+  fi
+  require_cmd salt-call "Install Salt's salt-call binary before running the Salt noop integration tests. On Debian 13 this may require configuring the upstream Salt/Broadcom package repository first."
+}
+
+run_pytests() {
+  section "Python unit tests"
+  cd "${PROJECT_ROOT}"
+  run poetry run pytest -vvvv --cov=enroll --cov-report=term-missing --disable-warnings
+}
+
+prepare_harvest_fixture() {
+  section "Common harvest fixture and CLI smoke checks"
+  apt_install jq apache2
+
+  cd "${PROJECT_ROOT}"
+  rm -rf "${BUNDLE_DIR}" "${BUNDLE_DIFF_DIR}"
+
+  run poetry run enroll harvest --out "${BUNDLE_DIR}"
+  run poetry run enroll explain "${BUNDLE_DIR}"
+  run bash -c "poetry run enroll explain '${BUNDLE_DIR}' --format json | jq"
+  run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIR}"
+
+  apt_install cowsay
+  run poetry run enroll harvest --out "${BUNDLE_DIFF_DIR}"
+  run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIFF_DIR}"
+  run bash -c "poetry run enroll diff --old '${BUNDLE_DIR}' --new '${BUNDLE_DIFF_DIR}' --format json | jq"
+  apt_remove_purge cowsay
+}
+
+run_ansible_noop_tests() {
+  section "Ansible manifest noop tests"
+  ensure_ansible
+  cd "${PROJECT_ROOT}"
+  rm -rf "${ANSIBLE_DIR}" "${ANSIBLE_NO_COMMON_DIR}" "${ANSIBLE_FQDN_DIR}"
+
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_DIR}" --target ansible
+  run ansible-lint "${ANSIBLE_DIR}"
+  cd "${ANSIBLE_DIR}"
+  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+
+  cd "${PROJECT_ROOT}"
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_NO_COMMON_DIR}" --target ansible --no-common-roles
+  cd "${ANSIBLE_NO_COMMON_DIR}"
+  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+
+  cd "${PROJECT_ROOT}"
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_FQDN_DIR}" --target ansible --fqdn "${TEST_FQDN}"
+  cd "${ANSIBLE_FQDN_DIR}"
+  run ansible-playbook "playbooks/${TEST_FQDN}.yml" -i inventory/hosts.ini -c local --limit "${TEST_FQDN}" --check --diff
+}
+
+run_puppet_noop_tests() {
+  section "Puppet manifest noop tests"
+  ensure_puppet
+  cd "${PROJECT_ROOT}"
+  rm -rf "${PUPPET_DIR}" "${PUPPET_FQDN_DIR}"
+
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${PUPPET_DIR}" --target puppet
+  run puppet apply --modulepath "${PUPPET_DIR}/modules" "${PUPPET_DIR}/manifests/site.pp" --noop
+
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${PUPPET_FQDN_DIR}" --target puppet --fqdn "${TEST_FQDN}"
+  run puppet apply \
+    --modulepath "${PUPPET_FQDN_DIR}/modules" \
+    --hiera_config "${PUPPET_FQDN_DIR}/hiera.yaml" \
+    --certname "${TEST_FQDN}" \
+    "${PUPPET_FQDN_DIR}/manifests/site.pp" \
+    --noop
+}
+
+run_salt_noop_tests() {
+  section "Salt manifest noop tests"
+  ensure_salt
+  cd "${PROJECT_ROOT}"
+  rm -rf "${SALT_DIR}" "${SALT_FQDN_DIR}"
+
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${SALT_DIR}" --target salt
+  run salt-call --local --retcode-passthrough --file-root "${SALT_DIR}/states" state.apply test=True
+
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${SALT_FQDN_DIR}" --target salt --fqdn "${TEST_FQDN}"
+  run salt-call \
+    --local \
+    --retcode-passthrough \
+    --id "${TEST_FQDN}" \
+    --file-root "${SALT_FQDN_DIR}/states" \
+    --pillar-root "${SALT_FQDN_DIR}/pillar" \
+    state.apply test=True
+}
+
+main() {
+  require_root
+  require_debian_ci
+  run_pytests
+  prepare_harvest_fixture
+  run_ansible_noop_tests
+  run_puppet_noop_tests
+  run_salt_noop_tests
+}
+
+main "$@"
