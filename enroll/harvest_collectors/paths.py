@@ -5,13 +5,15 @@ import os
 from typing import Dict, List, Optional, Set
 
 from .. import harvest as h
-from ..harvest import (
+from ..capture import capture_file
+from ..harvest_types import (
     ExcludedFile,
     ExtraPathsSnapshot,
     ManagedDir,
     ManagedFile,
     UsrLocalCustomSnapshot,
 )
+from ..system_paths import MAX_FILES_CAP
 from ..pathfilter import expand_includes
 from .context import HarvestCollector, HarvestContext
 
@@ -38,13 +40,13 @@ class UsrLocalCustomCollector(HarvestCollector):
         self._scan_tree(
             "/usr/local/etc",
             require_executable=False,
-            cap=h.MAX_FILES_CAP,
+            cap=MAX_FILES_CAP,
             reason="usr_local_etc_custom",
         )
         self._scan_tree(
             "/usr/local/bin",
             require_executable=True,
-            cap=h.MAX_FILES_CAP,
+            cap=MAX_FILES_CAP,
             reason="usr_local_bin_script",
         )
         return UsrLocalCustomSnapshot(
@@ -86,7 +88,7 @@ class UsrLocalCustomCollector(HarvestCollector):
                     except ValueError:
                         continue
 
-                if h._capture_file(
+                if capture_file(
                     bundle_dir=self.context.bundle_dir,
                     role_name=self.role_name,
                     abs_path=path,
@@ -147,7 +149,7 @@ class ExtraPathsCollector(HarvestCollector):
             files, inc_notes = expand_includes(
                 self.context.path_filter.iter_include_patterns(),
                 exclude=self.context.path_filter,
-                max_files=h.MAX_FILES_CAP,
+                max_files=MAX_FILES_CAP,
             )
             included_files = files
             self.notes.extend(inc_notes)
@@ -156,7 +158,7 @@ class ExtraPathsCollector(HarvestCollector):
         for path in included_files:
             if path in self.already_all:
                 continue
-            if h._capture_file(
+            if capture_file(
                 bundle_dir=self.context.bundle_dir,
                 role_name=self.role_name,
                 abs_path=path,
@@ -198,9 +200,9 @@ class ExtraPathsCollector(HarvestCollector):
         if not os.path.isdir(root) or os.path.islink(root):
             return
         for dirpath, dirnames, _ in os.walk(root, followlinks=False):
-            if len(self.managed_dirs) >= h.MAX_FILES_CAP:
+            if len(self.managed_dirs) >= MAX_FILES_CAP:
                 self.notes.append(
-                    f"Reached directory cap ({h.MAX_FILES_CAP}) while scanning {root}."
+                    f"Reached directory cap ({MAX_FILES_CAP}) while scanning {root}."
                 )
                 return
             dirpath = os.path.normpath(dirpath)

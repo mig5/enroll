@@ -4,7 +4,8 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Set
 
 from .. import harvest as h
-from ..harvest import (
+from ..capture import capture_file, capture_user_shell_dotfiles
+from ..harvest_types import (
     ExcludedFile,
     FlatpakSnapshot,
     ManagedFile,
@@ -104,7 +105,7 @@ class UsersCollector(HarvestCollector):
                     if ssh_file.endswith("/authorized_keys")
                     else "ssh_public_key"
                 )
-                h._capture_file(
+                capture_file(
                     bundle_dir=self.context.bundle_dir,
                     role_name=users_role_name,
                     abs_path=ssh_file,
@@ -121,7 +122,7 @@ class UsersCollector(HarvestCollector):
             # often contain exported tokens or aliases/functions with embedded secrets.
             home = (user.home or "").rstrip("/")
             if home and home.startswith("/"):
-                h._capture_user_shell_dotfiles(
+                capture_user_shell_dotfiles(
                     bundle_dir=self.context.bundle_dir,
                     role_name=users_role_name,
                     home=home,

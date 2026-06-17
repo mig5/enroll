@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import enroll.harvest as h
+import enroll.capture as capture
+import enroll.harvest_collectors.cron_logrotate as cron_logrotate
 from enroll.platform import PlatformInfo
 from enroll.systemd import UnitInfo
 
@@ -89,7 +91,7 @@ def test_harvest_unifies_cron_and_logrotate_into_dedicated_package_roles(
         }
         return list(mapping.get(spec, []))[:cap]
 
-    monkeypatch.setattr(h, "_iter_matching_files", fake_iter_matching)
+    monkeypatch.setattr(cron_logrotate, "iter_matching_files", fake_iter_matching)
 
     # Avoid real system probing.
     monkeypatch.setattr(
@@ -128,7 +130,7 @@ def test_harvest_unifies_cron_and_logrotate_into_dedicated_package_roles(
     )
     monkeypatch.setattr(h, "collect_non_system_users", lambda: [])
     monkeypatch.setattr(
-        h,
+        capture,
         "stat_triplet",
         lambda p: ("alice" if "alice" in p else "root", "root", "0644"),
     )
@@ -139,7 +141,7 @@ def test_harvest_unifies_cron_and_logrotate_into_dedicated_package_roles(
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(files.get(abs_path, b""))
 
-    monkeypatch.setattr(h, "_copy_into_bundle", fake_copy)
+    monkeypatch.setattr(capture, "copy_into_bundle", fake_copy)
 
     state_path = h.harvest(str(bundle), policy=AllowAllPolicy())
     st = json.loads(Path(state_path).read_text(encoding="utf-8"))

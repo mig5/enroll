@@ -6,7 +6,23 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
 from .. import harvest as h
-from ..harvest import ExcludedFile, ManagedFile, PackageSnapshot, ServiceSnapshot
+from ..capture import capture_file, capture_link
+from ..harvest_types import ExcludedFile, ManagedFile, PackageSnapshot, ServiceSnapshot
+from ..package_hints import (
+    SHARED_ETC_TOPDIRS,
+    add_pkgs_from_etc_topdirs,
+    hint_names,
+    maybe_add_specific_paths,
+    package_section_from_installations,
+    role_name_from_pkg,
+    role_name_from_unit,
+)
+from ..system_paths import (
+    MAX_UNOWNED_FILES_PER_ROLE,
+    is_confish,
+    scan_unowned_under_roots,
+    topdirs_for_package,
+)
 from ..systemd import UnitQueryError
 from .context import HarvestCollector, HarvestContext
 from .cron_logrotate import CronLogrotateCollector, _is_cron_path, _is_logrotate_path
@@ -80,7 +96,7 @@ class ServicePackageCollector(HarvestCollector):
             enabled_services = [
                 u
                 for u in enabled_services
-                if h._role_name_from_unit(u) not in blocked_roles
+                if role_name_from_unit(u) not in blocked_roles
             ]
         enabled_set = set(enabled_services)
 
@@ -106,15 +122,15 @@ class ServicePackageCollector(HarvestCollector):
         }
 
         for unit in sorted(enabled_services, key=service_sort_key):
-            role = h._role_name_from_unit(unit)
+            role = role_name_from_unit(unit)
             parent_unit = parent_unit_for.get(unit)
-            parent_role = h._role_name_from_unit(parent_unit) if parent_unit else None
+            parent_role = role_name_from_unit(parent_unit) if parent_unit else None
 
             try:
                 ui = h.get_unit_info(unit)
             except UnitQueryError as e:
                 self.service_role_aliases.setdefault(
-                    role, h._hint_names(unit, set()) | {role}
+                    role, hint_names(unit, set()) | {role}
                 )
                 self.seen_by_role.setdefault(role, set())
                 managed = self.managed_by_role.setdefault(role, [])
@@ -164,11 +180,11 @@ class ServicePackageCollector(HarvestCollector):
                 elif env_file.startswith("/etc/") and os.path.isfile(env_file):
                     candidates[env_file] = "systemd_envfile"
 
-            hints = h._hint_names(unit, pkgs)
-            h._add_pkgs_from_etc_topdirs(hints, self.context.topdir_to_pkgs, pkgs)
+            hints = hint_names(unit, pkgs)
+            add_pkgs_from_etc_topdirs(hints, self.context.topdir_to_pkgs, pkgs)
             self.service_role_aliases[role] = set(hints) | set(pkgs) | {role}
 
-            for sp in h._maybe_add_specific_paths(hints, backend):
+            for sp in maybe_add_specific_paths(hints, backend):
                 if not os.path.exists(sp):
                     continue
                 if sp in self.context.etc_owner_map:
@@ -193,26 +209,26 @@ class ServicePackageCollector(HarvestCollector):
             confish_roots: List[str] = []
             for hint in hints:
                 roots_for_hint = [f"/etc/{hint}", f"/etc/{hint}.d"]
-                if hint in h.SHARED_ETC_TOPDIRS:
+                if hint in SHARED_ETC_TOPDIRS:
                     confish_roots.extend(roots_for_hint)
                 else:
                     any_roots.extend(roots_for_hint)
 
             found: List[str] = []
             found.extend(
-                h._scan_unowned_under_roots(
+                scan_unowned_under_roots(
                     any_roots,
                     self.context.owned_etc,
-                    limit=h.MAX_UNOWNED_FILES_PER_ROLE,
+                    limit=MAX_UNOWNED_FILES_PER_ROLE,
                     confish_only=False,
                 )
             )
-            if len(found) < h.MAX_UNOWNED_FILES_PER_ROLE:
+            if len(found) < MAX_UNOWNED_FILES_PER_ROLE:
                 found.extend(
-                    h._scan_unowned_under_roots(
+                    scan_unowned_under_roots(
                         confish_roots,
                         self.context.owned_etc,
-                        limit=h.MAX_UNOWNED_FILES_PER_ROLE - len(found),
+                        limit=MAX_UNOWNED_FILES_PER_ROLE - len(found),
                         confish_only=True,
                     )
                 )
@@ -236,7 +252,7 @@ class ServicePackageCollector(HarvestCollector):
                 dest_managed = self.managed_by_role.setdefault(dest_role, [])
                 dest_excluded = self.excluded_by_role.setdefault(dest_role, [])
                 dest_seen = self.seen_by_role.setdefault(dest_role, set())
-                h._capture_file(
+                capture_file(
                     bundle_dir=self.context.bundle_dir,
                     role_name=dest_role,
                     abs_path=path,
@@ -305,7 +321,7 @@ class ServicePackageCollector(HarvestCollector):
             if snap is not None:
                 role_seen = self.seen_by_role.setdefault(snap.role_name, set())
                 for path in timer_paths:
-                    h._capture_file(
+                    capture_file(
                         bundle_dir=self.context.bundle_dir,
                         role_name=snap.role_name,
                         abs_path=path,
@@ -374,7 +390,7 @@ class ServicePackageCollector(HarvestCollector):
                 manual_pkgs_skipped.append(pkg)
                 continue
 
-            role = h._role_name_from_pkg(pkg)
+            role = role_name_from_pkg(pkg)
             notes: List[str] = []
             excluded: List[ExcludedFile] = []
             managed: List[ManagedFile] = []
@@ -395,19 +411,19 @@ class ServicePackageCollector(HarvestCollector):
                     continue
                 candidates.setdefault(path, reason)
 
-            topdirs = h._topdirs_for_package(pkg, self.context.pkg_to_etc_paths)
+            topdirs = topdirs_for_package(pkg, self.context.pkg_to_etc_paths)
             roots: List[str] = []
             for topdir in sorted(topdirs):
-                if topdir in h.SHARED_ETC_TOPDIRS:
+                if topdir in SHARED_ETC_TOPDIRS:
                     continue
                 if backend.is_pkg_config_path(
                     f"/etc/{topdir}/"
                 ) or backend.is_pkg_config_path(f"/etc/{topdir}"):
                     continue
                 roots.extend([f"/etc/{topdir}", f"/etc/{topdir}.d"])
-            roots.extend(h._maybe_add_specific_paths(set(topdirs), backend))
+            roots.extend(maybe_add_specific_paths(set(topdirs), backend))
 
-            for pth in h._scan_unowned_under_roots(
+            for pth in scan_unowned_under_roots(
                 [r for r in roots if os.path.isdir(r)],
                 self.context.owned_etc,
                 confish_only=False,
@@ -416,12 +432,12 @@ class ServicePackageCollector(HarvestCollector):
 
             for root in roots:
                 if os.path.isfile(root) and not os.path.islink(root):
-                    if root not in self.context.owned_etc and h._is_confish(root):
+                    if root not in self.context.owned_etc and is_confish(root):
                         candidates.setdefault(root, "custom_specific_path")
 
             role_seen = self.seen_by_role.setdefault(role, set())
             for path, reason in sorted(candidates.items()):
-                h._capture_file(
+                capture_file(
                     bundle_dir=self.context.bundle_dir,
                     role_name=role,
                     abs_path=path,
@@ -445,7 +461,7 @@ class ServicePackageCollector(HarvestCollector):
                 PackageSnapshot(
                     package=pkg,
                     role_name=role,
-                    section=h._package_section_from_installations(
+                    section=package_section_from_installations(
                         self.context.installed_pkgs.get(pkg, [])
                     ),
                     managed_files=managed,
@@ -490,7 +506,7 @@ class ServicePackageCollector(HarvestCollector):
             for pth in sorted(glob.glob(os.path.join(directory, "*"))):
                 if not os.path.islink(pth):
                     continue
-                h._capture_link(
+                capture_link(
                     role_name=role_name,
                     abs_path=pth,
                     reason="enabled_symlink",

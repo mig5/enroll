@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 import enroll.harvest as h
+import enroll.harvest_collectors.services as services
+import enroll.capture as capture
 from enroll.platform import PlatformInfo
 from enroll.systemd import UnitInfo
 
@@ -78,7 +80,7 @@ def _base_monkeypatches(monkeypatch, *, unit: str):
 
     # Avoid walking the real filesystem.
     monkeypatch.setattr(h.os, "walk", lambda root: iter(()))
-    monkeypatch.setattr(h, "_copy_into_bundle", lambda *a, **k: None)
+    monkeypatch.setattr(capture, "copy_into_bundle", lambda *a, **k: None)
 
     # Default to a "no files exist" view of the world unless a test overrides.
     monkeypatch.setattr(h.os.path, "isfile", lambda p: False)
@@ -119,7 +121,7 @@ def test_harvest_captures_nginx_enabled_symlinks(monkeypatch, tmp_path: Path):
             return ["/etc/nginx/modules-enabled/mod-http"]
         return []
 
-    monkeypatch.setattr(h.glob, "glob", fake_glob)
+    monkeypatch.setattr(services.glob, "glob", fake_glob)
 
     state_path = h.harvest(str(bundle), policy=AllowAllPolicy())
     st = json.loads(Path(state_path).read_text(encoding="utf-8"))
@@ -158,7 +160,7 @@ def test_harvest_does_not_capture_enabled_symlinks_without_role(
         },
     )
     monkeypatch.setattr(
-        h.glob, "glob", lambda pat: ["/etc/nginx/sites-enabled/default"]
+        services.glob, "glob", lambda pat: ["/etc/nginx/sites-enabled/default"]
     )
     monkeypatch.setattr(h.os.path, "islink", lambda p: True)
     monkeypatch.setattr(h.os, "readlink", lambda p: "../sites-available/default")
@@ -186,7 +188,7 @@ def test_harvest_symlink_capture_respects_ignore_policy(monkeypatch, tmp_path: P
     monkeypatch.setattr(h.os.path, "islink", lambda p: p in links)
     monkeypatch.setattr(h.os, "readlink", lambda p: links[p])
     monkeypatch.setattr(
-        h.glob,
+        services.glob,
         "glob",
         lambda pat: (
             sorted(list(links.keys())) if pat == "/etc/nginx/sites-enabled/*" else []
@@ -251,7 +253,7 @@ def test_harvest_captures_apache2_enabled_symlinks(monkeypatch, tmp_path: Path):
             return ["/etc/apache2/conf-enabled/security.conf"]
         return []
 
-    monkeypatch.setattr(h.glob, "glob", fake_glob)
+    monkeypatch.setattr(services.glob, "glob", fake_glob)
 
     state_path = h.harvest(str(bundle), policy=AllowAllPolicy())
     st = json.loads(Path(state_path).read_text(encoding="utf-8"))

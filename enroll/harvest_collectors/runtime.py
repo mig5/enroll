@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from .. import harvest as h
-from ..harvest import FirewallRuntimeSnapshot, SysctlSnapshot
+from ..harvest_types import FirewallRuntimeSnapshot, SysctlSnapshot
 from .context import HarvestCollector, HarvestContext
 
 

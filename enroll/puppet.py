@@ -4,7 +4,9 @@ import json
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+import yaml
 
 from .cm import (
     CMModule,
@@ -87,6 +89,7 @@ class PuppetRole(CMModule):
         bundle_dir: str,
         artifact_role: str,
         module_files_dir: Path,
+        file_prefix: Optional[str] = None,
     ) -> None:
         for d in self.managed_dirs_from_snapshot(snap):
             path = str(d.get("path") or "").strip()
@@ -104,7 +107,11 @@ class PuppetRole(CMModule):
             if not path or not src_rel:
                 continue
             module_rel = _copy_artifact(
-                bundle_dir, artifact_role, src_rel, module_files_dir
+                bundle_dir,
+                artifact_role,
+                src_rel,
+                module_files_dir,
+                dst_prefix=file_prefix,
             )
             if not module_rel:
                 self.notes.append(
@@ -203,17 +210,23 @@ def _resource(
 
 
 def _copy_artifact(
-    bundle_dir: str, role: str, src_rel: str, dst_files_dir: Path
+    bundle_dir: str,
+    role: str,
+    src_rel: str,
+    dst_files_dir: Path,
+    *,
+    dst_prefix: Optional[str] = None,
 ) -> Optional[str]:
     if not role or not src_rel:
         return None
     src = Path(bundle_dir) / "artifacts" / role / src_rel
     if not src.is_file():
         return None
-    dst = dst_files_dir / src_rel
+    module_rel = Path(dst_prefix or "") / src_rel
+    dst = dst_files_dir / module_rel
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
-    return Path(src_rel).as_posix()
+    return module_rel.as_posix()
 
 
 def _source_uri(module_name: str, module_rel: str) -> str:
@@ -237,6 +250,21 @@ def _add_flatpak_snap_notes(roles: Dict[str, Any], out: Dict[str, PuppetRole]) -
         )
 
 
+def _node_data_filename(fqdn: str) -> str:
+    """Return a safe Hiera node-data filename for an FQDN/certname."""
+
+    name = str(fqdn or "").strip().replace("/", "_").replace("\\", "_")
+    return f"{name or 'node'}.yaml"
+
+
+def _node_file_prefix(fqdn: str) -> str:
+    """Return a safe module-files prefix for node-specific artifacts."""
+
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(fqdn or "").strip())
+    name = name.strip("._-") or "node"
+    return f"nodes/{name}"
+
+
 def _collect_puppet_roles(
     state: Dict[str, Any],
     bundle_dir: str,
@@ -248,6 +276,7 @@ def _collect_puppet_roles(
     roles = roles_from_state(state)
     inventory_packages = inventory_packages_from_state(state)
     use_common_modules = not fqdn and not no_common_roles
+    node_file_prefix = _node_file_prefix(fqdn) if fqdn else None
     out: Dict[str, PuppetRole] = {}
 
     def ensure_role(role_name: str) -> PuppetRole:
@@ -275,6 +304,7 @@ def _collect_puppet_roles(
             bundle_dir=bundle_dir,
             artifact_role=str(snap.get("role_name") or key),
             module_files_dir=module_files_dir,
+            file_prefix=node_file_prefix,
         )
 
     users_snap = roles.get("users") or {}
@@ -289,6 +319,7 @@ def _collect_puppet_roles(
             bundle_dir=bundle_dir,
             artifact_role=str(users_snap.get("role_name") or "users"),
             module_files_dir=modules_dir / prole.module_name / "files",
+            file_prefix=node_file_prefix,
         )
 
     for svc in roles.get("services", []) or []:
@@ -319,6 +350,7 @@ def _collect_puppet_roles(
             bundle_dir=bundle_dir,
             artifact_role=str(svc.get("role_name") or original_role_name),
             module_files_dir=modules_dir / prole.module_name / "files",
+            file_prefix=node_file_prefix,
         )
 
     for pkg in roles.get("packages", []) or []:
@@ -342,6 +374,7 @@ def _collect_puppet_roles(
             bundle_dir=bundle_dir,
             artifact_role=str(pkg.get("role_name") or original_role_name),
             module_files_dir=modules_dir / prole.module_name / "files",
+            file_prefix=node_file_prefix,
         )
 
     fw = roles.get("firewall_runtime") or {}
@@ -489,12 +522,255 @@ def _render_role_class(prole: PuppetRole) -> str:
     return "\n".join(lines)
 
 
+def _attrs_with_ensure(attrs: Dict[str, Any], ensure: str) -> Dict[str, Any]:
+    out = {"ensure": ensure}
+    out.update(attrs)
+    return out
+
+
+def _role_hiera_values(prole: PuppetRole) -> Dict[str, Any]:
+    """Return Automatic Parameter Lookup data for one generated module."""
+
+    data: Dict[str, Any] = {}
+    prefix = f"{prole.module_name}::"
+
+    if prole.packages:
+        data[f"{prefix}packages"] = sorted(prole.packages)
+
+    if prole.groups:
+        data[f"{prefix}groups"] = {
+            group: {"ensure": "present"} for group in sorted(prole.groups)
+        }
+
+    if prole.users:
+        users: Dict[str, Dict[str, Any]] = {}
+        for name in sorted(prole.users):
+            user = prole.users[name]
+            attrs: Dict[str, Any] = {"ensure": "present", "managehome": True}
+            if user.get("uid") is not None:
+                attrs["uid"] = user["uid"]
+            if user.get("primary_group"):
+                attrs["gid"] = user["primary_group"]
+            if user.get("home"):
+                attrs["home"] = user["home"]
+            if user.get("shell"):
+                attrs["shell"] = user["shell"]
+            if user.get("gecos"):
+                attrs["comment"] = user["gecos"]
+            if user.get("supplementary_groups"):
+                attrs["groups"] = list(user["supplementary_groups"])
+                attrs["membership"] = "minimum"
+            users[name] = attrs
+        data[f"{prefix}users"] = users
+
+    if prole.dirs:
+        data[f"{prefix}dirs"] = {
+            path: _attrs_with_ensure(prole.dirs[path], "directory")
+            for path in sorted(prole.dirs)
+        }
+
+    if prole.files:
+        data[f"{prefix}files"] = {
+            path: _attrs_with_ensure(prole.files[path], "file")
+            for path in sorted(prole.files)
+        }
+
+    if prole.links:
+        data[f"{prefix}links"] = {
+            path: _attrs_with_ensure(prole.links[path], "link")
+            for path in sorted(prole.links)
+        }
+
+    if prole.services:
+        data[f"{prefix}services"] = {
+            name: {
+                "ensure": prole.services[name].get("ensure") or "stopped",
+                "enable": bool(prole.services[name].get("enable")),
+            }
+            for name in sorted(prole.services)
+        }
+
+    if prole.notes:
+        data[f"{prefix}notes"] = list(prole.notes)
+
+    if "/etc/sysctl.d/99-enroll.conf" in prole.files:
+        data[f"{prefix}sysctl_apply"] = True
+        data[f"{prefix}sysctl_ignore_apply_errors"] = True
+
+    return data
+
+
+def _render_hiera_role_class(prole: PuppetRole) -> str:
+    """Render a reusable, data-driven Puppet class for --fqdn/Hiera mode."""
+
+    lines: List[str] = [
+        "# Generated by Enroll from harvest state.",
+        "# Resource data is supplied by Hiera Automatic Parameter Lookup.",
+        f"class {prole.module_name} (",
+        "  Array[String] $packages = [],",
+        "  Hash[String, Hash] $groups = {},",
+        "  Hash[String, Hash] $users = {},",
+        "  Hash[String, Hash] $dirs = {},",
+        "  Hash[String, Hash] $files = {},",
+        "  Hash[String, Hash] $links = {},",
+        "  Hash[String, Hash] $services = {},",
+        "  Array[String] $notes = [],",
+        "  Boolean $sysctl_apply = true,",
+        "  Boolean $sysctl_ignore_apply_errors = true,",
+        ") {",
+        "",
+        "  $packages.each |String $package_name| {",
+        "    package { $package_name:",
+        "      ensure => 'installed',",
+        "    }",
+        "  }",
+        "",
+        "  $groups.each |String $resource_title, Hash $attrs| {",
+        "    group { $resource_title:",
+        "      * => $attrs,",
+        "    }",
+        "  }",
+        "",
+        "  $users.each |String $resource_title, Hash $attrs| {",
+        "    user { $resource_title:",
+        "      * => $attrs,",
+        "    }",
+        "  }",
+        "",
+        "  $dirs.each |String $resource_title, Hash $attrs| {",
+        "    file { $resource_title:",
+        "      * => $attrs,",
+        "    }",
+        "  }",
+        "",
+        "  $files.each |String $resource_title, Hash $attrs| {",
+        "    file { $resource_title:",
+        "      * => $attrs,",
+        "    }",
+        "  }",
+        "",
+        "  $links.each |String $resource_title, Hash $attrs| {",
+        "    file { $resource_title:",
+        "      * => $attrs,",
+        "    }",
+        "  }",
+        "",
+        "  $services.each |String $resource_title, Hash $attrs| {",
+        "    service { $resource_title:",
+        "      * => $attrs,",
+        "    }",
+        "  }",
+        "",
+        "  if $sysctl_apply and $files.has_key('/etc/sysctl.d/99-enroll.conf') {",
+        "    exec { 'enroll-apply-sysctl':",
+        "      command     => $sysctl_ignore_apply_errors ? {",
+        "        true    => \"/bin/sh -c 'sysctl -e -p /etc/sysctl.d/99-enroll.conf || true'\",",
+        "        default => 'sysctl -e -p /etc/sysctl.d/99-enroll.conf',",
+        "      },",
+        "      path        => ['/sbin', '/usr/sbin', '/bin', '/usr/bin'],",
+        "      refreshonly => true,",
+        "      subscribe   => File['/etc/sysctl.d/99-enroll.conf'],",
+        "    }",
+        "  }",
+        "",
+        "  # Generated notes are supplied through the $notes parameter for review.",
+        "}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def _render_site_pp(puppet_roles: List[PuppetRole], fqdn: Optional[str]) -> str:
     node_name = _pp_quote(fqdn) if fqdn else "default"
     if not puppet_roles:
         return f"node {node_name} {{\n  # No Puppet classes were generated from this harvest.\n}}\n"
     includes = "\n".join(f"  include {r.module_name}" for r in puppet_roles)
     return f"node {node_name} {{\n{includes}\n}}\n"
+
+
+def _render_hiera_site_pp(node_names: List[str]) -> str:
+    lines: List[str] = [
+        "# Generated by Enroll from harvest state.",
+        "# Per-node class lists and resources are read from Hiera data.",
+        "",
+    ]
+    for node_name in node_names:
+        lines.extend(
+            [
+                f"node {_pp_quote(node_name)} {{",
+                "  $enroll_classes = lookup('enroll::classes', Array[String], 'unique', [])",
+                "  $enroll_classes.each |String $enroll_class| {",
+                "    include $enroll_class",
+                "  }",
+                "}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "node default {",
+            "  $enroll_classes = lookup('enroll::classes', Array[String], 'unique', [])",
+            "  $enroll_classes.each |String $enroll_class| {",
+            "    include $enroll_class",
+            "  }",
+            "}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _render_hiera_yaml() -> str:
+    data = {
+        "version": 5,
+        "defaults": {"datadir": "data", "data_hash": "yaml_data"},
+        "hierarchy": [
+            {
+                "name": "Enroll trusted certname node data",
+                "path": "nodes/%{trusted.certname}.yaml",
+            },
+            {
+                "name": "Enroll networking FQDN node data",
+                "path": "nodes/%{facts.networking.fqdn}.yaml",
+            },
+            {"name": "Enroll common data", "path": "common.yaml"},
+        ],
+    }
+    return yaml.safe_dump(data, sort_keys=False, explicit_start=True)
+
+
+def _write_yaml(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(data, sort_keys=True, explicit_start=True),
+        encoding="utf-8",
+    )
+
+
+def _write_hiera_node_data(
+    out: Path, fqdn: str, puppet_roles: List[PuppetRole]
+) -> Path:
+    node_data: Dict[str, Any] = {
+        "enroll::classes": [r.module_name for r in puppet_roles]
+    }
+    for prole in puppet_roles:
+        node_data.update(_role_hiera_values(prole))
+    node_path = out / "data" / "nodes" / _node_data_filename(fqdn)
+    _write_yaml(node_path, node_data)
+    common_path = out / "data" / "common.yaml"
+    if not common_path.exists():
+        _write_yaml(common_path, {"enroll::classes": []})
+    return node_path
+
+
+def _hiera_node_names(out: Path) -> List[str]:
+    nodes_dir = out / "data" / "nodes"
+    if not nodes_dir.is_dir():
+        return []
+    out_names: Set[str] = set()
+    for path in nodes_dir.glob("*.yaml"):
+        out_names.add(path.name[: -len(".yaml")])
+    return sorted(out_names)
 
 
 def _write_metadata(module_dir: Path, module_name: str) -> None:
@@ -517,9 +793,16 @@ def _write_metadata(module_dir: Path, module_name: str) -> None:
     )
 
 
-def _render_readme(state: Dict[str, Any], puppet_roles: List[PuppetRole]) -> str:
+def _render_readme(
+    state: Dict[str, Any],
+    puppet_roles: List[PuppetRole],
+    *,
+    fqdn: Optional[str] = None,
+    node_names: Optional[List[str]] = None,
+) -> str:
     host = state.get("host", {}) if isinstance(state.get("host"), dict) else {}
     hostname = host.get("hostname") or "unknown"
+    hiera_mode = bool(fqdn)
     role_lines = (
         "\n".join(
             f"- `{r.module_name}` from Enroll role `{r.role_name}`"
@@ -527,11 +810,39 @@ def _render_readme(state: Dict[str, Any], puppet_roles: List[PuppetRole]) -> str
         )
         or "- None."
     )
+    node_lines = "\n".join(f"- `{n}`" for n in (node_names or [])) or "- None."
     notes: List[str] = []
     for r in puppet_roles:
         for note in r.notes:
             notes.append(f"`{r.module_name}`: {note}")
     notes_text = "\n".join(f"- {n}" for n in notes) or "- None."
+    if hiera_mode:
+        layout = f"""- `manifests/site.pp` declares node blocks and includes classes listed in Hiera key `enroll::classes`.
+- `hiera.yaml` configures per-node lookup from `data/nodes/%{{trusted.certname}}.yaml` with a fallback to `data/common.yaml`.
+- `data/nodes/{_node_data_filename(fqdn or '')}` contains this node's class list and class parameter data.
+- `modules/<role>/manifests/init.pp` contains reusable, data-driven classes.
+- `modules/<role>/files/nodes/<fqdn>/...` contains node-specific harvested file artifacts, avoiding clashes between hosts."""
+        apply = f"""Run from this generated output directory, passing the node certname so Hiera selects the right node data:
+
+```bash
+sudo puppet apply --modulepath ./modules --hiera_config ./hiera.yaml --certname {fqdn} manifests/site.pp --noop
+```
+
+For Puppet agent/control-repo use, place this output where `hiera.yaml`, `data/`, `manifests/`, and `modules/` form the environment root. Re-running Enroll with another `--fqdn` into the same output directory adds or replaces that node's YAML without deleting existing node data."""
+    else:
+        layout = """- `manifests/site.pp` declares a `node` block and includes the generated classes in manifest order.
+- `modules/<role>/manifests/init.pp` contains resources for each generated Enroll role/snapshot or common package group.
+- `modules/<role>/files/` contains harvested file artifacts for that role or group.
+- Generated module names avoid Puppet reserved words such as `default`."""
+        apply = """Run from this generated output directory so Puppet can find `./modules`, or pass an absolute module path:
+
+```bash
+sudo puppet apply --modulepath ./modules manifests/site.pp --noop
+```
+
+```bash
+sudo puppet apply --modulepath /path/to/generated/modules /path/to/generated/manifests/site.pp --noop
+```"""
     return f"""# Enroll Puppet manifest
 
 Generated by Enroll from harvest data for `{hostname}`.
@@ -540,10 +851,11 @@ This Puppet target reuses the existing harvest state without changing harvesting
 
 ## Layout
 
-- `manifests/site.pp` declares a `node` block and includes the generated classes in manifest order.
-- `modules/<role>/manifests/init.pp` contains resources for each generated Enroll role/snapshot or common package group.
-- `modules/<role>/files/` contains harvested file artifacts for that role or group.
-- Generated module names avoid Puppet reserved words such as `default`.
+{layout}
+
+## Known nodes
+
+{node_lines if hiera_mode else '- Non-Hiera single-node output.'}
 
 ## Generated modules
 
@@ -551,15 +863,7 @@ This Puppet target reuses the existing harvest state without changing harvesting
 
 ## Apply / check
 
-Run from this generated output directory so Puppet can find `./modules`, or pass an absolute module path:
-
-```bash
-sudo puppet apply --modulepath ./modules manifests/site.pp --noop
-```
-
-```bash
-sudo puppet apply --modulepath /path/to/generated/modules /path/to/generated/manifests/site.pp --noop
-```
+{apply}
 
 ## Generated resources
 
@@ -607,7 +911,8 @@ class PuppetManifestRenderer:
 
         state = PuppetRole.load_state(bundle_dir)
         out = Path(out_dir)
-        if out.exists():
+        hiera_mode = bool(fqdn)
+        if out.exists() and not hiera_mode:
             shutil.rmtree(out)
         manifests_dir = out / "manifests"
         modules_dir = out / "modules"
@@ -628,15 +933,35 @@ class PuppetManifestRenderer:
             module_manifests.mkdir(parents=True, exist_ok=True)
             module_files.mkdir(parents=True, exist_ok=True)
             (module_manifests / "init.pp").write_text(
-                _render_role_class(prole), encoding="utf-8"
+                (
+                    _render_hiera_role_class(prole)
+                    if hiera_mode
+                    else _render_role_class(prole)
+                ),
+                encoding="utf-8",
             )
             _write_metadata(module_dir, prole.module_name)
 
-        (manifests_dir / "site.pp").write_text(
-            _render_site_pp(puppet_roles, fqdn), encoding="utf-8"
-        )
+        node_names: List[str] = []
+        if hiera_mode and fqdn:
+            (out / "hiera.yaml").write_text(_render_hiera_yaml(), encoding="utf-8")
+            _write_hiera_node_data(out, fqdn, puppet_roles)
+            node_names = _hiera_node_names(out)
+            (manifests_dir / "site.pp").write_text(
+                _render_hiera_site_pp(node_names), encoding="utf-8"
+            )
+        else:
+            (manifests_dir / "site.pp").write_text(
+                _render_site_pp(puppet_roles, fqdn), encoding="utf-8"
+            )
         (out / "README.md").write_text(
-            _render_readme(state, puppet_roles), encoding="utf-8"
+            _render_readme(
+                state,
+                puppet_roles,
+                fqdn=fqdn,
+                node_names=node_names,
+            ),
+            encoding="utf-8",
         )
 
 

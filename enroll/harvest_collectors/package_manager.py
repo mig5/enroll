@@ -3,8 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Set
 
-from .. import harvest as h
-from ..harvest import AptConfigSnapshot, DnfConfigSnapshot, ExcludedFile, ManagedFile
+from ..capture import capture_file
+from ..harvest_types import (
+    AptConfigSnapshot,
+    DnfConfigSnapshot,
+    ExcludedFile,
+    ManagedFile,
+)
+from ..system_paths import iter_apt_capture_paths, iter_dnf_capture_paths
 from .context import HarvestCollector, HarvestContext
 
 
@@ -36,8 +42,8 @@ class PackageManagerConfigCollector(HarvestCollector):
 
         if self.context.backend.name == "dpkg":
             apt_role_seen = self.seen_by_role.setdefault(apt_role_name, set())
-            for path, reason in h._iter_apt_capture_paths():
-                h._capture_file(
+            for path, reason in iter_apt_capture_paths():
+                capture_file(
                     bundle_dir=self.context.bundle_dir,
                     role_name=apt_role_name,
                     abs_path=path,
@@ -51,8 +57,8 @@ class PackageManagerConfigCollector(HarvestCollector):
                 )
         elif self.context.backend.name == "rpm":
             dnf_role_seen = self.seen_by_role.setdefault(dnf_role_name, set())
-            for path, reason in h._iter_dnf_capture_paths():
-                h._capture_file(
+            for path, reason in iter_dnf_capture_paths():
+                capture_file(
                     bundle_dir=self.context.bundle_dir,
                     role_name=dnf_role_name,
                     abs_path=path,

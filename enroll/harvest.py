@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import glob
 import os
-from importlib import import_module
 import re
 import shutil
 import shlex
 import stat
 import subprocess  # nosec
 import time
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import accounts as _accounts
 from . import systemd as _systemd
-from .role_names import avoid_reserved_role_name
 from .fsutil import stat_triplet
 from .platform import detect_platform, get_backend
 from .ignore import IgnorePolicy
@@ -22,28 +19,22 @@ from .pathfilter import PathFilter
 from .version import get_enroll_version
 from .state import write_state
 from .harvest_collectors.context import HarvestContext
+from .harvest_types import (
+    EtcCustomSnapshot,
+    ExcludedFile,
+    FirewallRuntimeSnapshot,
+    ManagedDir,
+    ManagedFile,
+    PackageSnapshot,
+    ServiceSnapshot,
+    SysctlSnapshot,
+)
+
+from .capture import capture_file
+from . import system_paths
+from .package_hints import package_section_from_installations, safe_name
 
 UnitQueryError = _systemd.UnitQueryError
-
-_COLLECTOR_REEXPORTS = {
-    "CronLogrotateCollector": ".harvest_collectors.cron_logrotate",
-    "ExtraPathsCollector": ".harvest_collectors.paths",
-    "PackageManagerConfigCollector": ".harvest_collectors.package_manager",
-    "RuntimeStateCollector": ".harvest_collectors.runtime",
-    "ServicePackageCollector": ".harvest_collectors.services",
-    "UsersCollector": ".harvest_collectors.users",
-    "UsrLocalCustomCollector": ".harvest_collectors.paths",
-}
-
-
-def __getattr__(name: str) -> Any:
-    module_name = _COLLECTOR_REEXPORTS.get(name)
-    if module_name is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = import_module(module_name, __package__)
-    value = getattr(module, name)
-    globals()[name] = value
-    return value
 
 
 def list_enabled_services() -> List[str]:
@@ -64,241 +55,6 @@ def get_timer_info(timer: str) -> Any:
 
 def collect_non_system_users() -> List[Any]:
     return _accounts.collect_non_system_users()
-
-
-@dataclass
-class ManagedFile:
-    path: str
-    src_rel: str
-    owner: str
-    group: str
-    mode: str
-    reason: str
-
-
-@dataclass
-class ManagedLink:
-    """A symlink we want to materialise on the target host.
-
-    For configuration enablement patterns (e.g. sites-enabled), the symlink is
-    meaningful state even when the link target is captured elsewhere.
-    """
-
-    path: str
-    target: str
-    reason: str
-
-
-@dataclass
-class ManagedDir:
-    path: str
-    owner: str
-    group: str
-    mode: str
-    reason: str
-
-
-@dataclass
-class ExcludedFile:
-    path: str
-    reason: str
-
-
-@dataclass
-class ServiceSnapshot:
-    unit: str
-    role_name: str
-    packages: List[str]
-    active_state: Optional[str]
-    sub_state: Optional[str]
-    unit_file_state: Optional[str]
-    condition_result: Optional[str]
-    managed_dirs: List[ManagedDir] = field(default_factory=list)
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    managed_links: List[ManagedLink] = field(default_factory=list)
-    excluded: List[ExcludedFile] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class PackageSnapshot:
-    package: str
-    role_name: str
-    section: Optional[str] = None
-    managed_dirs: List[ManagedDir] = field(default_factory=list)
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    managed_links: List[ManagedLink] = field(default_factory=list)
-    excluded: List[ExcludedFile] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-    has_config: bool = True  # False if package has no config/systemd/cron files
-
-
-@dataclass
-class UsersSnapshot:
-    role_name: str
-    users: List[dict]
-    managed_dirs: List[ManagedDir] = field(default_factory=list)
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    excluded: List[ExcludedFile] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-    user_flatpaks: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
-    user_flatpak_remotes: List[Dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass
-class FlatpakSnapshot:
-    role_name: str
-    system_flatpaks: List[Dict[str, Any]] = field(default_factory=list)
-    remotes: List[Dict[str, Any]] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class SnapSnapshot:
-    role_name: str
-    system_snaps: List[Dict[str, Any]] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class AptConfigSnapshot:
-    role_name: str
-    managed_dirs: List[ManagedDir] = field(default_factory=list)
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    excluded: List[ExcludedFile] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class DnfConfigSnapshot:
-    role_name: str
-    managed_dirs: List[ManagedDir] = field(default_factory=list)
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    excluded: List[ExcludedFile] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class EtcCustomSnapshot:
-    role_name: str
-    managed_dirs: List[ManagedDir] = field(default_factory=list)
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    excluded: List[ExcludedFile] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class UsrLocalCustomSnapshot:
-    role_name: str
-    managed_dirs: List[ManagedDir] = field(default_factory=list)
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    excluded: List[ExcludedFile] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class ExtraPathsSnapshot:
-    role_name: str
-    include_patterns: List[str] = field(default_factory=list)
-    exclude_patterns: List[str] = field(default_factory=list)
-    managed_dirs: List[ManagedDir] = field(default_factory=list)
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    managed_links: List[ManagedLink] = field(default_factory=list)
-    excluded: List[ExcludedFile] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class FirewallRuntimeSnapshot:
-    role_name: str
-    packages: List[str] = field(default_factory=list)
-    ipset_save: Optional[str] = None
-    ipset_sets: List[str] = field(default_factory=list)
-    iptables_v4_save: Optional[str] = None
-    iptables_v6_save: Optional[str] = None
-    notes: List[str] = field(default_factory=list)
-
-
-@dataclass
-class SysctlSnapshot:
-    role_name: str
-    managed_files: List[ManagedFile] = field(default_factory=list)
-    parameters: Dict[str, str] = field(default_factory=dict)
-    notes: List[str] = field(default_factory=list)
-
-
-ALLOWED_UNOWNED_EXTS = {
-    ".cfg",
-    ".cnf",
-    ".conf",
-    ".ini",
-    ".json",
-    ".link",
-    ".mount",
-    ".netdev",
-    ".network",
-    ".path",
-    ".rules",
-    ".service",
-    ".socket",
-    ".target",
-    ".timer",
-    ".toml",
-    ".yaml",
-    ".yml",
-    "",  # allow extensionless (common in /etc/default and /etc/init.d)
-}
-
-MAX_FILES_CAP = 4000
-MAX_UNOWNED_FILES_PER_ROLE = 500
-
-
-def _files_differ(a: str, b: str, *, max_bytes: int = 2_000_000) -> bool:
-    """Return True if file `a` differs from file `b`.
-
-    Best-effort and conservative:
-      - If `b` (baseline) does not exist or is not a regular file, treat as
-        "different" so we err on the side of capturing user state.
-      - If we can't stat/read either file, treat as "different" (capture will
-        later be filtered via IgnorePolicy).
-      - If files are large, avoid reading them fully.
-    """
-
-    try:
-        st_a = os.stat(a, follow_symlinks=True)
-    except OSError:
-        return True
-
-    # Refuse to do content comparisons on non-regular files.
-    if not stat.S_ISREG(st_a.st_mode):
-        return True
-
-    try:
-        st_b = os.stat(b, follow_symlinks=True)
-    except OSError:
-        return True
-
-    if not stat.S_ISREG(st_b.st_mode):
-        return True
-
-    if st_a.st_size != st_b.st_size:
-        return True
-
-    # If it's unexpectedly big, treat as different to avoid expensive reads.
-    if st_a.st_size > max_bytes:
-        return True
-
-    try:
-        with open(a, "rb") as fa, open(b, "rb") as fb:
-            while True:
-                ca = fa.read(1024 * 64)
-                cb = fb.read(1024 * 64)
-                if ca != cb:
-                    return True
-                if not ca:  # EOF on both
-                    return False
-    except OSError:
-        return True
 
 
 def _merge_parent_dirs(
@@ -374,721 +130,6 @@ def _merge_parent_dirs(
         )
 
     return [by_path[k] for k in sorted(by_path)]
-
-
-# Directories that are shared across many packages.
-# Never attribute all unowned files in these trees
-# to one single package.
-SHARED_ETC_TOPDIRS = {
-    "apparmor.d",
-    "apt",
-    "cron.d",
-    "cron.daily",
-    "cron.weekly",
-    "cron.monthly",
-    "cron.hourly",
-    "default",
-    "init.d",
-    "logrotate.d",
-    "modprobe.d",
-    "network",
-    "pam.d",
-    "ssh",
-    "ssl",
-    "sudoers.d",
-    "sysctl.d",
-    "systemd",
-    # RPM-family shared trees
-    "dnf",
-    "yum",
-    "yum.repos.d",
-    "sysconfig",
-    "pki",
-    "firewalld",
-}
-
-
-def _safe_name(s: str) -> str:
-    out: List[str] = []
-    for ch in s:
-        out.append(ch if ch.isalnum() or ch in ("_", "-") else "_")
-    return "".join(out).replace("-", "_")
-
-
-def _role_id(raw: str) -> str:
-    # normalise separators first
-    s = re.sub(r"[^A-Za-z0-9]+", "_", raw)
-    # split CamelCase -> snake_case
-    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
-    s = s.lower()
-    s = re.sub(r"_+", "_", s).strip("_")
-    if not re.match(r"^[a-z_]", s):
-        s = "r_" + s
-    return s
-
-
-def _role_name_from_unit(unit: str) -> str:
-    base = _role_id(unit.removesuffix(".service"))
-    return avoid_reserved_role_name(_safe_name(base), prefix="service")
-
-
-def _role_name_from_pkg(pkg: str) -> str:
-    return avoid_reserved_role_name(_safe_name(pkg), prefix="package")
-
-
-def _package_section_from_installations(
-    installs: List[Dict[str, str]],
-) -> Optional[str]:
-    """Return a stable package grouping label from installed package metadata.
-
-    Debian exposes this as ``Section``. RPM-family distributions have a broadly
-    similar ``Group`` tag, although modern Fedora/RHEL packages may omit it or
-    set it to ``Unspecified``.
-    """
-
-    values: Set[str] = set()
-    for inst in installs or []:
-        value = (inst.get("section") or inst.get("group") or "").strip()
-        if not value:
-            continue
-        if value.lower() in {"(none)", "none", "unspecified"}:
-            continue
-        values.add(value)
-
-    if not values:
-        return None
-    return sorted(values)[0]
-
-
-def _copy_into_bundle(
-    bundle_dir: str, role_name: str, abs_path: str, src_rel: str
-) -> None:
-    dst = os.path.join(bundle_dir, "artifacts", role_name, src_rel)
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.copy2(abs_path, dst)
-
-
-def _capture_file(
-    *,
-    bundle_dir: str,
-    role_name: str,
-    abs_path: str,
-    reason: str,
-    policy: IgnorePolicy,
-    path_filter: PathFilter,
-    managed_out: List[ManagedFile],
-    excluded_out: List[ExcludedFile],
-    seen_role: Optional[Set[str]] = None,
-    seen_global: Optional[Set[str]] = None,
-    metadata: Optional[tuple[str, str, str]] = None,
-) -> bool:
-    """Try to capture a single file into the bundle.
-
-    Returns True if the file was copied (managed), False otherwise.
-
-    * seen_role: de-dupe within a role (prevents duplicate tasks/records)
-    * seen_global: de-dupe across roles/stages (prevents multiple roles copying same path)
-    * metadata: optional (owner, group, mode) tuple to avoid re-statting
-    """
-
-    if seen_global is not None and abs_path in seen_global:
-        return False
-    if seen_role is not None and abs_path in seen_role:
-        return False
-
-    def _mark_seen() -> None:
-        if seen_role is not None:
-            seen_role.add(abs_path)
-        if seen_global is not None:
-            seen_global.add(abs_path)
-
-    if path_filter.is_excluded(abs_path):
-        excluded_out.append(ExcludedFile(path=abs_path, reason="user_excluded"))
-        _mark_seen()
-        return False
-
-    deny = policy.deny_reason(abs_path)
-    if deny:
-        excluded_out.append(ExcludedFile(path=abs_path, reason=deny))
-        _mark_seen()
-        return False
-
-    try:
-        owner, group, mode = (
-            metadata if metadata is not None else stat_triplet(abs_path)
-        )
-    except OSError:
-        excluded_out.append(ExcludedFile(path=abs_path, reason="unreadable"))
-        _mark_seen()
-        return False
-
-    src_rel = abs_path.lstrip("/")
-    try:
-        _copy_into_bundle(bundle_dir, role_name, abs_path, src_rel)
-    except OSError:
-        excluded_out.append(ExcludedFile(path=abs_path, reason="unreadable"))
-        _mark_seen()
-        return False
-
-    managed_out.append(
-        ManagedFile(
-            path=abs_path,
-            src_rel=src_rel,
-            owner=owner,
-            group=group,
-            mode=mode,
-            reason=reason,
-        )
-    )
-    _mark_seen()
-    return True
-
-
-USER_SHELL_DOTFILES_WITH_SKEL_BASELINE = [
-    (".bashrc", "user_shell_rc"),
-    (".profile", "user_profile"),
-    (".bash_logout", "user_shell_logout"),
-]
-
-USER_SHELL_DOTFILES_WITHOUT_SKEL_BASELINE = [
-    (".bash_aliases", "user_shell_aliases"),
-]
-
-
-def _capture_user_shell_dotfiles(
-    *,
-    bundle_dir: str,
-    role_name: str,
-    home: str,
-    skel_dir: str,
-    enabled: bool,
-    policy: IgnorePolicy,
-    path_filter: PathFilter,
-    managed_out: List[ManagedFile],
-    excluded_out: List[ExcludedFile],
-    seen_role: Optional[Set[str]],
-    seen_global: Optional[Set[str]],
-) -> int:
-    """Capture selected per-user shell dotfiles when explicitly enabled.
-
-    Shell startup files are useful for reproducing interactive accounts, but they
-    commonly contain exported tokens, passwords, command aliases with embedded
-    credentials, and other private context. For that reason, automatic capture is
-    gated by harvest's dangerous mode. Users who want a narrower safe-mode
-    selection can still use --include-path, which lands in the extra_paths role
-    and remains subject to IgnorePolicy content checks.
-    """
-
-    if not enabled:
-        return 0
-
-    home = (home or "").rstrip("/")
-    if not home or not home.startswith("/"):
-        return 0
-
-    captured = 0
-    max_compare_bytes = int(getattr(policy, "max_file_bytes", 256_000))
-
-    for rel, reason in USER_SHELL_DOTFILES_WITH_SKEL_BASELINE:
-        upath = os.path.join(home, rel)
-        if not os.path.isfile(upath) or os.path.islink(upath):
-            continue
-        skel_path = os.path.join(skel_dir, rel)
-        if not _files_differ(upath, skel_path, max_bytes=max_compare_bytes):
-            continue
-        if _capture_file(
-            bundle_dir=bundle_dir,
-            role_name=role_name,
-            abs_path=upath,
-            reason=reason,
-            policy=policy,
-            path_filter=path_filter,
-            managed_out=managed_out,
-            excluded_out=excluded_out,
-            seen_role=seen_role,
-            seen_global=seen_global,
-        ):
-            captured += 1
-
-    for rel, reason in USER_SHELL_DOTFILES_WITHOUT_SKEL_BASELINE:
-        upath = os.path.join(home, rel)
-        if not os.path.isfile(upath) or os.path.islink(upath):
-            continue
-        if _capture_file(
-            bundle_dir=bundle_dir,
-            role_name=role_name,
-            abs_path=upath,
-            reason=reason,
-            policy=policy,
-            path_filter=path_filter,
-            managed_out=managed_out,
-            excluded_out=excluded_out,
-            seen_role=seen_role,
-            seen_global=seen_global,
-        ):
-            captured += 1
-
-    return captured
-
-
-def _capture_link(
-    *,
-    role_name: str,
-    abs_path: str,
-    reason: str,
-    policy: IgnorePolicy,
-    path_filter: PathFilter,
-    managed_out: List[ManagedLink],
-    excluded_out: List[ExcludedFile],
-    seen_role: Optional[Set[str]] = None,
-    seen_global: Optional[Set[str]] = None,
-) -> bool:
-    """Try to capture a symlink into the manifest.
-
-    NOTE: Symlinks are *not* copied into artifacts; we record their link target
-    and materialise them via ansible.builtin.file state=link.
-    """
-
-    if seen_global is not None and abs_path in seen_global:
-        return False
-    if seen_role is not None and abs_path in seen_role:
-        return False
-
-    def _mark_seen() -> None:
-        if seen_role is not None:
-            seen_role.add(abs_path)
-        if seen_global is not None:
-            seen_global.add(abs_path)
-
-    if path_filter.is_excluded(abs_path):
-        excluded_out.append(ExcludedFile(path=abs_path, reason="user_excluded"))
-        _mark_seen()
-        return False
-
-    deny_link = getattr(policy, "deny_reason_link", None)
-    if callable(deny_link):
-        deny = deny_link(abs_path)
-    else:
-        # Fallback: apply deny_reason() but treat "not_regular_file" as acceptable
-        # for symlinks.
-        deny = policy.deny_reason(abs_path)
-        if deny in ("not_regular_file", "not_file", "not_regular"):
-            deny = None
-
-    if deny:
-        excluded_out.append(ExcludedFile(path=abs_path, reason=deny))
-        _mark_seen()
-        return False
-
-    if not os.path.islink(abs_path):
-        excluded_out.append(ExcludedFile(path=abs_path, reason="not_symlink"))
-        _mark_seen()
-        return False
-
-    try:
-        target = os.readlink(abs_path)
-    except OSError:
-        excluded_out.append(ExcludedFile(path=abs_path, reason="unreadable"))
-        _mark_seen()
-        return False
-
-    managed_out.append(ManagedLink(path=abs_path, target=target, reason=reason))
-    _mark_seen()
-    return True
-
-
-def _is_confish(path: str) -> bool:
-    base = os.path.basename(path)
-    _, ext = os.path.splitext(base)
-    return ext in ALLOWED_UNOWNED_EXTS
-
-
-def _hint_names(unit: str, pkgs: Set[str]) -> Set[str]:
-    base = unit.removesuffix(".service")
-    hints = {base}
-    if "@" in base:
-        hints.add(base.split("@", 1)[0])
-    hints |= set(pkgs)
-    hints |= {h.split(".", 1)[0] for h in list(hints) if "." in h}
-    return {h for h in hints if h}
-
-
-def _add_pkgs_from_etc_topdirs(
-    hints: Set[str], topdir_to_pkgs: Dict[str, Set[str]], pkgs: Set[str]
-) -> None:
-    """Expand a service's package set using dpkg-owned /etc top-level dirs.
-
-    This is a heuristic: many Debian packages split a service across multiple
-    packages (e.g. nginx + nginx-common) while sharing a single /etc/<name>
-    tree.
-
-    We intentionally *avoid* using shared trees (e.g. /etc/cron.d, /etc/ssl,
-    /etc/apparmor.d) to expand package sets, because many unrelated packages
-    legitimately install files there.
-
-    We also consider the common ".d" variant (e.g. hint "apparmor" ->
-    topdir "apparmor.d") so we can explicitly skip known shared trees.
-    """
-
-    for h in hints:
-        for top in (h, f"{h}.d"):
-            if top in SHARED_ETC_TOPDIRS:
-                continue
-            for p in topdir_to_pkgs.get(top, set()):
-                pkgs.add(p)
-
-
-def _maybe_add_specific_paths(hints: Set[str], backend) -> List[str]:
-    # Delegate to backend-specific conventions (e.g. /etc/default on Debian,
-    # /etc/sysconfig on Fedora/RHEL). Always include sysctl.d.
-    try:
-        return backend.specific_paths_for_hints(hints)
-    except Exception:
-        # Best-effort fallback (Debian-ish).
-        paths: List[str] = []
-        for h in hints:
-            paths.extend(
-                [
-                    f"/etc/default/{h}",
-                    f"/etc/init.d/{h}",
-                    f"/etc/sysctl.d/{h}.conf",
-                ]
-            )
-        return paths
-
-
-def _scan_unowned_under_roots(
-    roots: List[str],
-    owned_etc: Set[str],
-    limit: int = MAX_UNOWNED_FILES_PER_ROLE,
-    *,
-    confish_only: bool = True,
-) -> List[str]:
-    found: List[str] = []
-    for root in roots:
-        if not os.path.isdir(root):
-            continue
-        for dirpath, _, filenames in os.walk(root):
-            if len(found) >= limit:
-                return found
-            for fn in filenames:
-                if len(found) >= limit:
-                    return found
-                p = os.path.join(dirpath, fn)
-                if not p.startswith("/etc/"):
-                    continue
-                if p in owned_etc:
-                    continue
-                if not os.path.isfile(p) or os.path.islink(p):
-                    continue
-                if confish_only and not _is_confish(p):
-                    continue
-                found.append(p)
-    return found
-
-
-def _topdirs_for_package(pkg: str, pkg_to_etc_paths: Dict[str, List[str]]) -> Set[str]:
-    topdirs: Set[str] = set()
-    for path in pkg_to_etc_paths.get(pkg, []):
-        parts = path.split("/", 3)
-        if len(parts) >= 3 and parts[1] == "etc" and parts[2]:
-            topdirs.add(parts[2])
-    return topdirs
-
-
-# -------------------------
-# System capture helpers
-# -------------------------
-
-_APT_SOURCE_GLOBS = [
-    "/etc/apt/sources.list",
-    "/etc/apt/sources.list.d/*.list",
-    "/etc/apt/sources.list.d/*.sources",
-]
-
-_APT_MISC_GLOBS = [
-    "/etc/apt/apt.conf",
-    "/etc/apt/apt.conf.d/*",
-    "/etc/apt/preferences",
-    "/etc/apt/preferences.d/*",
-    "/etc/apt/auth.conf",
-    "/etc/apt/auth.conf.d/*",
-    "/etc/apt/trusted.gpg",
-    "/etc/apt/trusted.gpg.d/*",
-    "/etc/apt/keyrings/*",
-]
-
-_SYSTEM_CAPTURE_GLOBS: List[tuple[str, str]] = [
-    # mounts
-    ("/etc/fstab", "system_mounts"),
-    ("/etc/crypttab", "system_mounts"),
-    # sysctl / modules
-    ("/etc/sysctl.conf", "system_sysctl"),
-    ("/etc/sysctl.d/*", "system_sysctl"),
-    ("/etc/modprobe.d/*", "system_modprobe"),
-    ("/etc/modules", "system_modprobe"),
-    ("/etc/modules-load.d/*", "system_modprobe"),
-    # network
-    ("/etc/netplan/*", "system_network"),
-    ("/etc/systemd/network/*", "system_network"),
-    ("/etc/network/interfaces", "system_network"),
-    ("/etc/network/interfaces.d/*", "system_network"),
-    ("/etc/resolvconf.conf", "system_network"),
-    ("/etc/resolvconf/resolv.conf.d/*", "system_network"),
-    ("/etc/NetworkManager/system-connections/*", "system_network"),
-    ("/etc/sysconfig/network*", "system_network"),
-    ("/etc/sysconfig/network-scripts/*", "system_network"),
-    # firewall
-    ("/etc/nftables.conf", "system_firewall"),
-    ("/etc/nftables.d/*", "system_firewall"),
-    ("/etc/iptables/rules.v4", "system_firewall"),
-    ("/etc/iptables/rules.v6", "system_firewall"),
-    ("/etc/sysconfig/iptables", "system_firewall"),
-    ("/etc/sysconfig/ip6tables", "system_firewall"),
-    ("/etc/ipset.conf", "system_firewall"),
-    ("/etc/ipset/*", "system_firewall"),
-    ("/etc/ipset.d/*", "system_firewall"),
-    ("/etc/sysconfig/ipset", "system_firewall"),
-    ("/etc/default/ipset", "system_firewall"),
-    ("/etc/ufw/*", "system_firewall"),
-    ("/etc/default/ufw", "system_firewall"),
-    ("/etc/firewalld/*", "system_firewall"),
-    ("/etc/firewalld/zones/*", "system_firewall"),
-    # SELinux
-    ("/etc/selinux/config", "system_security"),
-    # other
-    ("/etc/rc.local", "system_rc"),
-]
-
-
-# Persistent firewall files that are treated as authoritative for their
-# respective runtime state. If any matching file exists, the runtime capture
-# for that family is retained only as static managed-file harvest output and
-# not duplicated through the generated firewall_runtime role.
-_PERSISTENT_IPTABLES_V4_GLOBS = [
-    "/etc/iptables/rules.v4",
-    "/etc/sysconfig/iptables",
-]
-
-_PERSISTENT_IPTABLES_V6_GLOBS = [
-    "/etc/iptables/rules.v6",
-    "/etc/sysconfig/ip6tables",
-]
-
-_PERSISTENT_IPSET_GLOBS = [
-    "/etc/ipset.conf",
-    "/etc/ipset/*",
-    "/etc/ipset.d/*",
-    "/etc/sysconfig/ipset",
-]
-
-
-def _persistent_firewall_files(globs: List[str]) -> List[str]:
-    """Return persistent firewall files matching ``globs``.
-
-    This intentionally uses the same file walking helper as the static system
-    capture path so the runtime fallback decision matches what Enroll can
-    harvest as managed files.
-    """
-    seen: Set[str] = set()
-    out: List[str] = []
-    for spec in globs:
-        for path in _iter_matching_files(spec):
-            if path in seen:
-                continue
-            seen.add(path)
-            out.append(path)
-    return sorted(out)
-
-
-def _iter_matching_files(spec: str, *, cap: int = MAX_FILES_CAP) -> List[str]:
-    """Expand a glob spec and also walk directories to collect files."""
-    out: List[str] = []
-    for p in glob.glob(spec):
-        if len(out) >= cap:
-            break
-        if os.path.islink(p):
-            continue
-        if os.path.isfile(p):
-            out.append(p)
-            continue
-        if os.path.isdir(p):
-            for dirpath, _, filenames in os.walk(p):
-                for fn in filenames:
-                    if len(out) >= cap:
-                        break
-                    fp = os.path.join(dirpath, fn)
-                    if os.path.islink(fp) or not os.path.isfile(fp):
-                        continue
-                    out.append(fp)
-                if len(out) >= cap:
-                    break
-    return out
-
-
-def _parse_apt_signed_by(source_files: List[str]) -> Set[str]:
-    """Return absolute keyring paths referenced via signed-by / Signed-By."""
-    out: Set[str] = set()
-
-    # deb line: deb [signed-by=/usr/share/keyrings/foo.gpg] ...
-    re_signed_by = re.compile(r"signed-by\s*=\s*([^\]\s]+)", re.IGNORECASE)
-    # deb822: Signed-By: /usr/share/keyrings/foo.gpg
-    re_signed_by_hdr = re.compile(r"^\s*Signed-By\s*:\s*(.+)$", re.IGNORECASE)
-
-    for sf in source_files:
-        try:
-            with open(sf, "r", encoding="utf-8", errors="replace") as f:
-                for raw in f:
-                    line = raw.strip()
-                    if not line or line.startswith("#"):
-                        continue
-
-                    m = re_signed_by_hdr.match(line)
-                    if m:
-                        val = m.group(1).strip()
-                        if val.startswith("|"):
-                            continue
-                        toks = re.split(r"[\s,]+", val)
-                        for t in toks:
-                            if t.startswith("/"):
-                                out.add(t)
-                        continue
-
-                    # Try bracketed options first (common for .list files)
-                    if "[" in line and "]" in line:
-                        bracket = line.split("[", 1)[1].split("]", 1)[0]
-                        for mm in re_signed_by.finditer(bracket):
-                            val = mm.group(1).strip().strip("\"'")
-                            for t in re.split(r"[\s,]+", val):
-                                if t.startswith("/"):
-                                    out.add(t)
-                        continue
-
-                    # Fallback: signed-by= in whole line
-                    for mm in re_signed_by.finditer(line):
-                        val = mm.group(1).strip().strip("\"'")
-                        for t in re.split(r"[\s,]+", val):
-                            if t.startswith("/"):
-                                out.add(t)
-        except OSError:
-            continue
-
-    return out
-
-
-def _iter_apt_capture_paths() -> List[tuple[str, str]]:
-    """Return (path, reason) pairs for APT configuration.
-
-    This captures the full /etc/apt tree (subject to IgnorePolicy at copy time),
-    plus any keyrings referenced via signed-by/Signed-By which may live outside
-    /etc (e.g. /usr/share/keyrings).
-    """
-    reasons: Dict[str, str] = {}
-
-    # Capture all regular files under /etc/apt (no symlinks).
-    if os.path.isdir("/etc/apt"):
-        for dirpath, _, filenames in os.walk("/etc/apt"):
-            for fn in filenames:
-                p = os.path.join(dirpath, fn)
-                if os.path.islink(p) or not os.path.isfile(p):
-                    continue
-                reasons.setdefault(p, "apt_config")
-
-    # Identify source files explicitly for nicer reasons and keyring discovery.
-    apt_sources: List[str] = []
-    for g in _APT_SOURCE_GLOBS:
-        apt_sources.extend(_iter_matching_files(g))
-    for p in sorted(set(apt_sources)):
-        reasons[p] = "apt_source"
-
-    # Keyrings in standard locations.
-    for g in (
-        "/etc/apt/trusted.gpg",
-        "/etc/apt/trusted.gpg.d/*",
-        "/etc/apt/keyrings/*",
-    ):
-        for p in _iter_matching_files(g):
-            reasons[p] = "apt_keyring"
-
-    # Keyrings referenced by sources (may live outside /etc/apt).
-    signed_by = _parse_apt_signed_by(sorted(set(apt_sources)))
-    for p in sorted(signed_by):
-        if os.path.islink(p) or not os.path.isfile(p):
-            continue
-        if p.startswith("/etc/apt/"):
-            reasons[p] = "apt_keyring"
-        else:
-            reasons[p] = "apt_signed_by_keyring"
-
-    # De-dup with stable ordering.
-    uniq: List[tuple[str, str]] = []
-    for p in sorted(reasons.keys()):
-        uniq.append((p, reasons[p]))
-    return uniq
-
-
-def _iter_dnf_capture_paths() -> List[tuple[str, str]]:
-    """Return (path, reason) pairs for DNF/YUM configuration on RPM systems.
-
-    Captures:
-      - /etc/dnf/* (dnf.conf, vars, plugins, modules, automatic)
-      - /etc/yum.conf (legacy)
-      - /etc/yum.repos.d/*.repo
-      - /etc/pki/rpm-gpg/* (GPG key files)
-    """
-    reasons: Dict[str, str] = {}
-
-    for root, tag in (
-        ("/etc/dnf", "dnf_config"),
-        ("/etc/yum", "yum_config"),
-    ):
-        if os.path.isdir(root):
-            for dirpath, _, filenames in os.walk(root):
-                for fn in filenames:
-                    p = os.path.join(dirpath, fn)
-                    if os.path.islink(p) or not os.path.isfile(p):
-                        continue
-                    reasons.setdefault(p, tag)
-
-    # Legacy yum.conf.
-    if os.path.isfile("/etc/yum.conf") and not os.path.islink("/etc/yum.conf"):
-        reasons.setdefault("/etc/yum.conf", "yum_conf")
-
-    # Repositories.
-    if os.path.isdir("/etc/yum.repos.d"):
-        for p in _iter_matching_files("/etc/yum.repos.d/*.repo"):
-            reasons[p] = "yum_repo"
-
-    # RPM GPG keys.
-    if os.path.isdir("/etc/pki/rpm-gpg"):
-        for dirpath, _, filenames in os.walk("/etc/pki/rpm-gpg"):
-            for fn in filenames:
-                p = os.path.join(dirpath, fn)
-                if os.path.islink(p) or not os.path.isfile(p):
-                    continue
-                reasons.setdefault(p, "rpm_gpg_key")
-
-    # Stable ordering.
-    return [(p, reasons[p]) for p in sorted(reasons.keys())]
-
-
-def _iter_system_capture_paths() -> List[tuple[str, str]]:
-    """Return (path, reason) pairs for essential system config/state (non-APT)."""
-    out: List[tuple[str, str]] = []
-
-    for spec, reason in _SYSTEM_CAPTURE_GLOBS:
-        for p in _iter_matching_files(spec):
-            out.append((p, reason))
-
-    # De-dup while preserving first reason
-    seen: Set[str] = set()
-    uniq: List[tuple[str, str]] = []
-    for p, r in out:
-        if p in seen:
-            continue
-        seen.add(p)
-        uniq.append((p, r))
-    return uniq
 
 
 _FIREWALL_CAPTURE_COMMANDS: Dict[str, Tuple[str, ...]] = {
@@ -1539,12 +580,14 @@ def harvest(
     installed_pkgs = backend.installed_packages() or {}
     installed_names: Set[str] = set(installed_pkgs.keys())
 
-    persistent_ipset_files = _persistent_firewall_files(_PERSISTENT_IPSET_GLOBS)
-    persistent_iptables_v4_files = _persistent_firewall_files(
-        _PERSISTENT_IPTABLES_V4_GLOBS
+    persistent_ipset_files = system_paths.persistent_firewall_files(
+        system_paths.persistent_ipset_globs()
     )
-    persistent_iptables_v6_files = _persistent_firewall_files(
-        _PERSISTENT_IPTABLES_V6_GLOBS
+    persistent_iptables_v4_files = system_paths.persistent_firewall_files(
+        system_paths.persistent_iptables_v4_globs()
+    )
+    persistent_iptables_v6_files = system_paths.persistent_firewall_files(
+        system_paths.persistent_iptables_v6_globs()
     )
 
     context = HarvestContext(
@@ -1644,7 +687,7 @@ def harvest(
     alias_ranked: Dict[str, tuple[int, str]] = {}
 
     def _add_alias(alias: str, role_name: str, *, priority: int) -> None:
-        key = _safe_name(alias)
+        key = safe_name(alias)
         if not key:
             return
         cur = alias_ranked.get(key)
@@ -1705,12 +748,12 @@ def harvest(
                 if len(svc_roles) > 1:
                     # Direct role-name matches first.
                     for c in [pkg, *uniq]:
-                        rn = _safe_name(c)
+                        rn = safe_name(c)
                         if rn in svc_roles:
                             return (rn, tag)
                     # Next, use the alias map if it points at one of the roles.
                     for c in [pkg, *uniq]:
-                        hit = alias_ranked.get(_safe_name(c))
+                        hit = alias_ranked.get(safe_name(c))
                         if hit is not None and hit[1] in svc_roles:
                             return (hit[1], tag)
 
@@ -1721,7 +764,7 @@ def harvest(
                 return (pkg_role, tag)
 
         for c in uniq:
-            key = _safe_name(c)
+            key = safe_name(c)
             hit = alias_ranked.get(key)
             if hit is not None:
                 return (hit[1], tag)
@@ -1740,7 +783,7 @@ def harvest(
 
     # Capture essential system config/state (even if package-owned).
     etc_role_seen = seen_by_role.setdefault(etc_role_name, set())
-    for path, reason in _iter_system_capture_paths():
+    for path, reason in system_paths.iter_system_capture_paths():
         if path in already:
             continue
 
@@ -1754,7 +797,7 @@ def harvest(
             managed_out, excluded_out = (etc_managed, etc_excluded)
             role_seen = etc_role_seen
 
-        _capture_file(
+        capture_file(
             bundle_dir=bundle_dir,
             role_name=role_for_copy,
             abs_path=path,
@@ -1780,7 +823,7 @@ def harvest(
                 continue
             if not os.path.isfile(path) or os.path.islink(path):
                 continue
-            if not _is_confish(path):
+            if not system_paths.is_confish(path):
                 continue
 
             target = _target_role_for_shared_snippet(path)
@@ -1793,7 +836,7 @@ def harvest(
                 managed_out, excluded_out = (etc_managed, etc_excluded)
                 role_seen = etc_role_seen
 
-            if _capture_file(
+            if capture_file(
                 bundle_dir=bundle_dir,
                 role_name=role_for_copy,
                 abs_path=path,
@@ -1806,12 +849,12 @@ def harvest(
                 seen_global=captured_global,
             ):
                 scanned += 1
-            if scanned >= MAX_FILES_CAP:
+            if scanned >= system_paths.MAX_FILES_CAP:
                 etc_notes.append(
-                    f"Reached file cap ({MAX_FILES_CAP}) while scanning /etc for unowned files."
+                    f"Reached file cap ({system_paths.MAX_FILES_CAP}) while scanning /etc for unowned files."
                 )
                 break
-        if scanned >= MAX_FILES_CAP:
+        if scanned >= system_paths.MAX_FILES_CAP:
             break
 
     etc_custom_snapshot = EtcCustomSnapshot(
@@ -1874,7 +917,7 @@ def harvest(
         arches = sorted({i.get("arch") for i in installs if i.get("arch")})
         vers = sorted({i.get("version") for i in installs if i.get("version")})
         version: Optional[str] = vers[0] if len(vers) == 1 else None
-        section = _package_section_from_installations(installs)
+        section = package_section_from_installations(installs)
 
         observed: List[Dict[str, str]] = []
         if pkg in manual_set:

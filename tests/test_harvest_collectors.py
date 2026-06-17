@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from enroll.harvest import (
-    FirewallRuntimeSnapshot,
-    HarvestContext,
-    IgnorePolicy,
-    PathFilter,
-    RuntimeStateCollector,
-    SysctlSnapshot,
-)
+from enroll.harvest_collectors.context import HarvestContext
+from enroll.harvest_collectors.runtime import RuntimeStateCollector
+from enroll.harvest_types import FirewallRuntimeSnapshot, SysctlSnapshot
+from enroll.ignore import IgnorePolicy
+from enroll.pathfilter import PathFilter
 
 
 class _Backend:

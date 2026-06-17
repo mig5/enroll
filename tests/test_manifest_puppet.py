@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 from enroll import manifest
 
 
@@ -160,36 +162,55 @@ def test_manifest_puppet_writes_control_repo_style_output(tmp_path: Path):
     manifest.manifest(str(bundle), str(out), target="puppet", fqdn="test.example")
 
     site_pp = (out / "manifests" / "site.pp").read_text(encoding="utf-8")
-    assert site_pp == (
-        "node 'test.example' {\n"
-        "  include curl\n"
-        "  include foo\n"
-        "  include users\n"
-        "  include sysctl\n"
-        "}\n"
+    assert "node 'test.example' {" in site_pp
+    assert "lookup('enroll::classes'" in site_pp
+    assert "$enroll_classes.each" in site_pp
+    assert "include $enroll_class" in site_pp
+    assert "node default {" in site_pp
+
+    assert (out / "hiera.yaml").exists()
+    node_data = yaml.safe_load(
+        (out / "data" / "nodes" / "test.example.yaml").read_text(encoding="utf-8")
+    )
+    assert node_data["enroll::classes"] == ["curl", "foo", "users", "sysctl"]
+    assert node_data["curl::packages"] == ["curl"]
+    assert node_data["foo::packages"] == ["foo"]
+    assert node_data["foo::files"]["/etc/foo/foo.conf"]["source"] == (
+        "puppet:///modules/foo/nodes/test.example/etc/foo.conf"
+    )
+    assert node_data["foo::services"]["foo.service"] == {
+        "ensure": "running",
+        "enable": True,
+    }
+    assert node_data["users::users"]["alice"]["comment"] == "Alice Example"
+    assert node_data["users::users"]["alice"]["groups"] == ["docker"]
+    assert node_data["sysctl::files"]["/etc/sysctl.d/99-enroll.conf"]["source"] == (
+        "puppet:///modules/sysctl/nodes/test.example/sysctl/99-enroll.conf"
     )
 
     curl_pp = (out / "modules" / "curl" / "manifests" / "init.pp").read_text(
         encoding="utf-8"
     )
     assert "class curl" in curl_pp
-    assert "package { 'curl':" in curl_pp
+    assert "Array[String] $packages = []" in curl_pp
+    assert "package { $package_name:" in curl_pp
+    assert "package { 'curl':" not in curl_pp
 
     foo_pp = (out / "modules" / "foo" / "manifests" / "init.pp").read_text(
         encoding="utf-8"
     )
     assert "class foo" in foo_pp
-    assert "package { 'foo':" in foo_pp
-    assert "file { '/etc/foo/foo.conf':" in foo_pp
-    assert "source => 'puppet:///modules/foo/etc/foo.conf'" in foo_pp
-    assert "service { 'foo.service':" in foo_pp
+    assert "Hash[String, Hash] $files = {}" in foo_pp
+    assert "* => $attrs" in foo_pp
+    assert "package { 'foo':" not in foo_pp
+    assert "file { '/etc/foo/foo.conf':" not in foo_pp
 
     users_pp = (out / "modules" / "users" / "manifests" / "init.pp").read_text(
         encoding="utf-8"
     )
     assert "class users" in users_pp
-    assert "group { 'docker':" in users_pp
-    assert "user { 'alice':" in users_pp
+    assert "Hash[String, Hash] $users = {}" in users_pp
+    assert "user { 'alice':" not in users_pp
 
     sysctl_pp = (out / "modules" / "sysctl" / "manifests" / "init.pp").read_text(
         encoding="utf-8"
@@ -198,11 +219,162 @@ def test_manifest_puppet_writes_control_repo_style_output(tmp_path: Path):
     assert "Boolean $sysctl_apply = true" in sysctl_pp
     assert "Boolean $sysctl_ignore_apply_errors = true" in sysctl_pp
     assert "exec { 'enroll-apply-sysctl':" in sysctl_pp
-    assert "command     => $sysctl_ignore_apply_errors ? {" in sysctl_pp
-    assert "sysctl -e -p /etc/sysctl.d/99-enroll.conf || true" in sysctl_pp
+    assert "$files.has_key('/etc/sysctl.d/99-enroll.conf')" in sysctl_pp
 
-    assert (out / "modules" / "foo" / "files" / "etc" / "foo.conf").exists()
-    assert (out / "modules" / "sysctl" / "files" / "sysctl" / "99-enroll.conf").exists()
+    assert (
+        out
+        / "modules"
+        / "foo"
+        / "files"
+        / "nodes"
+        / "test.example"
+        / "etc"
+        / "foo.conf"
+    ).exists()
+    assert (
+        out
+        / "modules"
+        / "sysctl"
+        / "files"
+        / "nodes"
+        / "test.example"
+        / "sysctl"
+        / "99-enroll.conf"
+    ).exists()
+
+
+def test_manifest_puppet_fqdn_mode_can_accumulate_separate_node_data(
+    tmp_path: Path,
+):
+    out = tmp_path / "puppet"
+
+    def write_bundle(name: str, content: str) -> Path:
+        bundle = tmp_path / name
+        artifact = bundle / "artifacts" / "foo" / "etc" / "foo.conf"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(content, encoding="utf-8")
+        _write_state(
+            bundle,
+            {
+                "schema_version": 3,
+                "host": {"hostname": name, "os": "debian", "pkg_backend": "dpkg"},
+                "inventory": {"packages": {}},
+                "roles": {
+                    "services": [
+                        {
+                            "unit": "foo.service",
+                            "role_name": "foo",
+                            "packages": ["foo"],
+                            "active_state": "active",
+                            "unit_file_state": "enabled",
+                            "managed_dirs": [],
+                            "managed_files": [
+                                {
+                                    "path": "/etc/foo/foo.conf",
+                                    "src_rel": "etc/foo.conf",
+                                    "owner": "root",
+                                    "group": "root",
+                                    "mode": "0644",
+                                }
+                            ],
+                            "managed_links": [],
+                        }
+                    ],
+                    "packages": [],
+                    "users": {
+                        "role_name": "users",
+                        "users": [],
+                        "managed_dirs": [],
+                        "managed_files": [],
+                    },
+                    "apt_config": {
+                        "role_name": "apt_config",
+                        "managed_dirs": [],
+                        "managed_files": [],
+                    },
+                    "dnf_config": {
+                        "role_name": "dnf_config",
+                        "managed_dirs": [],
+                        "managed_files": [],
+                    },
+                    "sysctl": {
+                        "role_name": "sysctl",
+                        "managed_dirs": [],
+                        "managed_files": [],
+                    },
+                    "firewall_runtime": {
+                        "role_name": "firewall_runtime",
+                        "packages": [],
+                    },
+                    "etc_custom": {
+                        "role_name": "etc_custom",
+                        "managed_dirs": [],
+                        "managed_files": [],
+                    },
+                    "usr_local_custom": {
+                        "role_name": "usr_local_custom",
+                        "managed_dirs": [],
+                        "managed_files": [],
+                    },
+                    "extra_paths": {
+                        "role_name": "extra_paths",
+                        "managed_dirs": [],
+                        "managed_files": [],
+                        "managed_links": [],
+                    },
+                },
+            },
+        )
+        return bundle
+
+    first = write_bundle("first", "first = true\n")
+    second = write_bundle("second", "second = true\n")
+
+    manifest.manifest(str(first), str(out), target="puppet", fqdn="first.example")
+    manifest.manifest(str(second), str(out), target="puppet", fqdn="second.example")
+
+    assert (out / "data" / "nodes" / "first.example.yaml").exists()
+    assert (out / "data" / "nodes" / "second.example.yaml").exists()
+
+    site_pp = (out / "manifests" / "site.pp").read_text(encoding="utf-8")
+    assert "node 'first.example' {" in site_pp
+    assert "node 'second.example' {" in site_pp
+
+    first_artifact = (
+        out
+        / "modules"
+        / "foo"
+        / "files"
+        / "nodes"
+        / "first.example"
+        / "etc"
+        / "foo.conf"
+    )
+    second_artifact = (
+        out
+        / "modules"
+        / "foo"
+        / "files"
+        / "nodes"
+        / "second.example"
+        / "etc"
+        / "foo.conf"
+    )
+    assert first_artifact.read_text(encoding="utf-8") == "first = true\n"
+    assert second_artifact.read_text(encoding="utf-8") == "second = true\n"
+
+    first_data = yaml.safe_load(
+        (out / "data" / "nodes" / "first.example.yaml").read_text(encoding="utf-8")
+    )
+    second_data = yaml.safe_load(
+        (out / "data" / "nodes" / "second.example.yaml").read_text(encoding="utf-8")
+    )
+    assert first_data["foo::files"]["/etc/foo/foo.conf"]["source"] == (
+        "puppet:///modules/foo/nodes/first.example/etc/foo.conf"
+    )
+    assert second_data["foo::files"]["/etc/foo/foo.conf"]["source"] == (
+        "puppet:///modules/foo/nodes/second.example/etc/foo.conf"
+    )
 
 
 def test_manifest_puppet_uses_default_node_and_common_package_modules(tmp_path: Path):

@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 
 import enroll.harvest as h
+import enroll.system_paths as sp
+from enroll.package_hints import role_name_from_pkg, role_name_from_unit
 
 
 def test_iter_matching_files_skips_symlinks_and_walks_dirs(monkeypatch, tmp_path: Path):
@@ -24,12 +26,12 @@ def test_iter_matching_files_skips_symlinks_and_walks_dirs(monkeypatch, tmp_path
         str(root / "link"): "link",
     }
 
-    monkeypatch.setattr(h.glob, "glob", lambda spec: [str(root), str(root / "link")])
-    monkeypatch.setattr(h.os.path, "islink", lambda p: paths.get(p) == "link")
-    monkeypatch.setattr(h.os.path, "isfile", lambda p: paths.get(p) == "file")
-    monkeypatch.setattr(h.os.path, "isdir", lambda p: paths.get(p) == "dir")
+    monkeypatch.setattr(sp.glob, "glob", lambda spec: [str(root), str(root / "link")])
+    monkeypatch.setattr(sp.os.path, "islink", lambda p: paths.get(p) == "link")
+    monkeypatch.setattr(sp.os.path, "isfile", lambda p: paths.get(p) == "file")
+    monkeypatch.setattr(sp.os.path, "isdir", lambda p: paths.get(p) == "dir")
     monkeypatch.setattr(
-        h.os,
+        sp.os,
         "walk",
         lambda p: [
             (str(root), ["sub"], ["real.txt", "link"]),
@@ -37,7 +39,7 @@ def test_iter_matching_files_skips_symlinks_and_walks_dirs(monkeypatch, tmp_path
         ],
     )
 
-    out = h._iter_matching_files("/whatever/*", cap=100)
+    out = sp.iter_matching_files("/whatever/*", cap=100)
     assert str(root / "real.txt") in out
     assert str(root / "sub" / "nested.txt") in out
     assert str(root / "link") not in out
@@ -57,7 +59,7 @@ def test_parse_apt_signed_by_extracts_keyrings(tmp_path: Path):
     f3 = tmp_path / "c.sources"
     f3.write_text("Signed-By: | /bin/echo nope\n", encoding="utf-8")
 
-    out = h._parse_apt_signed_by([str(f1), str(f2), str(f3)])
+    out = sp.parse_apt_signed_by([str(f1), str(f2), str(f3)])
     assert "/usr/share/keyrings/foo.gpg" in out
     assert "/etc/apt/keyrings/bar.gpg" in out
     assert "/usr/share/keyrings/baz.gpg" in out
@@ -74,9 +76,9 @@ def test_iter_apt_capture_paths_includes_signed_by_keyring(monkeypatch):
         "/usr/share/keyrings/ext.gpg": "file",
     }
 
-    monkeypatch.setattr(h.os.path, "isdir", lambda p: p in {"/etc/apt"})
+    monkeypatch.setattr(sp.os.path, "isdir", lambda p: p in {"/etc/apt"})
     monkeypatch.setattr(
-        h.os,
+        sp.os,
         "walk",
         lambda root: [
             ("/etc/apt", ["apt.conf.d", "sources.list.d"], []),
@@ -84,8 +86,8 @@ def test_iter_apt_capture_paths_includes_signed_by_keyring(monkeypatch):
             ("/etc/apt/sources.list.d", [], ["test.list"]),
         ],
     )
-    monkeypatch.setattr(h.os.path, "islink", lambda p: False)
-    monkeypatch.setattr(h.os.path, "isfile", lambda p: files.get(p) == "file")
+    monkeypatch.setattr(sp.os.path, "islink", lambda p: False)
+    monkeypatch.setattr(sp.os.path, "isfile", lambda p: files.get(p) == "file")
 
     # Only treat the sources glob as having a hit.
     def fake_iter_matching(spec: str, cap: int = 10000):
@@ -93,7 +95,7 @@ def test_iter_apt_capture_paths_includes_signed_by_keyring(monkeypatch):
             return ["/etc/apt/sources.list.d/test.list"]
         return []
 
-    monkeypatch.setattr(h, "_iter_matching_files", fake_iter_matching)
+    monkeypatch.setattr(sp, "iter_matching_files", fake_iter_matching)
 
     # Provide file contents for the sources file.
     real_open = open
@@ -105,10 +107,10 @@ def test_iter_apt_capture_paths_includes_signed_by_keyring(monkeypatch):
 
     # Easier: patch _parse_apt_signed_by directly to avoid filesystem reads.
     monkeypatch.setattr(
-        h, "_parse_apt_signed_by", lambda sfs: {"/usr/share/keyrings/ext.gpg"}
+        sp, "parse_apt_signed_by", lambda sfs: {"/usr/share/keyrings/ext.gpg"}
     )
 
-    out = h._iter_apt_capture_paths()
+    out = sp.iter_apt_capture_paths()
     paths = {p for p, _r in out}
     reasons = {p: r for p, r in out}
     assert "/etc/apt/apt.conf.d/00test" in paths
@@ -138,19 +140,23 @@ def test_iter_dnf_capture_paths(monkeypatch):
             return [("/etc/pki/rpm-gpg", [], ["RPM-GPG-KEY"])]
         return []
 
-    monkeypatch.setattr(h.os.path, "isdir", isdir)
-    monkeypatch.setattr(h.os, "walk", walk)
-    monkeypatch.setattr(h.os.path, "islink", lambda p: False)
-    monkeypatch.setattr(h.os.path, "isfile", lambda p: files.get(p) == "file")
-    monkeypatch.setattr(
-        h,
-        "_iter_matching_files",
-        lambda spec, cap=10000: (
-            ["/etc/yum.repos.d/test.repo"] if spec.endswith("*.repo") else []
-        ),
-    )
+    monkeypatch.setattr(sp.os.path, "isdir", isdir)
+    monkeypatch.setattr(sp.os, "walk", walk)
+    monkeypatch.setattr(sp.os.path, "islink", lambda p: False)
+    monkeypatch.setattr(sp.os.path, "isfile", lambda p: files.get(p) == "file")
 
-    out = h._iter_dnf_capture_paths()
+    def fake_iter_matching(spec: str, cap: int = 10000):
+        if spec == "/etc/yum.conf":
+            return ["/etc/yum.conf"]
+        if spec.endswith("*.repo"):
+            return ["/etc/yum.repos.d/test.repo"]
+        if spec == "/etc/pki/rpm-gpg/*":
+            return ["/etc/pki/rpm-gpg/RPM-GPG-KEY"]
+        return []
+
+    monkeypatch.setattr(sp, "iter_matching_files", fake_iter_matching)
+
+    out = sp.iter_dnf_capture_paths()
     paths = {p for p, _r in out}
     assert "/etc/dnf/dnf.conf" in paths
     assert "/etc/yum/yum.conf" in paths
@@ -160,13 +166,13 @@ def test_iter_dnf_capture_paths(monkeypatch):
 
 
 def test_iter_system_capture_paths_dedupes_first_reason(monkeypatch):
-    monkeypatch.setattr(h, "_SYSTEM_CAPTURE_GLOBS", [("/a", "r1"), ("/b", "r2")])
+    monkeypatch.setattr(sp, "_SYSTEM_CAPTURE_GLOBS", [("/a", "r1"), ("/b", "r2")])
     monkeypatch.setattr(
-        h,
-        "_iter_matching_files",
+        sp,
+        "iter_matching_files",
         lambda spec, cap=10000: ["/dup"] if spec in {"/a", "/b"} else [],
     )
-    out = h._iter_system_capture_paths()
+    out = sp.iter_system_capture_paths()
     assert out == [("/dup", "r1")]
 
 
@@ -289,20 +295,16 @@ def test_collect_firewall_runtime_snapshot_is_per_family_fallback(
 
 
 def test_package_role_names_do_not_collide_with_singleton_roles():
-    from enroll.harvest import _role_name_from_pkg
-
-    assert _role_name_from_pkg("flatpak") == "package_flatpak"
-    assert _role_name_from_pkg("snap") == "package_snap"
-    assert _role_name_from_pkg("users") == "package_users"
-    assert _role_name_from_pkg("nginx") == "nginx"
+    assert role_name_from_pkg("flatpak") == "package_flatpak"
+    assert role_name_from_pkg("snap") == "package_snap"
+    assert role_name_from_pkg("users") == "package_users"
+    assert role_name_from_pkg("nginx") == "nginx"
 
 
 def test_service_role_names_do_not_collide_with_singleton_roles():
-    from enroll.harvest import _role_name_from_unit
-
-    assert _role_name_from_unit("flatpak.service") == "service_flatpak"
-    assert _role_name_from_unit("users.service") == "service_users"
-    assert _role_name_from_unit("nginx.service") == "nginx"
+    assert role_name_from_unit("flatpak.service") == "service_flatpak"
+    assert role_name_from_unit("users.service") == "service_users"
+    assert role_name_from_unit("nginx.service") == "nginx"
 
 
 def test_parse_sysctl_a_output_keeps_persistable_values(monkeypatch):

@@ -4,8 +4,10 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional, Set
 
-from .. import harvest as h
-from ..harvest import ExcludedFile, ManagedFile, PackageSnapshot
+from ..capture import capture_file
+from ..harvest_types import ExcludedFile, ManagedFile, PackageSnapshot
+from ..package_hints import package_section_from_installations
+from ..system_paths import iter_matching_files
 from .context import HarvestCollector
 
 
@@ -97,10 +99,10 @@ class CronLogrotateCollector(HarvestCollector):
         seen: Set[str] = set()
 
         for spec in _CRON_CAPTURE_GLOBS:
-            for path in h._iter_matching_files(spec):
+            for path in iter_matching_files(spec):
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
-                h._capture_file(
+                capture_file(
                     bundle_dir=self.context.bundle_dir,
                     role_name=self.cron_role_name,
                     abs_path=path,
@@ -116,7 +118,7 @@ class CronLogrotateCollector(HarvestCollector):
         return PackageSnapshot(
             package=cron_pkg,
             role_name=self.cron_role_name,
-            section=h._package_section_from_installations(
+            section=package_section_from_installations(
                 self.context.installed_pkgs.get(cron_pkg, [])
             ),
             managed_files=managed,
@@ -131,10 +133,10 @@ class CronLogrotateCollector(HarvestCollector):
         seen: Set[str] = set()
 
         for spec in _LOGROTATE_CAPTURE_GLOBS:
-            for path in h._iter_matching_files(spec):
+            for path in iter_matching_files(spec):
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
-                h._capture_file(
+                capture_file(
                     bundle_dir=self.context.bundle_dir,
                     role_name=self.logrotate_role_name,
                     abs_path=path,
@@ -150,7 +152,7 @@ class CronLogrotateCollector(HarvestCollector):
         return PackageSnapshot(
             package=logrotate_pkg,
             role_name=self.logrotate_role_name,
-            section=h._package_section_from_installations(
+            section=package_section_from_installations(
                 self.context.installed_pkgs.get(logrotate_pkg, [])
             ),
             managed_files=managed,

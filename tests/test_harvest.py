@@ -5,21 +5,28 @@ import pytest
 from pathlib import Path
 
 import enroll.harvest as harvest
+import enroll.system_paths as system_paths
 from enroll.platform import PlatformInfo
 from enroll.systemd import UnitInfo
 from enroll.pathfilter import PathFilter
-from enroll.harvest import (
-    _is_confish,
-    _hint_names,
-    _topdirs_for_package,
-    _iter_matching_files,
-    _parse_apt_signed_by,
-    _capture_link,
-    _capture_file,
-    ManagedFile,
-    ManagedLink,
-    ExcludedFile,
-    IgnorePolicy,
+import enroll.capture as capture
+from enroll.capture import (
+    capture_file as _capture_file,
+    capture_link as _capture_link,
+    capture_user_shell_dotfiles,
+    files_differ,
+)
+from enroll.harvest_types import ExcludedFile, ManagedFile, ManagedLink
+from enroll.ignore import IgnorePolicy
+from enroll.package_hints import (
+    add_pkgs_from_etc_topdirs,
+    hint_names as _hint_names,
+)
+from enroll.system_paths import (
+    is_confish as _is_confish,
+    iter_matching_files as _iter_matching_files,
+    parse_apt_signed_by as _parse_apt_signed_by,
+    topdirs_for_package as _topdirs_for_package,
 )
 
 from unittest.mock import MagicMock
@@ -249,6 +256,7 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
         return ("root", "root", "0644")
 
     monkeypatch.setattr(harvest, "stat_triplet", fake_stat_triplet)
+    monkeypatch.setattr(capture, "stat_triplet", fake_stat_triplet)
 
     # Avoid needing source files on disk by implementing our own bundle copier
     def fake_copy(bundle_dir: str, role_name: str, abs_path: str, src_rel: str):
@@ -256,7 +264,7 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(files.get(abs_path, b""))
 
-    monkeypatch.setattr(harvest, "_copy_into_bundle", fake_copy)
+    monkeypatch.setattr(capture, "copy_into_bundle", fake_copy)
 
     state_path = harvest.harvest(str(bundle), policy=AllowAllPolicy())
     st = json.loads(Path(state_path).read_text(encoding="utf-8"))
@@ -327,8 +335,8 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
 
     # Only include the cron snippet in the system capture set.
     monkeypatch.setattr(
-        harvest,
-        "_iter_system_capture_paths",
+        system_paths,
+        "iter_system_capture_paths",
         lambda: [("/etc/cron.d/ntpsec", "system_cron")],
     )
 
@@ -392,6 +400,7 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
     monkeypatch.setattr(harvest, "get_backend", lambda info=None: backend)
 
     monkeypatch.setattr(harvest, "stat_triplet", lambda p: ("root", "root", "0644"))
+    monkeypatch.setattr(capture, "stat_triplet", lambda p: ("root", "root", "0644"))
     monkeypatch.setattr(harvest, "collect_non_system_users", lambda: [])
 
     def fake_copy(bundle_dir: str, role_name: str, abs_path: str, src_rel: str):
@@ -399,7 +408,7 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(files[abs_path])
 
-    monkeypatch.setattr(harvest, "_copy_into_bundle", fake_copy)
+    monkeypatch.setattr(capture, "copy_into_bundle", fake_copy)
 
     state_path = harvest.harvest(str(bundle), policy=AllowAllPolicy())
     st = json.loads(Path(state_path).read_text(encoding="utf-8"))
@@ -421,7 +430,7 @@ def test_files_differ_binary(tmp_path: Path):
     file2 = tmp_path / "file2.bin"
     file1.write_bytes(b"\x00\x01\x02\x03")
     file2.write_bytes(b"\x00\x01\x02\x03")
-    assert harvest._files_differ(str(file1), str(file2)) is False
+    assert files_differ(str(file1), str(file2)) is False
 
 
 def test_files_differ_binary_different(tmp_path: Path):
@@ -429,7 +438,7 @@ def test_files_differ_binary_different(tmp_path: Path):
     file2 = tmp_path / "file2.bin"
     file1.write_bytes(b"\x00\x01\x02\x03")
     file2.write_bytes(b"\x00\x01\x02\x04")
-    assert harvest._files_differ(str(file1), str(file2)) is True
+    assert files_differ(str(file1), str(file2)) is True
 
 
 def test_files_differ_non_regular_a(tmp_path: Path):
@@ -437,14 +446,14 @@ def test_files_differ_non_regular_a(tmp_path: Path):
     directory.mkdir()
     file1 = tmp_path / "file1.txt"
     file1.write_text("content", encoding="utf-8")
-    assert harvest._files_differ(str(directory), str(file1)) is True
+    assert files_differ(str(directory), str(file1)) is True
 
 
 def test_topdirs_for_package_with_multiple_paths():
     pkg_to_etc_paths = {
         "nginx": ["/etc/nginx/nginx.conf", "/etc/nginx/sites-enabled/default"],
     }
-    result = harvest._topdirs_for_package("nginx", pkg_to_etc_paths)
+    result = _topdirs_for_package("nginx", pkg_to_etc_paths)
     assert result == {"nginx"}
 
 
@@ -452,12 +461,12 @@ def test_topdirs_for_package_with_multiple_topdirs():
     pkg_to_etc_paths = {
         "multi": ["/etc/nginx/nginx.conf", "/etc/ssh/sshd_config"],
     }
-    result = harvest._topdirs_for_package("multi", pkg_to_etc_paths)
+    result = _topdirs_for_package("multi", pkg_to_etc_paths)
     assert result == {"nginx", "ssh"}
 
 
 def test_topdirs_for_package_empty():
-    result = harvest._topdirs_for_package("empty", {})
+    result = _topdirs_for_package("empty", {})
     assert result == set()
 
 
@@ -465,7 +474,7 @@ def test_topdirs_for_package_no_etc():
     pkg_to_etc_paths = {
         "other": ["/usr/share/doc/file"],
     }
-    result = harvest._topdirs_for_package("other", pkg_to_etc_paths)
+    result = _topdirs_for_package("other", pkg_to_etc_paths)
     assert result == set()
 
 
@@ -475,7 +484,7 @@ def test_files_differ_same_content(tmp_path: Path):
     file_b = tmp_path / "b.txt"
     file_a.write_text("same content", encoding="utf-8")
     file_b.write_text("same content", encoding="utf-8")
-    assert harvest._files_differ(str(file_a), str(file_b)) is False
+    assert files_differ(str(file_a), str(file_b)) is False
 
 
 def test_files_differ_different_content(tmp_path: Path):
@@ -484,7 +493,7 @@ def test_files_differ_different_content(tmp_path: Path):
     file_b = tmp_path / "b.txt"
     file_a.write_text("content a", encoding="utf-8")
     file_b.write_text("content b", encoding="utf-8")
-    assert harvest._files_differ(str(file_a), str(file_b)) is True
+    assert files_differ(str(file_a), str(file_b)) is True
 
 
 def test_files_differ_missing_file(tmp_path: Path):
@@ -492,7 +501,7 @@ def test_files_differ_missing_file(tmp_path: Path):
     file_a = tmp_path / "a.txt"
     file_a.write_text("content", encoding="utf-8")
     file_b = tmp_path / "b.txt"
-    assert harvest._files_differ(str(file_a), str(file_b)) is True
+    assert files_differ(str(file_a), str(file_b)) is True
 
 
 def test_files_differ_both_missing(tmp_path: Path):
@@ -500,7 +509,7 @@ def test_files_differ_both_missing(tmp_path: Path):
     file_a = tmp_path / "a.txt"
     file_b = tmp_path / "b.txt"
     # Both missing - should return True (they differ in the sense that neither exists)
-    assert harvest._files_differ(str(file_a), str(file_b)) is True
+    assert files_differ(str(file_a), str(file_b)) is True
 
 
 def test_files_differ_non_regular_b(tmp_path: Path):
@@ -510,7 +519,7 @@ def test_files_differ_non_regular_b(tmp_path: Path):
     link_b = tmp_path / "link"
     link_b.symlink_to(file_a)
     # Symlinks are followed, so content is the same
-    assert harvest._files_differ(str(file_a), str(link_b)) is False
+    assert files_differ(str(file_a), str(link_b)) is False
 
 
 def test_files_differ_oserror_on_read(tmp_path: Path, monkeypatch):
@@ -524,7 +533,7 @@ def test_files_differ_oserror_on_read(tmp_path: Path, monkeypatch):
         raise OSError("Permission denied")
 
     monkeypatch.setattr("builtins.open", fake_open, raising=False)
-    assert harvest._files_differ(str(file_a), str(file_b)) is True
+    assert files_differ(str(file_a), str(file_b)) is True
 
 
 def test_files_differ_large_file_returns_true(tmp_path: Path):
@@ -536,7 +545,7 @@ def test_files_differ_large_file_returns_true(tmp_path: Path):
     file_a.write_bytes(data)
     file_b.write_bytes(data)
     # Should return True because files are too large
-    assert harvest._files_differ(str(file_a), str(file_b), max_bytes=1_000_000) is True
+    assert files_differ(str(file_a), str(file_b), max_bytes=1_000_000) is True
 
 
 def test_files_differ_size_mismatch(tmp_path: Path):
@@ -545,7 +554,7 @@ def test_files_differ_size_mismatch(tmp_path: Path):
     file_b = tmp_path / "b.txt"
     file_a.write_text("short", encoding="utf-8")
     file_b.write_text("much longer content here", encoding="utf-8")
-    assert harvest._files_differ(str(file_a), str(file_b)) is True
+    assert files_differ(str(file_a), str(file_b)) is True
 
 
 def test_files_differ_large_files(tmp_path: Path):
@@ -556,12 +565,12 @@ def test_files_differ_large_files(tmp_path: Path):
     data = b"x" * 10000
     file_a.write_bytes(data)
     file_b.write_bytes(data)
-    assert harvest._files_differ(str(file_a), str(file_b)) is False
+    assert files_differ(str(file_a), str(file_b)) is False
 
 
 def test_hint_names_with_unit_and_packages():
     """Test _hint_names extracts hints from unit and packages."""
-    result = harvest._hint_names("nginx.service", {"nginx-common", "nginx-core"})
+    result = _hint_names("nginx.service", {"nginx-common", "nginx-core"})
     assert "nginx" in result
     assert "nginx-common" in result
     assert "nginx-core" in result
@@ -569,20 +578,20 @@ def test_hint_names_with_unit_and_packages():
 
 def test_hint_names_with_template_unit():
     """Test _hint_names handles template units."""
-    result = harvest._hint_names("getty@tty1.service", set())
+    result = _hint_names("getty@tty1.service", set())
     assert "getty" in result
     assert "getty@tty1" in result
 
 
 def test_hint_names_with_dotted_unit():
     """Test _hint_names handles dotted unit names."""
-    result = harvest._hint_names("nginx.service", set())
+    result = _hint_names("nginx.service", set())
     assert "nginx" in result
 
 
 def test_hint_names_empty():
     """Test _hint_names with empty inputs."""
-    result = harvest._hint_names("", set())
+    result = _hint_names("", set())
     assert result == set()
 
 
@@ -594,7 +603,7 @@ def test_add_pkgs_from_etc_topdirs():
         "ssh": {"openssh-server"},
     }
     pkgs = set()
-    harvest._add_pkgs_from_etc_topdirs(hints, topdir_to_pkgs, pkgs)
+    add_pkgs_from_etc_topdirs(hints, topdir_to_pkgs, pkgs)
     # Should add packages from matching topdirs
     assert "nginx-common" in pkgs or "nginx-core" in pkgs
 
@@ -604,7 +613,7 @@ def test_add_pkgs_from_etc_topdirs_empty():
     hints = set()
     topdir_to_pkgs = {}
     pkgs = set()
-    harvest._add_pkgs_from_etc_topdirs(hints, topdir_to_pkgs, pkgs)
+    add_pkgs_from_etc_topdirs(hints, topdir_to_pkgs, pkgs)
     assert pkgs == set()
 
 
@@ -612,47 +621,47 @@ def test_is_confish_with_conf(tmp_path: Path):
     """Test _is_confish recognizes .conf files."""
     file1 = tmp_path / "test.conf"
     file1.write_text("[Unit]", encoding="utf-8")
-    assert harvest._is_confish(str(file1)) is True
+    assert _is_confish(str(file1)) is True
 
 
 def test_is_confish_with_yaml(tmp_path: Path):
     """Test _is_confish recognizes .yaml files."""
     file1 = tmp_path / "test.yaml"
     file1.write_text("key: value", encoding="utf-8")
-    assert harvest._is_confish(str(file1)) is True
+    assert _is_confish(str(file1)) is True
 
 
 def test_is_confish_with_json(tmp_path: Path):
     """Test _is_confish recognizes .json files."""
     file1 = tmp_path / "test.json"
     file1.write_text('{"key": "value"}', encoding="utf-8")
-    assert harvest._is_confish(str(file1)) is True
+    assert _is_confish(str(file1)) is True
 
 
 def test_is_confish_with_service(tmp_path: Path):
     """Test _is_confish recognizes .service files."""
     file1 = tmp_path / "test.service"
     file1.write_text("[Unit]", encoding="utf-8")
-    assert harvest._is_confish(str(file1)) is True
+    assert _is_confish(str(file1)) is True
 
 
 def test_is_confish_with_extensionless(tmp_path: Path):
     """Test _is_confish recognizes extensionless config files."""
     file1 = tmp_path / "default"
     file1.write_text("OPTIONS=", encoding="utf-8")
-    assert harvest._is_confish(str(file1)) is True
+    assert _is_confish(str(file1)) is True
 
 
 def test_is_confish_not_config(tmp_path: Path):
     """Test _is_confish rejects non-config files."""
     file1 = tmp_path / "test.log"
     file1.write_text("log", encoding="utf-8")
-    assert harvest._is_confish(str(file1)) is False
+    assert _is_confish(str(file1)) is False
 
 
 def test_is_confish_nonexistent():
     """Test _is_confish returns False for nonexistent files."""
-    assert harvest._is_confish("/nonexistent/file.xyz") is False
+    assert _is_confish("/nonexistent/file.xyz") is False
 
 
 """Additional coverage tests for harvest.py"""
@@ -1065,7 +1074,7 @@ def test_user_shell_dotfiles_are_not_auto_captured_without_dangerous(tmp_path: P
     managed: list[ManagedFile] = []
     excluded: list[ExcludedFile] = []
 
-    captured = harvest._capture_user_shell_dotfiles(
+    captured = capture_user_shell_dotfiles(
         bundle_dir=str(tmp_path / "bundle"),
         role_name="users",
         home=str(home),
@@ -1106,7 +1115,7 @@ def test_user_shell_dotfiles_dangerous_captures_changed_files_only(tmp_path: Pat
     managed: list[ManagedFile] = []
     excluded: list[ExcludedFile] = []
 
-    captured = harvest._capture_user_shell_dotfiles(
+    captured = capture_user_shell_dotfiles(
         bundle_dir=str(tmp_path / "bundle"),
         role_name="users",
         home=str(home),
