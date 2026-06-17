@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "enroll"
-version = "0.7.0-beta1"
+version = "0.7.0b1"
 description = "Enroll a server's running state retrospectively into Ansible"
 authors = ["Miguel Jacq <mig@mig5.net>"]
 license = "GPL-3.0-or-later"
