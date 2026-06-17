@@ -1,0 +1,1 @@
+"""Ansible manifest renderer implementation."""

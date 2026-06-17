@@ -210,11 +210,18 @@ def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
         if member_path != dest and not str(member_path).startswith(str(dest) + os.sep):
             raise RuntimeError(f"Unsafe tar member path: {name}")
 
-    # Extract members one-by-one after validation.
+    # Extract members one-by-one after validation.  Pass an explicit tarfile
+    # extraction filter on Python versions that support it so Python 3.12/3.13
+    # do not warn about the Python 3.14 default changing.  Keep the older call
+    # path for Python 3.10/3.11, where the filter argument is unavailable.
+    supports_filter = hasattr(tarfile, "data_filter")
     for m in tar.getmembers():
         if m.name in {".", "./"}:
             continue
-        tar.extract(m, path=dest)
+        if supports_filter:
+            tar.extract(m, path=dest, filter="data")
+        else:
+            tar.extract(m, path=dest)
 
 
 def _build_enroll_pyz(tmpdir: Path) -> Path:

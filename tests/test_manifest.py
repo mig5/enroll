@@ -7,7 +7,11 @@ import tarfile
 import pytest
 
 import enroll.manifest as manifest
-from enroll import ansible as ansible_mod
+from enroll.ansible_renderer import context as ansible_context
+from enroll.ansible_renderer import jinjaturtle as ansible_jt
+from enroll.ansible_renderer import layout as ansible_layout
+from enroll.ansible_renderer import tasks as ansible_tasks
+from enroll.ansible_renderer import yamlutil as ansible_yaml
 
 
 def _minimal_package_state(packages):
@@ -825,7 +829,7 @@ def test_copy2_replace_overwrites_readonly_destination(tmp_path: Path):
     import os
     import stat
 
-    from enroll.ansible import _copy2_replace
+    from enroll.ansible_renderer.layout import _copy2_replace
 
     src = tmp_path / "src"
     dst = tmp_path / "dst"
@@ -935,14 +939,15 @@ def test_manifest_includes_dnf_config_role_when_present(tmp_path: Path):
     assert "Deploy any other managed files" in tasks
 
 
-def test_render_install_packages_tasks_contains_dnf_branch():
-    from enroll.ansible import _render_install_packages_tasks
+def test_render_install_packages_tasks_uses_generic_package_provider():
+    from enroll.ansible_renderer.tasks import _render_install_packages_tasks
 
     txt = _render_install_packages_tasks("role", "role")
-    assert "ansible.builtin.apt" in txt
-    assert "ansible.builtin.dnf" in txt
     assert "ansible.builtin.package" in txt
-    assert "pkg_mgr" in txt
+    assert "ansible.builtin.apt" not in txt
+    assert "ansible.builtin.dnf" not in txt
+    assert "ansible.builtin.dnf5" not in txt
+    assert "pkg_mgr" not in txt
 
 
 def test_manifest_orders_cron_and_logrotate_at_playbook_tail(tmp_path: Path):
@@ -1074,9 +1079,9 @@ def test_manifest_orders_cron_and_logrotate_at_playbook_tail(tmp_path: Path):
 
 
 def test_yaml_helpers_fallback_when_yaml_unavailable(monkeypatch):
-    monkeypatch.setattr(ansible_mod, "_try_yaml", lambda: None)
-    assert ansible_mod._yaml_load_mapping("foo: 1\n") == {}
-    out = ansible_mod._yaml_dump_mapping({"b": 2, "a": 1})
+    monkeypatch.setattr(ansible_yaml, "_try_yaml", lambda: None)
+    assert ansible_yaml._yaml_load_mapping("foo: 1\n") == {}
+    out = ansible_yaml._yaml_dump_mapping({"b": 2, "a": 1})
     # Best-effort fallback is key: repr(value)
     assert out.splitlines()[0].startswith("a: ")
     assert out.endswith("\n")
@@ -1091,7 +1096,7 @@ def test_copy2_replace_makes_readonly_sources_user_writable(
     # Make source read-only; copy2 preserves mode, so tmp will be read-only too.
     os.chmod(src, 0o444)
 
-    ansible_mod._copy2_replace(str(src), str(dst))
+    ansible_layout._copy2_replace(str(src), str(dst))
 
     st = os.stat(dst, follow_symlinks=False)
     assert stat.S_IMODE(st.st_mode) & stat.S_IWUSR
@@ -1209,13 +1214,13 @@ def test_manifest_applies_jinjaturtle_to_jinjifyable_managed_file(
         __import__("json").dumps(state), encoding="utf-8"
     )
 
-    monkeypatch.setattr(ansible_mod, "find_jinjaturtle_cmd", lambda: "jinjaturtle")
+    monkeypatch.setattr(ansible_context, "find_jinjaturtle_cmd", lambda: "jinjaturtle")
 
     class _Res:
         template_text = "key={{ foo }}\n"
         vars_text = "foo: 123\n"
 
-    monkeypatch.setattr(ansible_mod, "run_jinjaturtle", lambda *a, **k: _Res())
+    monkeypatch.setattr(ansible_jt, "run_jinjaturtle", lambda *a, **k: _Res())
 
     out_dir = tmp_path / "out"
     manifest.manifest(str(bundle), str(out_dir), jinjaturtle="on")
@@ -1331,7 +1336,7 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
 
 
 def test_try_yaml_with_yaml_installed():
-    result = ansible_mod._try_yaml()
+    result = ansible_yaml._try_yaml()
     # PyYAML should be installed for tests
     if result is None:
         pytest.skip("PyYAML not installed")
@@ -1348,55 +1353,55 @@ list:
   - item1
   - item2
 """
-    result = ansible_mod._yaml_load_mapping(text)
+    result = ansible_yaml._yaml_load_mapping(text)
     assert result["key1"] == "value1"
     assert result["key2"]["nested"] == "value"
     assert result["list"] == ["item1", "item2"]
 
 
 def test_yaml_load_mapping_empty():
-    result = ansible_mod._yaml_load_mapping("")
+    result = ansible_yaml._yaml_load_mapping("")
     assert result == {}
 
 
 def test_yaml_load_mapping_invalid():
-    result = ansible_mod._yaml_load_mapping("invalid: yaml: :")
+    result = ansible_yaml._yaml_load_mapping("invalid: yaml: :")
     assert result == {}
 
 
 def test_yaml_load_mapping_not_dict():
-    result = ansible_mod._yaml_load_mapping("- item1\n- item2")
+    result = ansible_yaml._yaml_load_mapping("- item1\n- item2")
     assert result == {}
 
 
 def test_yaml_load_mapping_none():
-    result = ansible_mod._yaml_load_mapping("~")
+    result = ansible_yaml._yaml_load_mapping("~")
     assert result == {}
 
 
 def test_yaml_dump_mapping_with_yaml(tmp_path: Path):
     obj = {"key1": "value1", "key2": 123}
-    result = ansible_mod._yaml_dump_mapping(obj)
+    result = ansible_yaml._yaml_dump_mapping(obj)
     assert "key1: value1" in result
     assert "key2:" in result
 
 
 def test_yaml_dump_mapping_empty():
-    result = ansible_mod._yaml_dump_mapping({})
+    result = ansible_yaml._yaml_dump_mapping({})
     # Empty dict produces '{}'
     assert result.strip() == "{}"
 
 
 def test_yaml_dump_mapping_with_nested(tmp_path: Path):
     obj = {"key1": {"nested": "value"}}
-    result = ansible_mod._yaml_dump_mapping(obj)
+    result = ansible_yaml._yaml_dump_mapping(obj)
     assert "nested:" in result
 
 
 def test_merge_mappings_overwrite_simple():
     existing = {"key1": "old", "key2": "keep"}
     incoming = {"key1": "new", "key3": "added"}
-    result = ansible_mod._merge_mappings_overwrite(existing, incoming)
+    result = ansible_yaml._merge_mappings_overwrite(existing, incoming)
     assert result["key1"] == "new"
     assert result["key2"] == "keep"
     assert result["key3"] == "added"
@@ -1405,16 +1410,16 @@ def test_merge_mappings_overwrite_simple():
 def test_merge_mappings_overwrite_nested():
     existing = {"key1": {"a": 1}}
     incoming = {"key1": {"b": 2}}
-    result = ansible_mod._merge_mappings_overwrite(existing, incoming)
+    result = ansible_yaml._merge_mappings_overwrite(existing, incoming)
     # Nested dicts are replaced, not merged
     assert result["key1"] == {"b": 2}
 
 
 def test_merge_mappings_overwrite_empty():
-    result = ansible_mod._merge_mappings_overwrite({}, {"key": "value"})
+    result = ansible_yaml._merge_mappings_overwrite({}, {"key": "value"})
     assert result == {"key": "value"}
 
-    result = ansible_mod._merge_mappings_overwrite({"key": "value"}, {})
+    result = ansible_yaml._merge_mappings_overwrite({"key": "value"}, {})
     assert result == {"key": "value"}
 
 
@@ -1423,7 +1428,7 @@ def test_copy2_replace(tmp_path: Path):
     src.write_text("content", encoding="utf-8")
     dst = tmp_path / "dst" / "subdir" / "dst.txt"
 
-    ansible_mod._copy2_replace(str(src), str(dst))
+    ansible_layout._copy2_replace(str(src), str(dst))
 
     assert dst.exists()
     assert dst.read_text(encoding="utf-8") == "content"
@@ -1435,7 +1440,7 @@ def test_copy2_replace_preserves_metadata(tmp_path: Path):
     os.chmod(str(src), 0o644)
     dst = tmp_path / "dst.txt"
 
-    ansible_mod._copy2_replace(str(src), str(dst))
+    ansible_layout._copy2_replace(str(src), str(dst))
 
     assert dst.exists()
     st = dst.stat()
@@ -1450,30 +1455,30 @@ def test_copy2_replace_atomic(tmp_path: Path):
     # Write initial content
     dst.write_text("old", encoding="utf-8")
 
-    ansible_mod._copy2_replace(str(src), str(dst))
+    ansible_layout._copy2_replace(str(src), str(dst))
 
     assert dst.read_text(encoding="utf-8") == "content"
 
 
 def test_render_firewall_runtime_tasks_empty():
-    result = ansible_mod._render_firewall_runtime_tasks("firewall_runtime")
+    result = ansible_tasks._render_firewall_runtime_tasks("firewall_runtime")
     # Function always returns at least a basic playbook structure
     assert isinstance(result, str)
     assert len(result) > 0
 
 
 def test_render_firewall_runtime_tasks_with_iptables():
-    result = ansible_mod._render_firewall_runtime_tasks("firewall_runtime")
+    result = ansible_tasks._render_firewall_runtime_tasks("firewall_runtime")
     assert len(result) >= 1
 
 
 def test_render_firewall_runtime_tasks_with_ipset():
-    result = ansible_mod._render_firewall_runtime_tasks("firewall_runtime")
+    result = ansible_tasks._render_firewall_runtime_tasks("firewall_runtime")
     assert len(result) >= 1
 
 
 def test_render_firewall_runtime_tasks_with_ipv6():
-    result = ansible_mod._render_firewall_runtime_tasks("firewall_runtime")
+    result = ansible_tasks._render_firewall_runtime_tasks("firewall_runtime")
     assert len(result) >= 1
 
 
@@ -1753,7 +1758,7 @@ def test_users_role_only_creates_ssh_dir_when_managed_ssh_files_exist(tmp_path):
     users_defaults_text = (out / "roles" / "users" / "defaults" / "main.yml").read_text(
         encoding="utf-8"
     )
-    users_defaults = ansible_mod._yaml_load_mapping(users_defaults_text)
+    users_defaults = ansible_yaml._yaml_load_mapping(users_defaults_text)
     users_tasks = (out / "roles" / "users" / "tasks" / "main.yml").read_text(
         encoding="utf-8"
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -756,8 +757,14 @@ def test_safe_extract_tar_accepts_valid_files(tmp_path: Path):
 
     bio.seek(0)
     with tarfile.open(fileobj=bio, mode="r:gz") as tf:
-        _safe_extract_tar(tf, tmp_path)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            _safe_extract_tar(tf, tmp_path)
 
+    assert not any(
+        "Python 3.14" in str(w.message) and issubclass(w.category, DeprecationWarning)
+        for w in caught
+    )
     assert (tmp_path / "foo" / "bar.txt").read_bytes() == b"hello"
 
 
