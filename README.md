@@ -441,6 +441,13 @@ enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn "$(hostname -f)"
 ```
 
+
+### Container image caches
+
+If Docker or Podman is available during harvest, Enroll records local image-cache metadata from `image ls` and `image inspect`. Images that expose registry `RepoDigest` values are reproducible by digest, for example `registry.example.net/app@sha256:...`; those are the references rendered into manifests. Local image IDs and tag-only images are preserved as evidence and notes, but are not treated as exact registry pull references.
+
+For Ansible, digest-pinned Docker images are pulled with `community.docker.docker_image_pull` and digest-pinned Podman images are pulled with `containers.podman.podman_image`; harvested tag aliases are re-applied where possible. The generated `requirements.yml` includes `community.docker` and `containers.podman` alongside any other required collections. In `--fqdn` mode the image list is host-specific inventory data.
+
 ### Puppet target
 ```bash
 enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-puppet --target puppet
@@ -459,7 +466,7 @@ Or with absolute paths:
 sudo puppet apply --modulepath /tmp/enroll-puppet/modules /tmp/enroll-puppet/manifests/site.pp --noop
 ```
 
-Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Puppet README rather than converted into Puppet resources.
+Docker images with registry digests are rendered as `docker::image` resources and require the Puppet environment to provide `puppetlabs-docker`; the generated module metadata records that dependency. Podman images with registry digests are rendered as guarded `podman pull` / `podman tag` exec resources. Images without `RepoDigest` are recorded in harvest state and notes, but are not converted into exact pull resources. Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Puppet README rather than converted into Puppet resources.
 
 ### Salt target
 ```bash
@@ -481,7 +488,7 @@ cd /tmp/enroll-salt
 sudo salt-call --local --file-root ./states --pillar-root ./pillar --id host.example.com state.apply test=True
 ```
 
-Re-running Salt `--fqdn` output into the same directory adds or replaces that minion's top/pillar data without deleting other generated minions. Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Salt README rather than converted into Salt states.
+Re-running Salt `--fqdn` output into the same directory adds or replaces that minion's top/pillar data without deleting other generated minions. Docker images with registry digests are rendered with Salt's native `docker_image.present` state. Podman images with registry digests are rendered as guarded `podman pull` / `podman tag` command states. Images without `RepoDigest` are recorded in harvest state and notes, but are not converted into exact pull states. Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Salt README rather than converted into Salt states.
 
 ### Manifest with `--sops`
 ```bash

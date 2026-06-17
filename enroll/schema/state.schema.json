@@ -16,6 +16,181 @@
       ],
       "unevaluatedProperties": false
     },
+    "ContainerImageTagAlias": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "repository": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tag": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "repository",
+        "tag"
+      ],
+      "type": "object"
+    },
+    "ContainerImage": {
+      "additionalProperties": false,
+      "properties": {
+        "architecture": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engine": {
+          "enum": [
+            "docker",
+            "podman"
+          ],
+          "type": "string"
+        },
+        "home": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "image_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "os": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo_digests": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "repo_tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scope": {
+          "enum": [
+            "system",
+            "user"
+          ],
+          "type": "string"
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "tag_aliases": {
+          "items": {
+            "$ref": "#/$defs/ContainerImageTagAlias"
+          },
+          "type": "array"
+        },
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "engine",
+        "scope",
+        "user",
+        "home",
+        "image_id",
+        "repo_tags",
+        "repo_digests",
+        "pull_ref",
+        "tag_aliases",
+        "os",
+        "architecture",
+        "variant",
+        "platform",
+        "size",
+        "created",
+        "source",
+        "notes"
+      ],
+      "type": "object"
+    },
+    "ContainerImagesSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "images": {
+          "items": {
+            "$ref": "#/$defs/ContainerImage"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "role_name": {
+          "const": "container_images"
+        }
+      },
+      "required": [
+        "role_name",
+        "images",
+        "notes"
+      ],
+      "type": "object"
+    },
     "DnfConfigSnapshot": {
       "allOf": [
         {
@@ -1060,6 +1235,9 @@
         },
         "snap": {
           "$ref": "#/$defs/SnapSnapshot"
+        },
+        "container_images": {
+          "$ref": "#/$defs/ContainerImagesSnapshot"
         }
       },
       "required": [

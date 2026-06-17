@@ -133,3 +133,19 @@ def _build_managed_links_var(
             continue
         out.append({"dest": dest, "src": src})
     return out
+
+
+def _normalise_container_image_item(item: Any) -> Dict[str, Any]:
+    if isinstance(item, dict):
+        out = dict(item)
+    else:
+        out = {"pull_ref": str(item)}
+    out.setdefault("engine", "docker")
+    out.setdefault("scope", "system")
+    out.setdefault("user", None)
+    out.setdefault("home", None)
+    out.setdefault("repo_tags", [])
+    out.setdefault("repo_digests", [])
+    out.setdefault("tag_aliases", [])
+    out.setdefault("notes", [])
+    return out

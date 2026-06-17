@@ -195,6 +195,7 @@ def role_order_key(role: str) -> tuple[int, str]:
         "etc_custom": 80,
         "usr_local_custom": 81,
         "extra_paths": 82,
+        "container_images": 88,
         "users": 90,
         "sysctl": 95,
         "firewall_runtime": 99,

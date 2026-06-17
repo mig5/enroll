@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,10 @@ class SaltRole(CMModule):
             role_name=role_name,
             module_name=_salt_name(role_name, fallback="enroll_role"),
         )
+        self.container_images: List[Dict[str, Any]] = []
+
+    def has_resources(self) -> bool:
+        return super().has_resources() or bool(self.container_images)
 
     @property
     def sls_name(self) -> str:
@@ -84,6 +89,40 @@ class SaltRole(CMModule):
             self.notes.append(
                 "Per-user Flatpak resources were detected but are not rendered as native Salt states."
             )
+
+    def add_container_images_snapshot(self, snap: Dict[str, Any]) -> None:
+        for raw in snap.get("images", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            engine = str(raw.get("engine") or "").strip().lower()
+            pull_ref = str(raw.get("pull_ref") or "").strip()
+            if engine not in {"docker", "podman"}:
+                continue
+            if not pull_ref:
+                tags = ", ".join(str(t) for t in (raw.get("repo_tags") or []) if t)
+                label = tags or str(raw.get("image_id") or "unknown image")
+                self.notes.append(
+                    f"Container image {label} has no RepoDigest; exact Salt pull state was not rendered."
+                )
+                continue
+            item = dict(raw)
+            item["engine"] = engine
+            item["pull_ref"] = pull_ref
+            item["scope"] = str(item.get("scope") or "system").strip() or "system"
+            item["tag_aliases"] = [
+                dict(alias)
+                for alias in (item.get("tag_aliases") or [])
+                if isinstance(alias, dict) and alias.get("ref")
+            ]
+            item["pull_cmd"] = _container_pull_cmd(engine, pull_ref)
+            item["pull_unless"] = _container_exists_cmd(engine, pull_ref)
+            for alias in item["tag_aliases"]:
+                alias_ref = str(alias.get("ref") or "")
+                alias["tag_cmd"] = _container_tag_cmd(engine, pull_ref, alias_ref)
+                alias["tag_unless"] = _container_exists_cmd(engine, alias_ref)
+            self.container_images.append(item)
+        for note in snap.get("notes", []) or []:
+            self.notes.append(str(note))
 
     def add_managed_content(
         self,
@@ -184,6 +223,24 @@ def _yaml_quote(value: Any) -> str:
 
 def _yaml_bool(value: Any) -> str:
     return "true" if bool(value) else "false"
+
+
+def _shell_quote(value: Any) -> str:
+    return shlex.quote(str(value or ""))
+
+
+def _container_pull_cmd(engine: str, pull_ref: str) -> str:
+    return f"{engine} pull {_shell_quote(pull_ref)}"
+
+
+def _container_exists_cmd(engine: str, ref: str) -> str:
+    if engine == "podman":
+        return f"podman image exists {_shell_quote(ref)}"
+    return f"docker image inspect {_shell_quote(ref)} >/dev/null 2>&1"
+
+
+def _container_tag_cmd(engine: str, pull_ref: str, tag_ref: str) -> str:
+    return f"{engine} tag {_shell_quote(pull_ref)} {_shell_quote(tag_ref)}"
 
 
 def _clean_gecos_part(value: Any) -> Optional[str]:
@@ -382,6 +439,15 @@ def _collect_salt_roles(
             file_prefix=node_file_prefix,
         )
 
+    container_images = roles.get("container_images") or {}
+    if isinstance(container_images, dict) and (
+        container_images.get("images") or container_images.get("notes")
+    ):
+        srole = ensure_role(
+            str(container_images.get("role_name") or "container_images")
+        )
+        srole.add_container_images_snapshot(container_images)
+
     fw = roles.get("firewall_runtime") or {}
     if isinstance(fw, dict):
         has_fw = (
@@ -509,6 +575,64 @@ def _render_static_role(srole: SaltRole) -> str:
             ]
         )
 
+    for idx, image in enumerate(srole.container_images, start=1):
+        engine = str(image.get("engine") or "").strip()
+        pull_ref = str(image.get("pull_ref") or "").strip()
+        if not engine or not pull_ref:
+            continue
+        if engine == "docker":
+            pull_state_id = _state_id("docker_image", pull_ref, role=srole.module_name)
+            lines.extend(
+                [
+                    f"{pull_state_id}:",
+                    "  docker_image.present:",
+                    f"    - name: {_yaml_quote(pull_ref)}",
+                    "    - force: false",
+                    "",
+                ]
+            )
+            for alias in image.get("tag_aliases") or []:
+                tag_ref = str(alias.get("ref") or "").strip()
+                if not tag_ref:
+                    continue
+                lines.extend(
+                    [
+                        f"{_state_id('docker_tag', tag_ref, role=srole.module_name)}:",
+                        "  cmd.run:",
+                        f"    - name: {_yaml_quote(alias.get('tag_cmd') or _container_tag_cmd(engine, pull_ref, tag_ref))}",
+                        f"    - unless: {_yaml_quote(alias.get('tag_unless') or _container_exists_cmd(engine, tag_ref))}",
+                        "    - require:",
+                        f"      - docker_image: {pull_state_id}",
+                        "",
+                    ]
+                )
+        elif engine == "podman":
+            pull_state_id = _state_id("podman_pull", pull_ref, role=srole.module_name)
+            lines.extend(
+                [
+                    f"{pull_state_id}:",
+                    "  cmd.run:",
+                    f"    - name: {_yaml_quote(image.get('pull_cmd') or _container_pull_cmd(engine, pull_ref))}",
+                    f"    - unless: {_yaml_quote(image.get('pull_unless') or _container_exists_cmd(engine, pull_ref))}",
+                    "",
+                ]
+            )
+            for alias in image.get("tag_aliases") or []:
+                tag_ref = str(alias.get("ref") or "").strip()
+                if not tag_ref:
+                    continue
+                lines.extend(
+                    [
+                        f"{_state_id('podman_tag', tag_ref, role=srole.module_name)}:",
+                        "  cmd.run:",
+                        f"    - name: {_yaml_quote(alias.get('tag_cmd') or _container_tag_cmd(engine, pull_ref, tag_ref))}",
+                        f"    - unless: {_yaml_quote(alias.get('tag_unless') or _container_exists_cmd(engine, tag_ref))}",
+                        "    - require:",
+                        f"      - cmd: {pull_state_id}",
+                        "",
+                    ]
+                )
+
     if "/etc/sysctl.d/99-enroll.conf" in srole.files:
         lines.extend(
             [
@@ -600,6 +724,8 @@ def _role_pillar_values(srole: SaltRole) -> Dict[str, Any]:
         }
     if "/etc/sysctl.d/99-enroll.conf" in srole.files:
         data["sysctl_apply"] = True
+    if srole.container_images:
+        data["container_images"] = list(srole.container_images)
     if srole.notes:
         data["notes"] = list(srole.notes)
     return data
@@ -685,6 +811,38 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "  service.{{ 'running' if svc.get('state') == 'running' else 'dead' }}:",
         "    - name: {{ svc.get('name', service_id)|yaml_dquote }}",
         "    - enable: {{ svc.get('enable', False)|yaml_encode }}",
+        "{% endfor %}",
+        "",
+        "{% for image in role.get('container_images', []) %}",
+        "{% if image.get('engine') == 'docker' and image.get('pull_ref') %}",
+        f"enroll_docker_image_{role_key}_{{{{ loop.index }}}}:",
+        "  docker_image.present:",
+        "    - name: {{ image.get('pull_ref')|yaml_dquote }}",
+        "    - force: false",
+        "{% set image_loop = loop.index %}",
+        "{% for alias in image.get('tag_aliases', []) %}",
+        f"enroll_docker_tag_{role_key}_{{{{ image_loop }}}}_{{{{ loop.index }}}}:",
+        "  cmd.run:",
+        "    - name: {{ alias.get('tag_cmd')|yaml_dquote }}",
+        "    - unless: {{ alias.get('tag_unless')|yaml_dquote }}",
+        "    - require:",
+        f"      - docker_image: enroll_docker_image_{role_key}_{{{{ image_loop }}}}",
+        "{% endfor %}",
+        "{% elif image.get('engine') == 'podman' and image.get('pull_ref') %}",
+        f"enroll_podman_pull_{role_key}_{{{{ loop.index }}}}:",
+        "  cmd.run:",
+        "    - name: {{ image.get('pull_cmd')|yaml_dquote }}",
+        "    - unless: {{ image.get('pull_unless')|yaml_dquote }}",
+        "{% set image_loop = loop.index %}",
+        "{% for alias in image.get('tag_aliases', []) %}",
+        f"enroll_podman_tag_{role_key}_{{{{ image_loop }}}}_{{{{ loop.index }}}}:",
+        "  cmd.run:",
+        "    - name: {{ alias.get('tag_cmd')|yaml_dquote }}",
+        "    - unless: {{ alias.get('tag_unless')|yaml_dquote }}",
+        "    - require:",
+        f"      - cmd: enroll_podman_pull_{role_key}_{{{{ image_loop }}}}",
+        "{% endfor %}",
+        "{% endif %}",
         "{% endfor %}",
         "",
         "{% if role.get('sysctl_apply') and '/etc/sysctl.d/99-enroll.conf' in role.get('files', {}) %}",
@@ -875,6 +1033,8 @@ This Salt target reuses the existing harvest state without changing harvesting b
 - Managed directories, files, and symlinks from harvested roles.
 - Basic service enablement/running-state resources.
 - `/etc/sysctl.d/99-enroll.conf` plus an `onchanges` sysctl apply command when present.
+- Docker images by digest using Salt's native `docker_image.present` state.
+- Podman images by digest using guarded `podman pull` / `podman tag` command states.
 
 ## Current limitations
 

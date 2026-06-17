@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import shlex
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -26,6 +28,10 @@ class PuppetRole(CMModule):
             role_name=role_name,
             module_name=_puppet_name(role_name, fallback="enroll_role"),
         )
+        self.container_images: List[Dict[str, Any]] = []
+
+    def has_resources(self) -> bool:
+        return super().has_resources() or bool(self.container_images)
 
     def add_package_snapshot(self, snap: Dict[str, Any]) -> None:
         pkg = str(snap.get("package") or "").strip()
@@ -81,6 +87,43 @@ class PuppetRole(CMModule):
             self.notes.append(
                 "Per-user Flatpak resources were detected but are not yet rendered as native Puppet resources."
             )
+
+    def add_container_images_snapshot(self, snap: Dict[str, Any]) -> None:
+        for raw in snap.get("images", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            engine = str(raw.get("engine") or "").strip().lower()
+            pull_ref = str(raw.get("pull_ref") or "").strip()
+            if engine not in {"docker", "podman"}:
+                continue
+            if not pull_ref:
+                tags = ", ".join(str(t) for t in (raw.get("repo_tags") or []) if t)
+                label = tags or str(raw.get("image_id") or "unknown image")
+                self.notes.append(
+                    f"Container image {label} has no RepoDigest; exact Puppet pull resource was not rendered."
+                )
+                continue
+            item = dict(raw)
+            item["engine"] = engine
+            item["pull_ref"] = pull_ref
+            item["scope"] = str(item.get("scope") or "system").strip() or "system"
+            image_name, image_digest = _split_digest_ref(pull_ref)
+            item["image"] = image_name
+            item["image_digest"] = image_digest
+            item["tag_aliases"] = [
+                dict(alias)
+                for alias in (item.get("tag_aliases") or [])
+                if isinstance(alias, dict) and alias.get("ref")
+            ]
+            item["pull_cmd"] = _container_pull_cmd(engine, pull_ref)
+            item["pull_unless"] = _container_exists_cmd(engine, pull_ref)
+            for alias in item["tag_aliases"]:
+                alias_ref = str(alias.get("ref") or "")
+                alias["tag_cmd"] = _container_tag_cmd(engine, pull_ref, alias_ref)
+                alias["tag_unless"] = _container_exists_cmd(engine, alias_ref)
+            self.container_images.append(item)
+        for note in snap.get("notes", []) or []:
+            self.notes.append(str(note))
 
     def add_managed_content(
         self,
@@ -196,6 +239,32 @@ def _pp_bool(value: bool) -> str:
     return "true" if bool(value) else "false"
 
 
+def _shell_quote(value: Any) -> str:
+    return shlex.quote(str(value or ""))
+
+
+def _split_digest_ref(value: Any) -> Tuple[str, Optional[str]]:
+    text = str(value or "").strip()
+    if "@" not in text:
+        return text, None
+    image, digest = text.split("@", 1)
+    return image, digest
+
+
+def _container_pull_cmd(engine: str, pull_ref: str) -> str:
+    return f"{engine} pull {_shell_quote(pull_ref)}"
+
+
+def _container_exists_cmd(engine: str, ref: str) -> str:
+    if engine == "podman":
+        return f"podman image exists {_shell_quote(ref)}"
+    return f"docker image inspect {_shell_quote(ref)} >/dev/null 2>&1"
+
+
+def _container_tag_cmd(engine: str, pull_ref: str, tag_ref: str) -> str:
+    return f"{engine} tag {_shell_quote(pull_ref)} {_shell_quote(tag_ref)}"
+
+
 def _pp_array(values: Iterable[Any]) -> str:
     return "[" + ", ".join(_pp_quote(v) for v in values) + "]"
 
@@ -208,6 +277,20 @@ def _resource(
         lines.append(f"    {key} => {value},")
     lines.append("  }")
     lines.append("")
+
+
+def _state_title(prefix: str, value: Any) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "item")).strip("-._")
+    if not safe:
+        safe = "item"
+    if len(safe) > 64:
+        digest = hashlib.sha1(
+            str(value).encode("utf-8", errors="replace")
+        ).hexdigest()[  # nosec B324
+            :8
+        ]
+        safe = safe[:48] + "-" + digest
+    return f"enroll-{prefix}-{safe}"
 
 
 def _copy_artifact(
@@ -378,6 +461,15 @@ def _collect_puppet_roles(
             file_prefix=node_file_prefix,
         )
 
+    container_images = roles.get("container_images") or {}
+    if isinstance(container_images, dict) and (
+        container_images.get("images") or container_images.get("notes")
+    ):
+        prole = ensure_role(
+            str(container_images.get("role_name") or "container_images")
+        )
+        prole.add_container_images_snapshot(container_images)
+
     fw = roles.get("firewall_runtime") or {}
     if isinstance(fw, dict):
         has_fw = (
@@ -496,6 +588,99 @@ def _render_role_class(prole: PuppetRole) -> str:
             ],
         )
 
+    for image in prole.container_images:
+        engine = str(image.get("engine") or "").strip()
+        pull_ref = str(image.get("pull_ref") or "").strip()
+        if not engine or not pull_ref:
+            continue
+        if engine == "docker":
+            attrs: List[Tuple[str, str]] = [("ensure", _pp_quote("present"))]
+            if image.get("image"):
+                attrs.append(("image", _pp_quote(image["image"])))
+            if image.get("image_digest"):
+                attrs.append(("image_digest", _pp_quote(image["image_digest"])))
+            _resource(lines, "docker::image", pull_ref, attrs)
+            for alias in image.get("tag_aliases") or []:
+                tag_ref = str(alias.get("ref") or "").strip()
+                if not tag_ref:
+                    continue
+                _resource(
+                    lines,
+                    "exec",
+                    _state_title("docker-tag", tag_ref),
+                    [
+                        (
+                            "command",
+                            _pp_quote(
+                                alias.get("tag_cmd")
+                                or _container_tag_cmd(engine, pull_ref, tag_ref)
+                            ),
+                        ),
+                        (
+                            "unless",
+                            _pp_quote(
+                                alias.get("tag_unless")
+                                or _container_exists_cmd(engine, tag_ref)
+                            ),
+                        ),
+                        ("path", "['/usr/bin', '/bin']"),
+                        ("require", f"Docker::Image[{_pp_quote(pull_ref)}]"),
+                    ],
+                )
+        elif engine == "podman":
+            _resource(
+                lines,
+                "exec",
+                _state_title("podman-pull", pull_ref),
+                [
+                    (
+                        "command",
+                        _pp_quote(
+                            image.get("pull_cmd")
+                            or _container_pull_cmd(engine, pull_ref)
+                        ),
+                    ),
+                    (
+                        "unless",
+                        _pp_quote(
+                            image.get("pull_unless")
+                            or _container_exists_cmd(engine, pull_ref)
+                        ),
+                    ),
+                    ("path", "['/usr/bin', '/bin']"),
+                ],
+            )
+            for alias in image.get("tag_aliases") or []:
+                tag_ref = str(alias.get("ref") or "").strip()
+                if not tag_ref:
+                    continue
+                _resource(
+                    lines,
+                    "exec",
+                    _state_title("podman-tag", tag_ref),
+                    [
+                        (
+                            "command",
+                            _pp_quote(
+                                alias.get("tag_cmd")
+                                or _container_tag_cmd(engine, pull_ref, tag_ref)
+                            ),
+                        ),
+                        (
+                            "unless",
+                            _pp_quote(
+                                alias.get("tag_unless")
+                                or _container_exists_cmd(engine, tag_ref)
+                            ),
+                        ),
+                        ("path", "['/usr/bin', '/bin']"),
+                        (
+                            "require",
+                            f"Exec[{_pp_quote(_state_title('podman-pull', pull_ref))}]",
+                        ),
+                    ],
+                )
+
     if has_sysctl_conf:
         lines.append("  if $sysctl_apply {")
         lines.append("    exec { 'enroll-apply-sysctl':")
@@ -608,6 +793,9 @@ def _role_hiera_values(prole: PuppetRole) -> Dict[str, Any]:
             for name in sorted(prole.services)
         }
 
+    if prole.container_images:
+        data[f"{prefix}container_images"] = list(prole.container_images)
+
     if prole.notes:
         data[f"{prefix}notes"] = list(prole.notes)
 
@@ -632,6 +820,7 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         "  Hash[String, Hash] $files = {},",
         "  Hash[String, Hash] $links = {},",
         "  Hash[String, Hash] $services = {},",
+        "  Array[Hash] $container_images = [],",
         "  Array[String] $notes = [],",
         "  Boolean $sysctl_apply = true,",
         "  Boolean $sysctl_ignore_apply_errors = true,",
@@ -676,6 +865,38 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         "  $services.each |String $resource_title, Hash $attrs| {",
         "    service { $resource_title:",
         "      * => $attrs,",
+        "    }",
+        "  }",
+        "",
+        "  $container_images.each |Integer $idx, Hash $image| {",
+        "    if $image['engine'] == 'docker' and $image['pull_ref'] {",
+        "      docker::image { $image['pull_ref']:",
+        "        ensure       => 'present',",
+        "        image        => $image['image'],",
+        "        image_digest => $image['image_digest'],",
+        "      }",
+        "      $image['tag_aliases'].each |Integer $tag_idx, Hash $alias| {",
+        '        exec { "enroll-docker-tag-${idx}-${tag_idx}":',
+        "          command => $alias['tag_cmd'],",
+        "          unless  => $alias['tag_unless'],",
+        "          path    => ['/usr/bin', '/bin'],",
+        "          require => Docker::Image[$image['pull_ref']],",
+        "        }",
+        "      }",
+        "    } elsif $image['engine'] == 'podman' and $image['pull_ref'] {",
+        '      exec { "enroll-podman-pull-${idx}":',
+        "        command => $image['pull_cmd'],",
+        "        unless  => $image['pull_unless'],",
+        "        path    => ['/usr/bin', '/bin'],",
+        "      }",
+        "      $image['tag_aliases'].each |Integer $tag_idx, Hash $alias| {",
+        '        exec { "enroll-podman-tag-${idx}-${tag_idx}":',
+        "          command => $alias['tag_cmd'],",
+        "          unless  => $alias['tag_unless'],",
+        "          path    => ['/usr/bin', '/bin'],",
+        '          require => Exec["enroll-podman-pull-${idx}"],',
+        "        }",
+        "      }",
         "    }",
         "  }",
         "",
@@ -791,7 +1012,16 @@ def _hiera_node_names(out: Path) -> List[str]:
     return sorted(out_names)
 
 
-def _write_metadata(module_dir: Path, module_name: str) -> None:
+def _write_metadata(module_dir: Path, module_name: str, prole: PuppetRole) -> None:
+    dependencies: List[Dict[str, str]] = []
+    if any(img.get("engine") == "docker" for img in prole.container_images):
+        dependencies.append(
+            {
+                "name": "puppetlabs-docker",
+                "version_requirement": ">= 8.0.0 < 15.0.0",
+            }
+        )
+
     (module_dir / "metadata.json").write_text(
         json.dumps(
             {
@@ -801,7 +1031,7 @@ def _write_metadata(module_dir: Path, module_name: str) -> None:
                 "summary": f"Generated Enroll Puppet module for {module_name}",
                 "license": "UNLICENSED",
                 "source": "",
-                "dependencies": [],
+                "dependencies": dependencies,
             },
             indent=2,
             sort_keys=True,
@@ -890,10 +1120,13 @@ This Puppet target reuses the existing harvest state without changing harvesting
 - Managed directories, files, and symlinks from harvested roles.
 - Basic service enablement/running-state resources.
 - `/etc/sysctl.d/99-enroll.conf` plus a refresh-only sysctl apply exec when present.
+- Docker images by digest using the `puppetlabs-docker` module's `docker::image` defined type.
+- Podman images by digest using guarded `podman pull` / `podman tag` exec resources.
 
 ## Current limitations
 
 - Flatpak, Snap, and live firewall runtime snapshots are listed as notes when present rather than rendered as Puppet resources.
+- Docker image resources require the `puppetlabs-docker` module to be installed in the Puppet environment.
 - JinjaTurtle templating is currently Ansible-oriented and is not applied to Puppet output.
 - Review generated resources before applying them broadly across unlike hosts.
 
@@ -958,7 +1191,7 @@ class PuppetManifestRenderer:
                 ),
                 encoding="utf-8",
             )
-            _write_metadata(module_dir, prole.module_name)
+            _write_metadata(module_dir, prole.module_name, prole)
 
         node_names: List[str] = []
         if hiera_mode and fqdn:

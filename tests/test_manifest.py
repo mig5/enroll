@@ -1989,3 +1989,170 @@ def test_manifest_writes_sysctl_role(tmp_path: Path):
     pb = (out / "playbook.yml").read_text(encoding="utf-8")
     assert "role: sysctl" in pb
     assert (out / "roles" / "sysctl" / "files" / "sysctl" / "99-enroll.conf").exists()
+
+
+def test_manifest_renders_container_image_role_for_ansible(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    digest = "docker.io/library/nginx@sha256:" + "a" * 64
+    podman_digest = "quay.io/example/app@sha256:" + "b" * 64
+    state = {
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+            "container_images": {
+                "role_name": "container_images",
+                "images": [
+                    {
+                        "engine": "docker",
+                        "scope": "system",
+                        "user": None,
+                        "home": None,
+                        "image_id": "sha256:" + "c" * 64,
+                        "repo_tags": ["docker.io/library/nginx:1.27"],
+                        "repo_digests": [digest],
+                        "pull_ref": digest,
+                        "tag_aliases": [
+                            {
+                                "ref": "docker.io/library/nginx:1.27",
+                                "repository": "docker.io/library/nginx",
+                                "tag": "1.27",
+                            }
+                        ],
+                        "os": "linux",
+                        "architecture": "amd64",
+                        "variant": None,
+                        "platform": "linux/amd64",
+                        "size": 123,
+                        "created": "2026-01-01T00:00:00Z",
+                        "source": "docker image inspect",
+                        "notes": [],
+                    },
+                    {
+                        "engine": "podman",
+                        "scope": "system",
+                        "user": None,
+                        "home": None,
+                        "image_id": "sha256:" + "d" * 64,
+                        "repo_tags": ["quay.io/example/app:prod"],
+                        "repo_digests": [podman_digest],
+                        "pull_ref": podman_digest,
+                        "tag_aliases": [
+                            {
+                                "ref": "quay.io/example/app:prod",
+                                "repository": "quay.io/example/app",
+                                "tag": "prod",
+                            }
+                        ],
+                        "os": "linux",
+                        "architecture": "amd64",
+                        "variant": None,
+                        "platform": "linux/amd64",
+                        "size": 456,
+                        "created": "2026-01-01T00:00:00Z",
+                        "source": "podman image inspect",
+                        "notes": [],
+                    },
+                ],
+                "notes": [],
+            },
+        }
+    }
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out))
+
+    defaults = (out / "roles" / "container_images" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    tasks = (out / "roles" / "container_images" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    meta = (out / "roles" / "container_images" / "meta" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    requirements = (out / "requirements.yml").read_text(encoding="utf-8")
+    playbook = (out / "playbook.yml").read_text(encoding="utf-8")
+
+    assert "container_images:" in defaults
+    assert digest in defaults
+    assert podman_digest in defaults
+    assert "community.docker.docker_image_pull" in tasks
+    assert "community.docker.docker_image_tag" in tasks
+    assert "containers.podman.podman_image" in tasks
+    assert "containers.podman.podman_tag" in tasks
+    assert "repository:" in tasks
+    assert "target_names:" in tasks
+    assert "community.docker" in meta
+    assert "containers.podman" in meta
+    assert "name: community.docker" in requirements
+    assert "name: containers.podman" in requirements
+    assert "role: container_images" in playbook
+
+
+def test_manifest_writes_container_images_to_hostvars_in_fqdn_mode(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    digest = "docker.io/library/nginx@sha256:" + "a" * 64
+    state = {
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+            "container_images": {
+                "role_name": "container_images",
+                "images": [
+                    {
+                        "engine": "docker",
+                        "scope": "system",
+                        "user": None,
+                        "home": None,
+                        "image_id": "sha256:" + "c" * 64,
+                        "repo_tags": ["docker.io/library/nginx:1.27"],
+                        "repo_digests": [digest],
+                        "pull_ref": digest,
+                        "tag_aliases": [],
+                        "os": "linux",
+                        "architecture": "amd64",
+                        "variant": None,
+                        "platform": "linux/amd64",
+                        "size": 123,
+                        "created": "2026-01-01T00:00:00Z",
+                        "source": "docker image inspect",
+                        "notes": [],
+                    }
+                ],
+                "notes": [],
+            },
+        }
+    }
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    manifest.manifest(str(bundle), str(out), fqdn="host.example.test")
+
+    defaults = (out / "roles" / "container_images" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    hostvars = (
+        out / "inventory" / "host_vars" / "host.example.test" / "container_images.yml"
+    ).read_text(encoding="utf-8")
+    playbook = (out / "playbooks" / "host.example.test.yml").read_text(encoding="utf-8")
+
+    assert "container_images: []" in defaults
+    assert digest in hostvars
+    assert "role: container_images" in playbook

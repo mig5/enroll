@@ -150,14 +150,62 @@ def _ensure_ansible_cfg(cfg_path: str) -> None:
         return
 
 
-def _ensure_requirements_yaml(req_path: str) -> None:
-    if not os.path.exists(req_path):
-        with open(req_path, "w", encoding="utf-8") as f:
-            f.write("---\n")
-            f.write("collections:\n")
-            f.write("  - name: community.general\n")
-            f.write('    version: ">=13.0.0"\n')
-        return
+def _ensure_requirements_yaml(
+    req_path: str,
+    collections: Optional[List[Dict[str, str]]] = None,
+) -> None:
+    requested = collections or [{"name": "community.general", "version": ">=13.0.0"}]
+
+    existing: Dict[str, Any] = {}
+    if os.path.exists(req_path):
+        try:
+            existing = _yaml_load_mapping(Path(req_path).read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    current_items = existing.get("collections")
+    if not isinstance(current_items, list):
+        current_items = []
+
+    by_name: Dict[str, Dict[str, str]] = {}
+    ordered_names: List[str] = []
+    for item in current_items:
+        if isinstance(item, str):
+            name = item.strip()
+            if not name:
+                continue
+            entry: Dict[str, str] = {"name": name}
+        elif isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            entry = {str(k): str(v) for k, v in item.items() if v is not None}
+            entry["name"] = name
+        else:
+            continue
+        if name not in by_name:
+            ordered_names.append(name)
+        by_name[name] = entry
+
+    for item in requested:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        entry = dict(item)
+        entry["name"] = name
+        if name not in by_name:
+            ordered_names.append(name)
+            by_name[name] = entry
+        else:
+            by_name[name].update(
+                {k: v for k, v in entry.items() if v not in (None, "")}
+            )
+
+    out = {"collections": [by_name[name] for name in ordered_names]}
+    Path(req_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(req_path).write_text(
+        "---\n" + _yaml_dump_mapping(out, sort_keys=False), encoding="utf-8"
+    )
 
 
 def _ensure_inventory_host(inv_path: str, fqdn: str) -> None:

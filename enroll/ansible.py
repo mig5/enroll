@@ -9,6 +9,7 @@ from .ansible_renderer.model import (
     AnsibleRole,
     _collect_ansible_roles,
 )
+from .ansible_renderer.roles.container_images import _render_container_images_role
 from .ansible_renderer.roles.desktop import _render_flatpak_role, _render_snap_role
 from .ansible_renderer.roles.managed_files import _render_managed_file_roles
 from .ansible_renderer.roles.packages import (
@@ -67,6 +68,9 @@ class AnsibleManifestRenderer:
         _render_users_role(ctx, manifest_plan, roles.get("users", {}))
         _render_flatpak_role(ctx, manifest_plan, roles.get("flatpak", {}))
         _render_snap_role(ctx, manifest_plan, roles.get("snap", {}))
+        _render_container_images_role(
+            ctx, manifest_plan, roles.get("container_images", {})
+        )
         _render_managed_file_roles(ctx, manifest_plan, roles)
         _render_sysctl_role(ctx, manifest_plan, roles.get("sysctl", {}))
         _render_firewall_runtime_role(

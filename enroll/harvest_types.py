@@ -99,6 +99,13 @@ class SnapSnapshot:
 
 
 @dataclass
+class ContainerImagesSnapshot:
+    role_name: str
+    images: List[Dict[str, Any]] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+
+@dataclass
 class AptConfigSnapshot:
     role_name: str
     managed_dirs: List[ManagedDir] = field(default_factory=list)

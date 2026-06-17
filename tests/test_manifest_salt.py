@@ -354,3 +354,104 @@ def test_cli_manifest_target_salt_is_forwarded(monkeypatch, tmp_path):
     assert called["harvest"] == str(tmp_path / "bundle")
     assert called["out"] == str(tmp_path / "salt")
     assert called["target"] == "salt"
+
+
+def test_manifest_salt_renders_container_images_in_single_and_fqdn_modes(
+    tmp_path: Path,
+):
+    digest = "docker.io/library/nginx@sha256:" + "a" * 64
+    podman_digest = "quay.io/example/app@sha256:" + "b" * 64
+    state = _sample_state()
+    state["roles"]["container_images"] = {
+        "role_name": "container_images",
+        "images": [
+            {
+                "engine": "docker",
+                "scope": "system",
+                "user": None,
+                "home": None,
+                "image_id": "sha256:" + "c" * 64,
+                "repo_tags": ["docker.io/library/nginx:1.27"],
+                "repo_digests": [digest],
+                "pull_ref": digest,
+                "tag_aliases": [
+                    {
+                        "ref": "docker.io/library/nginx:1.27",
+                        "repository": "docker.io/library/nginx",
+                        "tag": "1.27",
+                    }
+                ],
+                "os": "linux",
+                "architecture": "amd64",
+                "variant": None,
+                "platform": "linux/amd64",
+                "size": 123,
+                "created": "2026-01-01T00:00:00Z",
+                "source": "docker image inspect",
+                "notes": [],
+            },
+            {
+                "engine": "podman",
+                "scope": "system",
+                "user": None,
+                "home": None,
+                "image_id": "sha256:" + "d" * 64,
+                "repo_tags": ["quay.io/example/app:prod"],
+                "repo_digests": [podman_digest],
+                "pull_ref": podman_digest,
+                "tag_aliases": [
+                    {
+                        "ref": "quay.io/example/app:prod",
+                        "repository": "quay.io/example/app",
+                        "tag": "prod",
+                    }
+                ],
+                "os": "linux",
+                "architecture": "amd64",
+                "variant": None,
+                "platform": "linux/amd64",
+                "size": 456,
+                "created": "2026-01-01T00:00:00Z",
+                "source": "podman image inspect",
+                "notes": [],
+            },
+        ],
+        "notes": [],
+    }
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    _write_sample_artifacts(bundle)
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="salt")
+
+    top = yaml.safe_load((out / "states" / "top.sls").read_text(encoding="utf-8"))
+    assert "roles.container_images" in top["base"]["*"]
+    sls = (out / "states" / "roles" / "container_images" / "init.sls").read_text(
+        encoding="utf-8"
+    )
+    assert "docker_image.present:" in sls
+    assert digest in sls
+    assert "docker tag" in sls
+    assert "podman pull" in sls
+    assert "podman tag" in sls
+
+    fqdn_out = tmp_path / "salt-fqdn"
+    manifest.manifest(str(bundle), str(fqdn_out), target="salt", fqdn="node.example")
+    pillar_top = yaml.safe_load(
+        (fqdn_out / "pillar" / "top.sls").read_text(encoding="utf-8")
+    )
+    node_sls = pillar_top["base"]["node.example"][0]
+    pillar_path = fqdn_out / "pillar" / Path(*node_sls.split("."))
+    pillar = yaml.safe_load(pillar_path.with_suffix(".sls").read_text(encoding="utf-8"))
+    assert (
+        pillar["enroll"]["roles"]["container_images"]["container_images"][0]["pull_ref"]
+        == digest
+    )
+    fqdn_sls = (
+        fqdn_out / "states" / "roles" / "container_images" / "init.sls"
+    ).read_text(encoding="utf-8")
+    assert "docker_image.present:" in fqdn_sls
+    assert "enroll_podman_pull_container_images" in fqdn_sls
+    assert "image.get('pull_cmd')" in fqdn_sls
+    assert "podman pull" in pillar_path.with_suffix(".sls").read_text(encoding="utf-8")

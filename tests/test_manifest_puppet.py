@@ -603,3 +603,112 @@ def test_manifest_rejects_unknown_target(tmp_path: Path):
         assert "unsupported manifest target" in str(e)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_manifest_puppet_renders_container_images_static_and_hiera(tmp_path: Path):
+    digest = "docker.io/library/nginx@sha256:" + "a" * 64
+    podman_digest = "quay.io/example/app@sha256:" + "b" * 64
+    state = {
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_dirs": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+            "container_images": {
+                "role_name": "container_images",
+                "images": [
+                    {
+                        "engine": "docker",
+                        "scope": "system",
+                        "user": None,
+                        "home": None,
+                        "image_id": "sha256:" + "c" * 64,
+                        "repo_tags": ["docker.io/library/nginx:1.27"],
+                        "repo_digests": [digest],
+                        "pull_ref": digest,
+                        "tag_aliases": [
+                            {
+                                "ref": "docker.io/library/nginx:1.27",
+                                "repository": "docker.io/library/nginx",
+                                "tag": "1.27",
+                            }
+                        ],
+                        "os": "linux",
+                        "architecture": "amd64",
+                        "variant": None,
+                        "platform": "linux/amd64",
+                        "size": 123,
+                        "created": "2026-01-01T00:00:00Z",
+                        "source": "docker image inspect",
+                        "notes": [],
+                    },
+                    {
+                        "engine": "podman",
+                        "scope": "system",
+                        "user": None,
+                        "home": None,
+                        "image_id": "sha256:" + "d" * 64,
+                        "repo_tags": ["quay.io/example/app:prod"],
+                        "repo_digests": [podman_digest],
+                        "pull_ref": podman_digest,
+                        "tag_aliases": [],
+                        "os": "linux",
+                        "architecture": "amd64",
+                        "variant": None,
+                        "platform": "linux/amd64",
+                        "size": 456,
+                        "created": "2026-01-01T00:00:00Z",
+                        "source": "podman image inspect",
+                        "notes": [],
+                    },
+                ],
+                "notes": [],
+            },
+        }
+    }
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="puppet")
+
+    site_pp = (out / "manifests" / "site.pp").read_text(encoding="utf-8")
+    assert "include container_images" in site_pp
+    pp = (out / "modules" / "container_images" / "manifests" / "init.pp").read_text(
+        encoding="utf-8"
+    )
+    assert "docker::image" in pp
+    assert "image_digest => 'sha256:" + "a" * 64 + "'" in pp
+    assert "docker tag" in pp
+    assert "podman pull" in pp
+    metadata = json.loads(
+        (out / "modules" / "container_images" / "metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metadata["dependencies"] == [
+        {"name": "puppetlabs-docker", "version_requirement": ">= 8.0.0 < 15.0.0"}
+    ]
+
+    fqdn_out = tmp_path / "puppet-fqdn"
+    manifest.manifest(str(bundle), str(fqdn_out), target="puppet", fqdn="node.example")
+    node_data = yaml.safe_load(
+        (fqdn_out / "data" / "nodes" / "node.example.yaml").read_text(encoding="utf-8")
+    )
+    assert node_data["container_images::container_images"][0]["pull_ref"] == digest
+    fqdn_pp = (
+        fqdn_out / "modules" / "container_images" / "manifests" / "init.pp"
+    ).read_text(encoding="utf-8")
+    assert "Array[Hash] $container_images = []" in fqdn_pp
+    assert "docker::image" in fqdn_pp
+    assert "enroll-podman-pull-${idx}" in fqdn_pp
+    assert "$image['pull_cmd']" in fqdn_pp
+    assert "podman pull" in (
+        fqdn_out / "data" / "nodes" / "node.example.yaml"
+    ).read_text(encoding="utf-8")

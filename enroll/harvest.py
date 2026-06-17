@@ -542,6 +542,7 @@ def harvest(
     # includes are harvested into an extra role.
     path_filter = PathFilter(include=include_paths or (), exclude=exclude_paths or ())
 
+    from .harvest_collectors.container_images import ContainerImagesCollector
     from .harvest_collectors.cron_logrotate import CronLogrotateCollector
     from .harvest_collectors.package_manager import PackageManagerConfigCollector
     from .harvest_collectors.paths import ExtraPathsCollector, UsrLocalCustomCollector
@@ -645,6 +646,11 @@ def harvest(
     users_snapshot = users_collection.users_snapshot
     flatpak_snapshot = users_collection.flatpak_snapshot
     snap_snapshot = users_collection.snap_snapshot
+
+    # -------------------------
+    # Container image inventory (Docker/Podman image caches)
+    # -------------------------
+    container_images_snapshot = ContainerImagesCollector(context).collect()
 
     # -------------------------
     # Package manager config role
@@ -1015,6 +1021,7 @@ def harvest(
             "users": asdict(users_snapshot),
             "flatpak": asdict(flatpak_snapshot),
             "snap": asdict(snap_snapshot),
+            "container_images": asdict(container_images_snapshot),
             "services": [asdict(s) for s in service_snaps],
             "packages": [asdict(p) for p in pkg_snaps],
             "apt_config": asdict(apt_config_snapshot),

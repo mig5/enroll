@@ -4,6 +4,7 @@ RESERVED_SINGLETON_ROLE_NAMES = {
     "users",
     "flatpak",
     "snap",
+    "container_images",
     "apt_config",
     "dnf_config",
     "firewall_runtime",

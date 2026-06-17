@@ -125,6 +125,7 @@ class AnsibleManifestPlan:
         "extra_paths",
         "flatpak",
         "snap",
+        "container_images",
         "users",
         "tail_package",
         "sysctl",

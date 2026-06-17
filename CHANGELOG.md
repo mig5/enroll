@@ -6,8 +6,8 @@
  * Detect active sysctl parameters and write them to a `/etc/sysctl.d/99-enroll.conf` file
  * Use `no_log` on systemd unit interrogations to suppress potential sensitive output when applying Ansible
  * Support manifesting Puppet code, as well as Ansible!
- * Support manifesting Salt code as well!
- * A lot of under-the-bonnet refactoring to make it easier to extend to cover other config managers in future.
+ * A lot of under-the-bonnet refactoring to make it easier to extend to cover other config managers (that don't suck) in future.
+ * Support for detecting Docker images
 
 # 0.6.0
 
