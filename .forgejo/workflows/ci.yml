@@ -14,8 +14,8 @@ jobs:
       - name: Install system dependencies
         run: |
           mkdir -m 755 -p /etc/apt/keyrings
-          curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public | gpg --dearmor | sudo tee /etc/apt/keyrings/salt-archive-keyring.pgp > /dev/null
-          curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources | sudo tee /etc/apt/sources.list.d/salt.sources
+          curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public | gpg --dearmor | tee /etc/apt/keyrings/salt-archive-keyring.pgp > /dev/null
+          curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources | tee /etc/apt/sources.list.d/salt.sources
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ansible ansible-lint python3-venv pipx systemctl python3-apt jq python3-jsonschema \
