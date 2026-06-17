@@ -158,6 +158,7 @@ _RESERVED_PUPPET_NAMES = {
     "if",
     "import",
     "in",
+    "init",
     "inherits",
     "node",
     "or",
@@ -522,9 +523,14 @@ def _render_role_class(prole: PuppetRole) -> str:
     return "\n".join(lines)
 
 
-def _attrs_with_ensure(attrs: Dict[str, Any], ensure: str) -> Dict[str, Any]:
+def _attrs_with_ensure(
+    attrs: Dict[str, Any], ensure: str, *, allowed: Set[str]
+) -> Dict[str, Any]:
+    """Return only Puppet resource attributes, dropping Enroll metadata."""
     out = {"ensure": ensure}
-    out.update(attrs)
+    for key in sorted(allowed):
+        if key in attrs and attrs[key] is not None:
+            out[key] = attrs[key]
     return out
 
 
@@ -565,19 +571,31 @@ def _role_hiera_values(prole: PuppetRole) -> Dict[str, Any]:
 
     if prole.dirs:
         data[f"{prefix}dirs"] = {
-            path: _attrs_with_ensure(prole.dirs[path], "directory")
+            path: _attrs_with_ensure(
+                prole.dirs[path],
+                "directory",
+                allowed={"owner", "group", "mode"},
+            )
             for path in sorted(prole.dirs)
         }
 
     if prole.files:
         data[f"{prefix}files"] = {
-            path: _attrs_with_ensure(prole.files[path], "file")
+            path: _attrs_with_ensure(
+                prole.files[path],
+                "file",
+                allowed={"source", "owner", "group", "mode"},
+            )
             for path in sorted(prole.files)
         }
 
     if prole.links:
         data[f"{prefix}links"] = {
-            path: _attrs_with_ensure(prole.links[path], "link")
+            path: _attrs_with_ensure(
+                prole.links[path],
+                "link",
+                allowed={"target"},
+            )
             for path in sorted(prole.links)
         }
 
@@ -661,7 +679,7 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         "    }",
         "  }",
         "",
-        "  if $sysctl_apply and $files.has_key('/etc/sysctl.d/99-enroll.conf') {",
+        "  if $sysctl_apply and '/etc/sysctl.d/99-enroll.conf' in $files {",
         "    exec { 'enroll-apply-sysctl':",
         "      command     => $sysctl_ignore_apply_errors ? {",
         "        true    => \"/bin/sh -c 'sysctl -e -p /etc/sysctl.d/99-enroll.conf || true'\",",

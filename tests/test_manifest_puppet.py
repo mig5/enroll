@@ -219,7 +219,9 @@ def test_manifest_puppet_writes_control_repo_style_output(tmp_path: Path):
     assert "Boolean $sysctl_apply = true" in sysctl_pp
     assert "Boolean $sysctl_ignore_apply_errors = true" in sysctl_pp
     assert "exec { 'enroll-apply-sysctl':" in sysctl_pp
-    assert "$files.has_key('/etc/sysctl.d/99-enroll.conf')" in sysctl_pp
+    assert (
+        "if $sysctl_apply and '/etc/sysctl.d/99-enroll.conf' in $files {" in sysctl_pp
+    )
 
     assert (
         out
