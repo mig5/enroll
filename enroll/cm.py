@@ -12,7 +12,7 @@ class CMModule:
     """Renderer-neutral configuration-management resource group.
 
     A CMModule is intentionally small: it captures the resources that a target
-    renderer can turn into Ansible tasks, Puppet resources, Salt states, etc.
+    renderer can turn into Ansible tasks, Puppet resources, etc.
     The renderer may still decide how to name/include/order the group.
     """
 
@@ -249,8 +249,8 @@ def _drop_duplicate_mapping_items(
 def resolve_catalog_conflicts(modules: Iterable[CMModule]) -> None:
     """Resolve global catalog conflicts before renderer output.
 
-    Puppet and Salt compile a single resource catalog. Ansible can tolerate the
-    same package, service, or parent directory appearing in more than one role;
+    Puppet compiles a single resource catalog. Ansible can tolerate the same
+    package, service, or parent directory appearing in more than one role;
     catalog targets cannot. Resolve those conflicts in the shared model rather
     than deleting renderer output after the fact.
     """

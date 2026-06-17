@@ -120,7 +120,7 @@ enroll single-shot --remote-host myhost.example.com --remote-user myuser --ssh-k
 ---
 
 ### `enroll manifest`
-Generate configuration-management output from an existing harvest bundle. Ansible remains the default; use `--target puppet` for Puppet output or `--target salt` for Salt output.
+Generate configuration-management output from an existing harvest bundle. Ansible remains the default; use `--target puppet` for Puppet output.
 
 **Inputs**
 - `--harvest /path/to/harvest` (directory)
@@ -129,12 +129,11 @@ Generate configuration-management output from an existing harvest bundle. Ansibl
 **Output**
 - In plaintext Ansible mode: an Ansible repo-like directory structure (roles/playbooks, and inventory in multi-site mode).
 - In plaintext Puppet mode: a Puppet control-repo style layout with `manifests/site.pp` and generated modules under `modules/`. By default, package and service resources are grouped by Debian Section/RPM Group where possible; `--fqdn` or `--no-common-roles` preserves one generated module per Enroll role/snapshot.
-- In plaintext Salt mode: a Salt state tree under `states/`, plus `pillar/` data in `--fqdn` mode. By default, package and service resources are grouped by Debian Section/RPM Group where possible; `--fqdn` or `--no-common-roles` preserves one generated SLS role per Enroll role/snapshot.
 - In `--sops` mode: a single encrypted file `manifest.tar.gz.sops` containing the generated output.
 
 **Common flags**
-- `--target ansible|puppet|salt`: choose the manifest target (`ansible` is the default).
-- `--fqdn <host>`: enables **multi-site** output style for Ansible, emits Puppet Hiera/node output, or emits Salt top/pillar output targeted at that minion ID. Without `--fqdn`, Puppet emits `node default { ... }` and Salt targets `*` in `states/top.sls`.
+- `--target ansible|puppet`: choose the manifest target (`ansible` is the default).
+- `--fqdn <host>`: enables **multi-site** output style for Ansible or emits Puppet Hiera/node output. Without `--fqdn`, Puppet emits `node default { ... }`.
 - `--no-common-roles`: disables the default grouping of package and systemd-unit roles into Debian Section/RPM Group roles, preserving one generated role per package/unit. `--fqdn` implies this behaviour.
 
 **Role tags**
@@ -467,28 +466,6 @@ sudo puppet apply --modulepath /tmp/enroll-puppet/modules /tmp/enroll-puppet/man
 ```
 
 Docker images with registry digests are rendered as `docker::image` resources and require the Puppet environment to provide `puppetlabs-docker`; the generated module metadata records that dependency. Podman images with registry digests are rendered as guarded `podman pull` / `podman tag` exec resources. Images without `RepoDigest` are recorded in harvest state and notes, but are not converted into exact pull resources. Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Puppet README rather than converted into Puppet resources.
-
-### Salt target
-```bash
-enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-salt --target salt
-```
-
-The Salt target renders native packages, users/groups, managed directories/files/symlinks, basic service state, and the generated sysctl file/apply command when present. Without `--fqdn`, it writes a self-contained state tree under `states/` and targets all minions in `states/top.sls`:
-
-```bash
-cd /tmp/enroll-salt
-sudo salt-call --local --file-root ./states state.apply test=True
-```
-
-With `--fqdn`, it uses Salt's state/pillar split: `states/top.sls` targets the minion ID to reusable generated role SLS files, while `pillar/top.sls` targets the same minion ID to node-specific data under `pillar/nodes/`. Host-specific file artifacts are stored under `states/roles/<role>/files/nodes/<fqdn>/...` and referenced through `salt://` URLs:
-
-```bash
-enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-salt --target salt --fqdn host.example.com
-cd /tmp/enroll-salt
-sudo salt-call --local --file-root ./states --pillar-root ./pillar --id host.example.com state.apply test=True
-```
-
-Re-running Salt `--fqdn` output into the same directory adds or replaces that minion's top/pillar data without deleting other generated minions. Docker images with registry digests are rendered with Salt's native `docker_image.present` state. Podman images with registry digests are rendered as guarded `podman pull` / `podman tag` command states. Images without `RepoDigest` are recorded in harvest state and notes, but are not converted into exact pull states. Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Salt README rather than converted into Salt states.
 
 ### Manifest with `--sops`
 ```bash

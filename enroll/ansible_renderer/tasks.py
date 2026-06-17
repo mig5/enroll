@@ -104,8 +104,8 @@ def _render_generic_files_tasks(
 def _render_install_packages_tasks(role: str, var_prefix: str) -> str:
     """Render package installation through Ansible's generic package provider.
 
-    Puppet and Salt use provider-backed package resources instead of selecting
-    apt/dnf/yum in the generated manifest.  Ansible's package module is the
+    Puppet uses provider-backed package resources instead of selecting
+    apt/dnf/yum in the generated manifest. Ansible's package module is the
     equivalent abstraction: it proxies to the target host's detected package
     manager and keeps generated roles provider-neutral.
     """

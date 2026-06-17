@@ -29,8 +29,8 @@ from ..yamlutil import _merge_mappings_overwrite, _yaml_load_mapping
 class AnsibleManagedFileRoleSpec:
     """Declarative managed-file singleton role rendering spec.
 
-    Puppet and Salt collect these singleton snapshots in a simple loop and feed
-    each one through the same managed-content renderer.  Ansible has more
+    Puppet collects these singleton snapshots in a simple loop and feeds
+    each one through the same managed-content renderer. Ansible has more
     layout concerns (defaults vs host_vars, optional JinjaTurtle templates,
     handlers), but the resource intent is the same, so keep the per-role
     differences in data rather than spelling out one branch per role.
@@ -246,7 +246,7 @@ def _render_managed_file_roles(
     manifest_plan: AnsibleManifestPlan,
     roles: Dict[str, Any],
 ) -> None:
-    """Render file-centric singleton roles in the same loop style as Puppet/Salt."""
+    """Render file-centric singleton roles in the same loop style as Puppet."""
 
     for spec in MANAGED_FILE_ROLE_SPECS:
         snapshot = roles.get(spec.key, {})
