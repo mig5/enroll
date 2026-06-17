@@ -1076,6 +1076,13 @@ def _render_readme(
 sudo puppet apply --modulepath ./modules --hiera_config ./hiera.yaml --certname {fqdn} manifests/site.pp --noop
 ```
 
+If you depend on other pre-installed Puppet modules (such as for supporting Docker image version enforcement, which Enroll may
+have harvested information on), you may need to pass in other modulepaths as well, e.g:
+
+```bash
+sudo puppet apply --modulepath ./modules:/etc/puppet/code/modules --hiera_config ./hiera.yaml --certname {fqdn} manifests/site.pp --noop
+```
+
 For Puppet agent/control-repo use, place this output where `hiera.yaml`, `data/`, `manifests/`, and `modules/` form the environment root. Re-running Enroll with another `--fqdn` into the same output directory adds or replaces that node's YAML without deleting existing node data."""
     else:
         layout = """- `manifests/site.pp` declares a `node` block and includes the generated classes in manifest order.
@@ -1088,8 +1095,11 @@ For Puppet agent/control-repo use, place this output where `hiera.yaml`, `data/`
 sudo puppet apply --modulepath ./modules manifests/site.pp --noop
 ```
 
+If you depend on other pre-installed Puppet modules (such as for supporting Docker image version enforcement, which Enroll may
+have harvested information on), you may need to pass in other modulepaths as well, e.g:
+
 ```bash
-sudo puppet apply --modulepath /path/to/generated/modules /path/to/generated/manifests/site.pp --noop
+sudo puppet apply --modulepath ./modules:/etc/puppet/code/modules manifests/site.pp --noop
 ```"""
     return f"""# Enroll Puppet manifest
 
@@ -1120,7 +1130,7 @@ This Puppet target reuses the existing harvest state without changing harvesting
 - Managed directories, files, and symlinks from harvested roles.
 - Basic service enablement/running-state resources.
 - `/etc/sysctl.d/99-enroll.conf` plus a refresh-only sysctl apply exec when present.
-- Docker images by digest using the `puppetlabs-docker` module's `docker::image` defined type.
+- Docker images by digest using the `puppetlabs-docker` module's `docker::image` defined type (you must pre-install it).
 - Podman images by digest using guarded `podman pull` / `podman tag` exec resources.
 
 ## Current limitations
