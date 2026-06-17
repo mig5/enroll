@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from .ansible import manifest_from_bundle_dir as manifest_ansible_from_bundle_dir
 from .puppet import manifest_from_bundle_dir as manifest_puppet_from_bundle_dir
+from .salt import manifest_from_bundle_dir as manifest_salt_from_bundle_dir
 from .remote import _safe_extract_tar
 from .sopsutil import (
     decrypt_file_binary_to,
@@ -190,7 +191,7 @@ def manifest(
       - In plain mode: None
     """
     target = (target or "ansible").strip().lower()
-    if target not in {"ansible", "puppet"}:
+    if target not in {"ansible", "puppet", "salt"}:
         raise ValueError(f"unsupported manifest target: {target!r}")
 
     sops_mode = bool(sops_fingerprints)
@@ -205,6 +206,13 @@ def manifest(
         if not sops_mode:
             if target == "puppet":
                 manifest_puppet_from_bundle_dir(
+                    resolved_bundle_dir,
+                    out,
+                    fqdn=fqdn,
+                    no_common_roles=no_common_roles,
+                )
+            elif target == "salt":
+                manifest_salt_from_bundle_dir(
                     resolved_bundle_dir,
                     out,
                     fqdn=fqdn,
@@ -233,6 +241,13 @@ def manifest(
 
         if target == "puppet":
             manifest_puppet_from_bundle_dir(
+                resolved_bundle_dir,
+                str(tmp_out),
+                fqdn=fqdn,
+                no_common_roles=no_common_roles,
+            )
+        elif target == "salt":
+            manifest_salt_from_bundle_dir(
                 resolved_bundle_dir,
                 str(tmp_out),
                 fqdn=fqdn,

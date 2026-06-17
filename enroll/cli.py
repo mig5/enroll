@@ -310,13 +310,13 @@ def _encrypt_harvest_dir_to_sops(
 def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--target",
-        choices=["ansible", "puppet"],
+        choices=["ansible", "puppet", "salt"],
         default="ansible",
         help="Manifest target to generate (default: ansible).",
     )
     p.add_argument(
         "--fqdn",
-        help="Host FQDN/name for site-mode output (creates inventory/, inventory/host_vars/, playbooks/).",
+        help="Host FQDN/name for site-mode output (creates target-specific host inventory/data such as Ansible host_vars, Puppet Hiera, or Salt pillar).",
     )
     p.add_argument(
         "--no-common-roles",
