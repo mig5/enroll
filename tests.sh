@@ -20,6 +20,8 @@ ANSIBLE_NO_COMMON_DIR="${WORK_DIR}/ansible-no-common"
 ANSIBLE_FQDN_DIR="${WORK_DIR}/ansible-fqdn"
 PUPPET_DIR="${WORK_DIR}/puppet"
 PUPPET_FQDN_DIR="${WORK_DIR}/puppet-fqdn"
+SALT_DIR="${WORK_DIR}/salt"
+SALT_FQDN_DIR="${WORK_DIR}/salt-fqdn"
 TEST_FQDN="${ENROLL_TEST_FQDN:-enroll-ci.example.test}"
 
 cleanup() {
@@ -105,6 +107,13 @@ ensure_puppet() {
   require_cmd puppet "Install Puppet before running the Puppet noop integration tests."
 }
 
+ensure_salt() {
+  if ! command -v salt-call >/dev/null 2>&1; then
+    apt_install salt-minion || true
+  fi
+  require_cmd salt-call "Install Salt's salt-call binary before running the Salt noop integration tests. On Debian 13 this may require configuring the upstream Salt/Broadcom package repository first."
+}
+
 run_pytests() {
   section "Python unit tests"
   cd "${PROJECT_ROOT}"
@@ -170,6 +179,25 @@ run_puppet_noop_tests() {
     --noop
 }
 
+run_salt_noop_tests() {
+  section "Salt manifest noop tests"
+  ensure_salt
+  cd "${PROJECT_ROOT}"
+  rm -rf "${SALT_DIR}" "${SALT_FQDN_DIR}"
+
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${SALT_DIR}" --target salt
+  run salt-call --local --retcode-passthrough --file-root "${SALT_DIR}/states" state.apply test=True
+
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${SALT_FQDN_DIR}" --target salt --fqdn "${TEST_FQDN}"
+  run salt-call \
+    --local \
+    --retcode-passthrough \
+    --id "${TEST_FQDN}" \
+    --file-root "${SALT_FQDN_DIR}/states" \
+    --pillar-root "${SALT_FQDN_DIR}/pillar" \
+    state.apply test=True
+}
+
 main() {
   require_root
   require_debian_ci
@@ -177,6 +205,7 @@ main() {
   prepare_harvest_fixture
   run_ansible_noop_tests
   run_puppet_noop_tests
+  run_salt_noop_tests
 }
 
 main "$@"
