@@ -217,6 +217,7 @@ def manifest(
                     out,
                     fqdn=fqdn,
                     no_common_roles=no_common_roles,
+                    jinjaturtle=jinjaturtle,
                 )
             else:
                 manifest_ansible_from_bundle_dir(
@@ -252,6 +253,7 @@ def manifest(
                 str(tmp_out),
                 fqdn=fqdn,
                 no_common_roles=no_common_roles,
+                jinjaturtle=jinjaturtle,
             )
         else:
             manifest_ansible_from_bundle_dir(

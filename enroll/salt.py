@@ -6,7 +6,7 @@ import re
 import shlex
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -16,6 +16,12 @@ from .cm import (
     resolve_catalog_conflicts,
     role_order_key,
     section_label_for_packages,
+)
+from .jinjaturtle import (
+    can_jinjify_path,
+    find_jinjaturtle_cmd,
+    infer_other_formats,
+    run_jinjaturtle,
 )
 from .state import inventory_packages_from_state, roles_from_state
 
@@ -134,6 +140,9 @@ class SaltRole(CMModule):
         artifact_role: str,
         role_files_dir: Path,
         file_prefix: Optional[str] = None,
+        jt_exe: Optional[str] = None,
+        jt_enabled: bool = False,
+        overwrite_templates: bool = True,
     ) -> None:
         for d in self.managed_dirs_from_snapshot(snap):
             path = str(d.get("path") or "").strip()
@@ -151,6 +160,32 @@ class SaltRole(CMModule):
             src_rel = str(mf.get("src_rel") or "").strip()
             if not path or not src_rel:
                 continue
+
+            template = _jinjify_managed_file(
+                bundle_dir,
+                artifact_role,
+                src_rel,
+                path,
+                role_files_dir.parent,
+                jt_exe=jt_exe,
+                jt_enabled=jt_enabled,
+                overwrite_templates=overwrite_templates,
+            )
+            if template is not None:
+                tmpl_rel, context = template
+                self.add_managed_file(
+                    path,
+                    user=mf.get("owner") or "root",
+                    group=mf.get("group") or "root",
+                    mode=mf.get("mode") or "0644",
+                    source=_template_source_uri(self.module_name, tmpl_rel),
+                    template="jinja",
+                    context=context,
+                    makedirs=True,
+                    reason=mf.get("reason") or "managed_file",
+                )
+                continue
+
             role_rel = _copy_artifact(
                 bundle_dir,
                 artifact_role,
@@ -324,6 +359,69 @@ def _source_uri(module_name: str, role_rel: str) -> str:
     return f"salt://roles/{module_name}/files/{role_rel}"
 
 
+def _template_source_uri(module_name: str, tmpl_rel: str) -> str:
+    return f"salt://roles/{module_name}/templates/{tmpl_rel}"
+
+
+def _yaml_load_mapping(text: str) -> Dict[str, Any]:
+    try:
+        obj = yaml.safe_load(text)
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _resolve_jinjaturtle_mode(jinjaturtle: str) -> Tuple[Optional[str], bool]:
+    jt_exe = find_jinjaturtle_cmd()
+    if jinjaturtle not in {"auto", "on", "off"}:
+        raise ValueError("jinjaturtle must be one of: auto, on, off")
+    if jinjaturtle == "on":
+        if not jt_exe:
+            raise RuntimeError("jinjaturtle requested but not found on PATH")
+        return jt_exe, True
+    if jinjaturtle == "auto":
+        return jt_exe, jt_exe is not None
+    return jt_exe, False
+
+
+def _jinjify_managed_file(
+    bundle_dir: str,
+    artifact_role: str,
+    src_rel: str,
+    dest_path: str,
+    role_dir: Path,
+    *,
+    jt_exe: Optional[str],
+    jt_enabled: bool,
+    overwrite_templates: bool,
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    if not (jt_enabled and jt_exe and can_jinjify_path(dest_path)):
+        return None
+
+    artifact_path = Path(bundle_dir) / "artifacts" / artifact_role / src_rel
+    if not artifact_path.is_file():
+        return None
+
+    try:
+        result = run_jinjaturtle(
+            jt_exe,
+            str(artifact_path),
+            role_name=artifact_role,
+            force_format=infer_other_formats(dest_path),
+        )
+    except Exception:
+        return None  # nosec - best-effort template generation
+
+    context = _yaml_load_mapping(result.vars_text)
+    tmpl_rel = Path(src_rel).as_posix() + ".j2"
+    tmpl_dst = role_dir / "templates" / tmpl_rel
+    if overwrite_templates or not tmpl_dst.exists():
+        tmpl_dst.parent.mkdir(parents=True, exist_ok=True)
+        tmpl_dst.write_text(result.template_text, encoding="utf-8")
+
+    return tmpl_rel, context
+
+
 def _node_file_prefix(fqdn: str) -> str:
     name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(fqdn or "").strip())
     name = name.strip("._-") or "node"
@@ -365,6 +463,8 @@ def _collect_salt_roles(
     *,
     fqdn: Optional[str] = None,
     no_common_roles: bool = False,
+    jt_exe: Optional[str] = None,
+    jt_enabled: bool = False,
 ) -> List[SaltRole]:
     roles = roles_from_state(state)
     inventory_packages = inventory_packages_from_state(state)
@@ -397,6 +497,9 @@ def _collect_salt_roles(
             artifact_role=str(snap.get("role_name") or key),
             role_files_dir=states_dir / "roles" / srole.module_name / "files",
             file_prefix=node_file_prefix,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not bool(fqdn),
         )
 
     users_snap = roles.get("users") or {}
@@ -412,6 +515,9 @@ def _collect_salt_roles(
             artifact_role=str(users_snap.get("role_name") or "users"),
             role_files_dir=states_dir / "roles" / srole.module_name / "files",
             file_prefix=node_file_prefix,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not bool(fqdn),
         )
 
     for svc in roles.get("services", []) or []:
@@ -443,6 +549,9 @@ def _collect_salt_roles(
             artifact_role=str(svc.get("role_name") or original_role_name),
             role_files_dir=states_dir / "roles" / srole.module_name / "files",
             file_prefix=node_file_prefix,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not bool(fqdn),
         )
 
     for pkg in roles.get("packages", []) or []:
@@ -467,6 +576,9 @@ def _collect_salt_roles(
             artifact_role=str(pkg.get("role_name") or original_role_name),
             role_files_dir=states_dir / "roles" / srole.module_name / "files",
             file_prefix=node_file_prefix,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not bool(fqdn),
         )
 
     container_images = roles.get("container_images") or {}
@@ -501,6 +613,22 @@ def _collect_salt_roles(
     salt_roles = sorted(out.values(), key=lambda r: role_order_key(r.role_name))
     resolve_catalog_conflicts(salt_roles)
     return [r for r in salt_roles if r.has_resources()]
+
+
+def _append_yaml_value(lines: List[str], key: str, value: Any, *, indent: int) -> None:
+    prefix = " " * indent
+    if isinstance(value, dict):
+        dumped = yaml.safe_dump(
+            value, sort_keys=True, default_flow_style=False
+        ).rstrip()
+        if not dumped:
+            lines.append(f"{prefix}- {key}: {{}}")
+            return
+        lines.append(f"{prefix}- {key}:")
+        for line in dumped.splitlines():
+            lines.append(f"{prefix}    {line}")
+        return
+    lines.append(f"{prefix}- {key}: {_yaml_quote(value)}")
 
 
 def _render_static_role(srole: SaltRole) -> str:
@@ -576,9 +704,13 @@ def _render_static_role(srole: SaltRole) -> str:
                 f"    - group: {_yaml_quote(attrs.get('group') or 'root')}",
                 f"    - mode: {_yaml_quote(str(attrs.get('mode') or '0644'))}",
                 "    - makedirs: true",
-                "",
             ]
         )
+        if attrs.get("template"):
+            lines.append(f"    - template: {_yaml_quote(attrs.get('template'))}")
+        if attrs.get("context"):
+            _append_yaml_value(lines, "context", attrs.get("context"), indent=4)
+        lines.append("")
 
     for path, attrs in sorted(srole.links.items()):
         lines.extend(
@@ -731,6 +863,10 @@ def _role_pillar_values(srole: SaltRole) -> Dict[str, Any]:
                 "group": attrs.get("group") or "root",
                 "mode": str(attrs.get("mode") or "0644"),
                 "makedirs": True,
+                **(
+                    {"template": attrs.get("template")} if attrs.get("template") else {}
+                ),
+                **({"context": attrs.get("context")} if attrs.get("context") else {}),
             }
             for path, attrs in sorted(srole.files.items())
         }
@@ -826,6 +962,12 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "    - group: {{ attrs.get('group', 'root')|yaml_dquote }}",
         "    - mode: {{ attrs.get('mode', '0644')|string|yaml_dquote }}",
         "    - makedirs: {{ attrs.get('makedirs', True)|yaml_encode }}",
+        "{% if attrs.get('template') %}",
+        "    - template: {{ attrs.get('template')|yaml_dquote }}",
+        "{% endif %}",
+        "{% if attrs.get('context') %}",
+        "    - context: {{ attrs.get('context')|yaml_encode }}",
+        "{% endif %}",
         "{% endfor %}",
         "",
         "{% for path, attrs in role.get('links', {}).items() %}",
@@ -1069,7 +1211,7 @@ This Salt target reuses the existing harvest state without changing harvesting b
 ## Current limitations
 
 - Flatpak, Snap, and live firewall runtime snapshots are listed as notes when present rather than rendered as Salt states.
-- JinjaTurtle templating is currently Ansible-oriented and is not applied to Salt output.
+- JinjaTurtle templating is applied on a best-effort basis for file formats it recognises; unrecognised files are copied literally.
 - Review generated resources before applying them broadly across unlike hosts.
 
 ## Notes
@@ -1088,11 +1230,13 @@ class SaltManifestRenderer:
         *,
         fqdn: Optional[str] = None,
         no_common_roles: bool = False,
+        jinjaturtle: str = "auto",
     ) -> None:
         self.bundle_dir = bundle_dir
         self.out_dir = out_dir
         self.fqdn = fqdn
         self.no_common_roles = no_common_roles
+        self.jt_exe, self.jt_enabled = _resolve_jinjaturtle_mode(jinjaturtle)
 
     def render(self) -> None:
         state = SaltRole.load_state(self.bundle_dir)
@@ -1114,6 +1258,8 @@ class SaltManifestRenderer:
             states_dir,
             fqdn=self.fqdn,
             no_common_roles=self.no_common_roles,
+            jt_exe=self.jt_exe,
+            jt_enabled=self.jt_enabled,
         )
 
         for srole in salt_roles:
@@ -1153,10 +1299,12 @@ def manifest_from_bundle_dir(
     *,
     fqdn: Optional[str] = None,
     no_common_roles: bool = False,
+    jinjaturtle: str = "auto",
 ) -> None:
     SaltManifestRenderer(
         bundle_dir,
         out_dir,
         fqdn=fqdn,
         no_common_roles=no_common_roles,
+        jinjaturtle=jinjaturtle,
     ).render()

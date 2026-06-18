@@ -466,3 +466,69 @@ def test_manifest_salt_renders_container_images_in_single_and_fqdn_modes(
     assert "{{.Id}}" not in pillar_text
     assert "sed -n" in pillar_text
     assert "podman pull" in pillar_text
+
+
+def test_manifest_salt_uses_jinjaturtle_templates(monkeypatch, tmp_path: Path):
+    from enroll import salt as salt_mod
+    from enroll.jinjaturtle import JinjifyResult
+
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    state = _sample_state()
+    _write_sample_artifacts(bundle)
+    _write_state(bundle, state)
+
+    monkeypatch.setattr(
+        salt_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
+    )
+    monkeypatch.setattr(salt_mod, "can_jinjify_path", lambda _path: True)
+
+    def fake_run_jinjaturtle(
+        jt_exe: str, src_path: str, *, role_name: str, force_format=None
+    ):
+        assert jt_exe == "/usr/bin/jinjaturtle"
+        assert role_name == "foo"
+        assert src_path.endswith("artifacts/foo/etc/foo.conf")
+        return JinjifyResult(
+            template_text="setting = {{ foo_setting }}\n",
+            vars_text="foo_setting: true\n",
+        )
+
+    monkeypatch.setattr(salt_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    manifest.manifest(str(bundle), str(out), target="salt", jinjaturtle="on")
+
+    role_dir = out / "states" / "roles" / "net"
+    assert (role_dir / "templates" / "etc" / "foo.conf.j2").read_text(
+        encoding="utf-8"
+    ) == "setting = {{ foo_setting }}\n"
+    assert not (role_dir / "files" / "etc" / "foo.conf").exists()
+    sls = (role_dir / "init.sls").read_text(encoding="utf-8")
+    assert 'source: "salt://roles/net/templates/etc/foo.conf.j2"' in sls
+    assert 'template: "jinja"' in sls
+    assert "foo_setting: true" in sls
+
+    fqdn_out = tmp_path / "salt-fqdn"
+    manifest.manifest(
+        str(bundle),
+        str(fqdn_out),
+        target="salt",
+        fqdn="node.example",
+        jinjaturtle="on",
+    )
+
+    fqdn_role_dir = fqdn_out / "states" / "roles" / "foo"
+    assert (fqdn_role_dir / "templates" / "etc" / "foo.conf.j2").exists()
+    assert not (
+        fqdn_role_dir / "files" / "nodes" / "node.example" / "etc" / "foo.conf"
+    ).exists()
+    pillar_top = yaml.safe_load(
+        (fqdn_out / "pillar" / "top.sls").read_text(encoding="utf-8")
+    )
+    node_sls = pillar_top["base"]["node.example"][0]
+    pillar_path = fqdn_out / "pillar" / Path(*node_sls.split("."))
+    pillar = yaml.safe_load(pillar_path.with_suffix(".sls").read_text(encoding="utf-8"))
+    file_data = pillar["enroll"]["roles"]["foo"]["files"]["/etc/foo/foo.conf"]
+    assert file_data["source"] == "salt://roles/foo/templates/etc/foo.conf.j2"
+    assert file_data["template"] == "jinja"
+    assert file_data["context"] == {"foo_setting": True}
