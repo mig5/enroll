@@ -5,9 +5,10 @@
  * Detect active sysctl parameters and write them to a `/etc/sysctl.d/99-enroll.conf` file
  * Use `no_log` on systemd unit interrogations to suppress potential sensitive output when applying Ansible
  * Support manifesting Puppet code, as well as Ansible!
+ * Support manifesting Salt code, as well as Ansible and Puppet!
  * A lot of under-the-bonnet refactoring to make it easier to extend to cover other config managers (that don't suck) in future.
- * Support for detecting Docker images
- * Add support for detecting flatpaks and snaps (manifests Ansible code only, not Puppet at this time)
+ * Support for detecting Docker images. You will need to install puppetlabs-docker module if you're using the Puppet manifester.
+ * Add support for detecting flatpaks and snaps (manifests Ansible code only, not Puppet or Salt at this time)
 
 # 0.6.0
 

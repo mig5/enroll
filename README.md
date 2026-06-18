@@ -488,7 +488,13 @@ cd /tmp/enroll-salt
 sudo salt-call --local --file-root ./states --pillar-root ./pillar --id host.example.com state.apply test=True
 ```
 
-Re-running Salt `--fqdn` output into the same directory adds or replaces that minion's top/pillar data without deleting other generated minions. Docker images with registry digests are rendered with Salt's native `docker_image.present` state. Podman images with registry digests are rendered as guarded `podman pull` / `podman tag` command states. Images without `RepoDigest` are recorded in harvest state and notes, but are not converted into exact pull states. Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Salt README rather than converted into Salt states.
+Re-running Salt `--fqdn` output into the same directory adds or replaces that minion's top/pillar data without deleting other generated minions.
+
+Docker and Podman images with registry digests are rendered as guarded `cmd.run` states that use the local `docker`/`podman` CLI directly (`pull`, `image inspect`, and `tag`).
+
+This is because Salt Stack, in 3008, does not have proper Docker extensions that actually work. Wow.
+
+Certain other things, like in Puppet, are not 'manifested' into Salt states unlike Ansible, at this time: these are Flatpak, Snap, and live firewall rules.
 
 ### Manifest with `--sops`
 ```bash

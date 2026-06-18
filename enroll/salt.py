@@ -119,7 +119,9 @@ class SaltRole(CMModule):
             for alias in item["tag_aliases"]:
                 alias_ref = str(alias.get("ref") or "")
                 alias["tag_cmd"] = _container_tag_cmd(engine, pull_ref, alias_ref)
-                alias["tag_unless"] = _container_exists_cmd(engine, alias_ref)
+                alias["tag_unless"] = _container_tag_matches_cmd(
+                    engine, pull_ref, alias_ref
+                )
             self.container_images.append(item)
         for note in snap.get("notes", []) or []:
             self.notes.append(str(note))
@@ -237,6 +239,34 @@ def _container_exists_cmd(engine: str, ref: str) -> str:
     if engine == "podman":
         return f"podman image exists {_shell_quote(ref)}"
     return f"docker image inspect {_shell_quote(ref)} >/dev/null 2>&1"
+
+
+def _container_image_id_expr(engine: str, ref: str) -> str:
+    """Return a shell expression that extracts an inspected image ID.
+
+    Salt renders SLS files through Jinja before YAML, so Docker's normal
+    format template cannot be emitted literally without careful escaping. Use
+    JSON output plus sed instead; it avoids Go-template braces in generated
+    Salt states and pillar data.
+    """
+
+    sed_id = (
+        r"sed -n 's/^[[:space:]]*\"Id\":[[:space:]]*\"\([^\"]*\)\".*/\1/p' "
+        r"| head -n 1"
+    )
+    return (
+        f"{_shell_quote(engine)} image inspect {_shell_quote(ref)} "
+        f"2>/dev/null | {sed_id}"
+    )
+
+
+def _container_tag_matches_cmd(engine: str, pull_ref: str, tag_ref: str) -> str:
+    """Return a shell guard that is true only when tag_ref points at pull_ref."""
+
+    return (
+        f'test "$({_container_image_id_expr(engine, tag_ref)})" '
+        f'= "$({_container_image_id_expr(engine, pull_ref)})"'
+    )
 
 
 def _container_tag_cmd(engine: str, pull_ref: str, tag_ref: str) -> str:
@@ -581,13 +611,13 @@ def _render_static_role(srole: SaltRole) -> str:
         if not engine or not pull_ref:
             continue
         if engine == "docker":
-            pull_state_id = _state_id("docker_image", pull_ref, role=srole.module_name)
+            pull_state_id = _state_id("docker_pull", pull_ref, role=srole.module_name)
             lines.extend(
                 [
                     f"{pull_state_id}:",
-                    "  docker_image.present:",
-                    f"    - name: {_yaml_quote(pull_ref)}",
-                    "    - force: false",
+                    "  cmd.run:",
+                    f"    - name: {_yaml_quote(image.get('pull_cmd') or _container_pull_cmd(engine, pull_ref))}",
+                    f"    - unless: {_yaml_quote(image.get('pull_unless') or _container_exists_cmd(engine, pull_ref))}",
                     "",
                 ]
             )
@@ -600,9 +630,9 @@ def _render_static_role(srole: SaltRole) -> str:
                         f"{_state_id('docker_tag', tag_ref, role=srole.module_name)}:",
                         "  cmd.run:",
                         f"    - name: {_yaml_quote(alias.get('tag_cmd') or _container_tag_cmd(engine, pull_ref, tag_ref))}",
-                        f"    - unless: {_yaml_quote(alias.get('tag_unless') or _container_exists_cmd(engine, tag_ref))}",
+                        f"    - unless: {_yaml_quote(alias.get('tag_unless') or _container_tag_matches_cmd(engine, pull_ref, tag_ref))}",
                         "    - require:",
-                        f"      - docker_image: {pull_state_id}",
+                        f"      - cmd: {pull_state_id}",
                         "",
                     ]
                 )
@@ -815,10 +845,10 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "",
         "{% for image in role.get('container_images', []) %}",
         "{% if image.get('engine') == 'docker' and image.get('pull_ref') %}",
-        f"enroll_docker_image_{role_key}_{{{{ loop.index }}}}:",
-        "  docker_image.present:",
-        "    - name: {{ image.get('pull_ref')|yaml_dquote }}",
-        "    - force: false",
+        f"enroll_docker_pull_{role_key}_{{{{ loop.index }}}}:",
+        "  cmd.run:",
+        "    - name: {{ image.get('pull_cmd')|yaml_dquote }}",
+        "    - unless: {{ image.get('pull_unless')|yaml_dquote }}",
         "{% set image_loop = loop.index %}",
         "{% for alias in image.get('tag_aliases', []) %}",
         f"enroll_docker_tag_{role_key}_{{{{ image_loop }}}}_{{{{ loop.index }}}}:",
@@ -826,7 +856,7 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "    - name: {{ alias.get('tag_cmd')|yaml_dquote }}",
         "    - unless: {{ alias.get('tag_unless')|yaml_dquote }}",
         "    - require:",
-        f"      - docker_image: enroll_docker_image_{role_key}_{{{{ image_loop }}}}",
+        f"      - cmd: enroll_docker_pull_{role_key}_{{{{ image_loop }}}}",
         "{% endfor %}",
         "{% elif image.get('engine') == 'podman' and image.get('pull_ref') %}",
         f"enroll_podman_pull_{role_key}_{{{{ loop.index }}}}:",
@@ -1033,7 +1063,7 @@ This Salt target reuses the existing harvest state without changing harvesting b
 - Managed directories, files, and symlinks from harvested roles.
 - Basic service enablement/running-state resources.
 - `/etc/sysctl.d/99-enroll.conf` plus an `onchanges` sysctl apply command when present.
-- Docker images by digest using Salt's native `docker_image.present` state.
+- Docker images by digest using guarded `docker pull` / `docker tag` command states.
 - Podman images by digest using guarded `podman pull` / `podman tag` command states.
 
 ## Current limitations

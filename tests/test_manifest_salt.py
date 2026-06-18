@@ -430,9 +430,14 @@ def test_manifest_salt_renders_container_images_in_single_and_fqdn_modes(
     sls = (out / "states" / "roles" / "container_images" / "init.sls").read_text(
         encoding="utf-8"
     )
-    assert "docker_image.present:" in sls
+    assert "docker_image.present:" not in sls
+    assert "docker pull" in sls
     assert digest in sls
+    assert "docker image inspect" in sls
+    assert "{{.Id}}" not in sls
+    assert "sed -n" in sls
     assert "docker tag" in sls
+    assert "- cmd: enroll_docker_pull_container_images" in sls
     assert "podman pull" in sls
     assert "podman tag" in sls
 
@@ -451,7 +456,13 @@ def test_manifest_salt_renders_container_images_in_single_and_fqdn_modes(
     fqdn_sls = (
         fqdn_out / "states" / "roles" / "container_images" / "init.sls"
     ).read_text(encoding="utf-8")
-    assert "docker_image.present:" in fqdn_sls
+    assert "docker_image.present:" not in fqdn_sls
+    assert "enroll_docker_pull_container_images" in fqdn_sls
     assert "enroll_podman_pull_container_images" in fqdn_sls
     assert "image.get('pull_cmd')" in fqdn_sls
-    assert "podman pull" in pillar_path.with_suffix(".sls").read_text(encoding="utf-8")
+    pillar_text = pillar_path.with_suffix(".sls").read_text(encoding="utf-8")
+    assert "docker pull" in pillar_text
+    assert "docker image inspect" in pillar_text
+    assert "{{.Id}}" not in pillar_text
+    assert "sed -n" in pillar_text
+    assert "podman pull" in pillar_text
