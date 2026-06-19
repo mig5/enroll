@@ -532,3 +532,95 @@ def test_manifest_salt_uses_jinjaturtle_templates(monkeypatch, tmp_path: Path):
     assert file_data["source"] == "salt://roles/foo/templates/etc/foo.conf.j2"
     assert file_data["template"] == "jinja"
     assert file_data["context"] == {"foo_setting": True}
+
+
+def test_manifest_salt_renders_firewall_runtime_states(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    fw_dir = bundle / "artifacts" / "firewall_runtime" / "firewall"
+    fw_dir.mkdir(parents=True, exist_ok=True)
+    (fw_dir / "ipset.save").write_text(
+        "create blocklist hash:ip family inet\nadd blocklist 203.0.113.10\n",
+        encoding="utf-8",
+    )
+    (fw_dir / "iptables.v4").write_text(
+        "*filter\n:INPUT DROP [0:0]\n-A INPUT -m set --match-set blocklist src -j DROP\nCOMMIT\n",
+        encoding="utf-8",
+    )
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "packages": ["ipset", "iptables"],
+                "ipset_save": "firewall/ipset.save",
+                "ipset_sets": ["blocklist"],
+                "iptables_v4_save": "firewall/iptables.v4",
+                "iptables_v6_save": None,
+                "notes": [],
+            }
+        },
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="salt")
+
+    top = yaml.safe_load((out / "states" / "top.sls").read_text(encoding="utf-8"))
+    assert "roles.enroll_runtime" in top["base"]["*"]
+    assert top["base"]["*"].index("roles.enroll_runtime") < top["base"]["*"].index(
+        "roles.firewall_runtime"
+    )
+    runtime_sls = (out / "states" / "roles" / "enroll_runtime" / "init.sls").read_text(
+        encoding="utf-8"
+    )
+    assert '"/etc/enroll":' in runtime_sls
+    sls = (out / "states" / "roles" / "firewall_runtime" / "init.sls").read_text(
+        encoding="utf-8"
+    )
+    assert '"/etc/enroll":' not in sls
+    assert '"/etc/enroll/firewall":' in sls
+    assert '- file: "/etc/enroll"' in sls
+    assert '"/etc/enroll/firewall/ipset.save":' in sls
+    assert "ipset restore -exist" in sls
+    assert "ipset flush blocklist" in sls
+    assert "iptables-restore /etc/enroll/firewall/iptables.v4" in sls
+    assert "    - onchanges:" in sls
+    assert '      - file: "/etc/enroll/firewall/iptables.v4"' in sls
+    assert "iptables-save >" not in sls
+    assert "Live firewall runtime snapshots were detected" not in sls
+    assert (
+        out
+        / "states"
+        / "roles"
+        / "firewall_runtime"
+        / "files"
+        / "firewall"
+        / "ipset.save"
+    ).exists()
+
+    fqdn_out = tmp_path / "salt-fqdn"
+    manifest.manifest(str(bundle), str(fqdn_out), target="salt", fqdn="node.example")
+    pillar_top = yaml.safe_load(
+        (fqdn_out / "pillar" / "top.sls").read_text(encoding="utf-8")
+    )
+    node_sls = pillar_top["base"]["node.example"][0]
+    pillar_path = fqdn_out / "pillar" / Path(*node_sls.split("."))
+    pillar = yaml.safe_load(pillar_path.with_suffix(".sls").read_text(encoding="utf-8"))
+    assert "roles.enroll_runtime" in pillar["enroll"]["classes"]
+    assert "firewall_runtime" in pillar["enroll"]["roles"]
+    assert (
+        pillar["enroll"]["roles"]["enroll_runtime"]["dirs"]["/etc/enroll"]["mode"]
+        == "0750"
+    )
+    role_data = pillar["enroll"]["roles"]["firewall_runtime"]
+    assert role_data["firewall_runtime"]["ipset_sets"] == ["blocklist"]
+    assert "ipset restore -exist" in role_data["firewall_runtime"]["ipset_restore_cmd"]
+    assert role_data["files"]["/etc/enroll/firewall/ipset.save"]["source"] == (
+        "salt://roles/firewall_runtime/files/nodes/node.example/firewall/ipset.save"
+    )
+    fqdn_sls = (
+        fqdn_out / "states" / "roles" / "firewall_runtime" / "init.sls"
+    ).read_text(encoding="utf-8")
+    assert "firewall_runtime.get('ipset_restore_cmd')" in fqdn_sls

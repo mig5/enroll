@@ -31,9 +31,20 @@ class SaltRole(CMModule):
             module_name=_salt_name(role_name, fallback="enroll_role"),
         )
         self.container_images: List[Dict[str, Any]] = []
+        self.flatpak_remotes: List[Dict[str, Any]] = []
+        self.flatpaks: List[Dict[str, Any]] = []
+        self.snaps: List[Dict[str, Any]] = []
+        self.firewall_runtime: Dict[str, Any] = {}
 
     def has_resources(self) -> bool:
-        return super().has_resources() or bool(self.container_images)
+        return (
+            super().has_resources()
+            or bool(self.container_images)
+            or bool(self.flatpak_remotes)
+            or bool(self.flatpaks)
+            or bool(self.snaps)
+            or bool(self.firewall_runtime)
+        )
 
     @property
     def sls_name(self) -> str:
@@ -87,10 +98,108 @@ class SaltRole(CMModule):
             user_data.update(_gecos_attrs(u.get("gecos")))
             self.users[name] = user_data
 
-        if snap.get("user_flatpaks") or snap.get("user_flatpak_remotes"):
-            self.notes.append(
-                "Per-user Flatpak resources were detected but are not rendered as native Salt states."
+        home_by_user = {
+            str(u.get("name")): str(u.get("home") or "")
+            for u in (snap.get("users", []) or [])
+            if isinstance(u, dict) and u.get("name")
+        }
+        for remote in snap.get("user_flatpak_remotes", []) or []:
+            item = _normalise_flatpak_remote(remote)
+            user = str(item.get("user") or "").strip()
+            if user and not item.get("home"):
+                item["home"] = home_by_user.get(user) or f"/home/{user}"
+            if item.get("method") == "user" and item.get("name") and item.get("url"):
+                self.flatpak_remotes.append(_prepare_flatpak_remote(item))
+        for uname, flatpaks in (snap.get("user_flatpaks", {}) or {}).items():
+            user = str(uname)
+            for fp in flatpaks or []:
+                item = _normalise_flatpak_item(
+                    fp, method="user", user=user, home=home_by_user.get(user) or None
+                )
+                if item.get("name"):
+                    self.flatpaks.append(_prepare_flatpak_item(item))
+
+    def add_flatpak_snapshot(self, snap: Dict[str, Any]) -> None:
+        for remote in snap.get("remotes", []) or []:
+            item = _normalise_flatpak_remote(remote)
+            if item.get("name") and item.get("url"):
+                self.flatpak_remotes.append(_prepare_flatpak_remote(item))
+        for fp in snap.get("system_flatpaks", []) or []:
+            item = _normalise_flatpak_item(fp, method="system")
+            if item.get("name"):
+                self.flatpaks.append(_prepare_flatpak_item(item))
+        for note in snap.get("notes", []) or []:
+            self.notes.append(str(note))
+
+    def add_snap_snapshot(self, snap: Dict[str, Any]) -> None:
+        for raw in snap.get("system_snaps", []) or []:
+            item = _normalise_snap_item(raw)
+            if item.get("name"):
+                self.snaps.append(_prepare_snap_item(item))
+        for note in snap.get("notes", []) or []:
+            self.notes.append(str(note))
+
+    def add_firewall_runtime_snapshot(
+        self,
+        snap: Dict[str, Any],
+        *,
+        bundle_dir: str,
+        artifact_role: str,
+        role_files_dir: Path,
+        file_prefix: Optional[str] = None,
+    ) -> None:
+        self.packages.update(
+            str(p).strip() for p in (snap.get("packages") or []) if str(p).strip()
+        )
+        self.add_managed_dir(
+            "/etc/enroll/firewall",
+            user="root",
+            group="root",
+            mode="0750",
+            require=[{"file": "/etc/enroll"}],
+            reason="firewall_runtime",
+        )
+        runtime: Dict[str, Any] = {}
+        for key, dest_name, mode in (
+            ("ipset_save", "ipset.save", "0600"),
+            ("iptables_v4_save", "iptables.v4", "0600"),
+            ("iptables_v6_save", "iptables.v6", "0600"),
+        ):
+            src_rel = str(snap.get(key) or "").strip()
+            if not src_rel:
+                continue
+            role_rel = _copy_artifact(
+                bundle_dir,
+                artifact_role,
+                src_rel,
+                role_files_dir,
+                dst_prefix=file_prefix,
             )
+            if not role_rel:
+                self.notes.append(
+                    f"Firewall runtime artifact {src_rel!r} was referenced but not found."
+                )
+                continue
+            dest = f"/etc/enroll/firewall/{dest_name}"
+            self.add_managed_file(
+                dest,
+                user="root",
+                group="root",
+                mode=mode,
+                source=_source_uri(self.module_name, role_rel),
+                reason="firewall_runtime",
+            )
+            runtime[key] = dest
+        ipset_sets = [
+            str(x).strip() for x in (snap.get("ipset_sets") or []) if str(x).strip()
+        ]
+        if ipset_sets:
+            runtime["ipset_sets"] = ipset_sets
+        if runtime:
+            runtime.update(_firewall_runtime_commands(runtime))
+            self.firewall_runtime.update(runtime)
+        for note in snap.get("notes", []) or []:
+            self.notes.append(str(note))
 
     def add_container_images_snapshot(self, snap: Dict[str, Any]) -> None:
         for raw in snap.get("images", []) or []:
@@ -304,6 +413,238 @@ def _container_tag_cmd(engine: str, pull_ref: str, tag_ref: str) -> str:
     return f"{engine} tag {_shell_quote(pull_ref)} {_shell_quote(tag_ref)}"
 
 
+def _normalise_flatpak_item(
+    item: Dict[str, Any],
+    *,
+    method: str,
+    user: Optional[str] = None,
+    home: Optional[str] = None,
+) -> Dict[str, Any]:
+    out = dict(item)
+    out["method"] = str(out.get("method") or method or "system").strip() or "system"
+    if user and not out.get("user"):
+        out["user"] = user
+    if home and not out.get("home"):
+        out["home"] = home
+    ref = str(out.get("ref") or "").strip()
+    if ref and not out.get("name"):
+        out["name"] = ref.rsplit("/", 1)[-1]
+    name = str(out.get("name") or out.get("app_id") or "").strip()
+    if name:
+        out["name"] = name
+    remote = str(out.get("remote") or "").strip()
+    if remote:
+        out["remote"] = remote
+    branch = str(out.get("branch") or out.get("origin") or "").strip()
+    if branch:
+        out["branch"] = branch
+    if ref:
+        out["ref"] = ref
+    return out
+
+
+def _normalise_flatpak_remote(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    name = str(out.get("name") or out.get("remote") or "").strip()
+    url = str(out.get("url") or out.get("from_url") or "").strip()
+    method = str(out.get("method") or out.get("scope") or "system").strip() or "system"
+    if name:
+        out["name"] = name
+    if url:
+        out["url"] = url
+    out["method"] = "user" if method == "user" else "system"
+    return out
+
+
+def _normalise_snap_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    name = str(out.get("name") or "").strip()
+    if name:
+        out["name"] = name
+    channel = str(out.get("tracking") or out.get("channel") or "").strip()
+    if channel:
+        out["channel"] = channel
+    notes = [str(note).lower() for note in (out.get("notes") or [])]
+    confinement = str(out.get("confinement") or "").strip().lower()
+    out["classic"] = confinement == "classic" or any(
+        "classic" in note for note in notes
+    )
+    out["devmode"] = any("devmode" in note or "dev mode" in note for note in notes)
+    out["dangerous"] = any("dangerous" in note for note in notes)
+    revision = str(out.get("revision") or "").strip()
+    if revision and not channel:
+        out["revision"] = revision
+    return out
+
+
+def _flatpak_scope(item: Dict[str, Any]) -> str:
+    return "--user" if str(item.get("method") or "system") == "user" else "--system"
+
+
+def _flatpak_home(item: Dict[str, Any]) -> Optional[str]:
+    user = str(item.get("user") or "").strip()
+    if not user:
+        return None
+    return str(item.get("home") or f"/home/{user}")
+
+
+def _flatpak_env(item: Dict[str, Any]) -> Dict[str, str]:
+    home = _flatpak_home(item)
+    if not home:
+        return {}
+    return {"HOME": home, "XDG_DATA_HOME": f"{home}/.local/share"}
+
+
+def _flatpak_remote_exists_cmd(item: Dict[str, Any]) -> str:
+    return (
+        f"flatpak {_flatpak_scope(item)} remote-list --columns=name "
+        f"| grep -Fx -- {_shell_quote(item.get('name'))}"
+    )
+
+
+def _flatpak_remote_add_cmd(item: Dict[str, Any]) -> str:
+    return (
+        f"flatpak {_flatpak_scope(item)} remote-add --if-not-exists "
+        f"{_shell_quote(item.get('name'))} {_shell_quote(item.get('url'))}"
+    )
+
+
+def _flatpak_ref(item: Dict[str, Any]) -> str:
+    ref = str(item.get("ref") or "").strip()
+    if ref:
+        return ref
+    return str(item.get("name") or "").strip()
+
+
+def _flatpak_exists_cmd(item: Dict[str, Any]) -> str:
+    return f"flatpak {_flatpak_scope(item)} info {_shell_quote(_flatpak_ref(item))} >/dev/null 2>&1"
+
+
+def _flatpak_install_cmd(item: Dict[str, Any]) -> str:
+    args = ["flatpak", _flatpak_scope(item), "install", "-y"]
+    remote = str(item.get("remote") or "").strip()
+    if remote:
+        args.append(remote)
+    args.append(_flatpak_ref(item))
+    return " ".join(_shell_quote(arg) for arg in args)
+
+
+def _prepare_flatpak_remote(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    method = str(out.get("method") or "system")
+    user = str(out.get("user") or "")
+    name = str(out.get("name") or "")
+    out["state_id"] = _state_id("flatpak_remote", f"{method}:{user}:{name}")
+    out["add_cmd"] = _flatpak_remote_add_cmd(out)
+    out["exists_cmd"] = _flatpak_remote_exists_cmd(out)
+    out["env"] = _flatpak_env(out)
+    return out
+
+
+def _prepare_flatpak_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    method = str(out.get("method") or "system")
+    user = str(out.get("user") or "")
+    ref = _flatpak_ref(out)
+    out["state_id"] = _state_id("flatpak", f"{method}:{user}:{ref}")
+    out["install_cmd"] = _flatpak_install_cmd(out)
+    out["exists_cmd"] = _flatpak_exists_cmd(out)
+    out["env"] = _flatpak_env(out)
+    return out
+
+
+def _snap_exists_cmd(item: Dict[str, Any]) -> str:
+    return f"snap list {_shell_quote(item.get('name'))} >/dev/null 2>&1"
+
+
+def _snap_install_cmd(item: Dict[str, Any]) -> str:
+    args = ["snap", "install", str(item.get("name") or "")]
+    channel = str(item.get("channel") or "").strip()
+    revision = str(item.get("revision") or "").strip()
+    if channel:
+        args.append(f"--channel={channel}")
+    elif revision:
+        args.append(f"--revision={revision}")
+    if item.get("classic"):
+        args.append("--classic")
+    if item.get("devmode"):
+        args.append("--devmode")
+    if item.get("dangerous"):
+        args.append("--dangerous")
+    return " ".join(_shell_quote(arg) for arg in args if str(arg))
+
+
+def _prepare_snap_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    name = str(out.get("name") or "")
+    out["state_id"] = _state_id("snap", name)
+    out["install_cmd"] = _snap_install_cmd(out)
+    out["exists_cmd"] = _snap_exists_cmd(out)
+    return out
+
+
+def _firewall_ipset_restore_cmd(path: str, sets: List[str]) -> str:
+    flush_parts = [f"ipset flush {_shell_quote(name)} || true" for name in sets]
+    flush = "; ".join(flush_parts)
+    restore = f"ipset restore -exist < {_shell_quote(path)}"
+    if flush:
+        return f"/bin/sh -c {_shell_quote(flush + '; ' + restore)}"
+    return f"/bin/sh -c {_shell_quote(restore)}"
+
+
+def _firewall_runtime_commands(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    ipset_path = str(runtime.get("ipset_save") or "")
+    if ipset_path:
+        sets = [str(x) for x in (runtime.get("ipset_sets") or []) if str(x)]
+        out["ipset_restore_cmd"] = _firewall_ipset_restore_cmd(ipset_path, sets)
+    ipt4_path = str(runtime.get("iptables_v4_save") or "")
+    if ipt4_path:
+        out["iptables_v4_restore_cmd"] = f"iptables-restore {_shell_quote(ipt4_path)}"
+    ipt6_path = str(runtime.get("iptables_v6_save") or "")
+    if ipt6_path:
+        out["iptables_v6_restore_cmd"] = f"ip6tables-restore {_shell_quote(ipt6_path)}"
+    return out
+
+
+def _append_firewall_runtime_states(lines: List[str], runtime: Dict[str, Any]) -> None:
+    specs = [
+        (
+            "ipset",
+            "ipset_save",
+            "ipset_restore_cmd",
+            "enroll_firewall_runtime_ipset_restore",
+        ),
+        (
+            "iptables_v4",
+            "iptables_v4_save",
+            "iptables_v4_restore_cmd",
+            "enroll_firewall_runtime_iptables_v4_restore",
+        ),
+        (
+            "iptables_v6",
+            "iptables_v6_save",
+            "iptables_v6_restore_cmd",
+            "enroll_firewall_runtime_iptables_v6_restore",
+        ),
+    ]
+    for _family, path_key, cmd_key, state_id in specs:
+        path = str(runtime.get(path_key) or "")
+        command = str(runtime.get(cmd_key) or "")
+        if not path or not command:
+            continue
+        lines.extend(
+            [
+                f"{state_id}:",
+                "  cmd.run:",
+                f"    - name: {_yaml_quote(command)}",
+                "    - onchanges:",
+                f"      - file: {_yaml_quote(path)}",
+                "",
+            ]
+        )
+
+
 def _clean_gecos_part(value: Any) -> Optional[str]:
     text = str(value or "").strip()
     return text or None
@@ -400,23 +741,6 @@ def _node_sls_basename(fqdn: str) -> str:
         :8
     ]  # nosec B324
     return f"{name}_{digest}"
-
-
-def _add_flatpak_snap_notes(roles: Dict[str, Any], out: Dict[str, SaltRole]) -> None:
-    flatpak = roles.get("flatpak") or {}
-    if isinstance(flatpak, dict) and (
-        flatpak.get("system_flatpaks") or flatpak.get("remotes")
-    ):
-        srole = out.setdefault("flatpak", SaltRole("flatpak"))
-        srole.notes.append(
-            "Flatpak resources were detected but are not rendered as native Salt states."
-        )
-    snap = roles.get("snap") or {}
-    if isinstance(snap, dict) and snap.get("system_snaps"):
-        srole = out.setdefault("snap", SaltRole("snap"))
-        srole.notes.append(
-            "Snap resources were detected but are not rendered as native Salt states."
-        )
 
 
 def _collect_salt_roles(
@@ -563,15 +887,37 @@ def _collect_salt_roles(
         packages = [
             str(p).strip() for p in (fw.get("packages") or []) if str(p).strip()
         ]
-        if has_fw or packages:
-            srole = ensure_role(str(fw.get("role_name") or "firewall_runtime"))
-            srole.packages.update(packages)
+        if has_fw or packages or fw.get("notes"):
             if has_fw:
-                srole.notes.append(
-                    "Live firewall runtime snapshots were detected but are not rendered as Salt states."
+                runtime_role = ensure_role("enroll_runtime")
+                runtime_role.add_managed_dir(
+                    "/etc/enroll",
+                    user="root",
+                    group="root",
+                    mode="0750",
+                    reason="enroll_runtime",
                 )
+            role_name = str(fw.get("role_name") or "firewall_runtime")
+            srole = ensure_role(role_name)
+            srole.add_firewall_runtime_snapshot(
+                fw,
+                bundle_dir=bundle_dir,
+                artifact_role=role_name,
+                role_files_dir=states_dir / "roles" / srole.module_name / "files",
+                file_prefix=node_file_prefix,
+            )
 
-    _add_flatpak_snap_notes(roles, out)
+    flatpak = roles.get("flatpak") or {}
+    if isinstance(flatpak, dict) and (
+        flatpak.get("system_flatpaks") or flatpak.get("remotes") or flatpak.get("notes")
+    ):
+        srole = ensure_role(str(flatpak.get("role_name") or "flatpak"))
+        srole.add_flatpak_snapshot(flatpak)
+
+    snap = roles.get("snap") or {}
+    if isinstance(snap, dict) and (snap.get("system_snaps") or snap.get("notes")):
+        srole = ensure_role(str(snap.get("role_name") or "snap"))
+        srole.add_snap_snapshot(snap)
 
     salt_roles = sorted(out.values(), key=lambda r: role_order_key(r.role_name))
     resolve_catalog_conflicts(salt_roles)
@@ -653,9 +999,15 @@ def _render_static_role(srole: SaltRole) -> str:
                 f"    - group: {_yaml_quote(attrs.get('group') or 'root')}",
                 f"    - mode: {_yaml_quote(str(attrs.get('mode') or '0755'))}",
                 "    - makedirs: true",
-                "",
             ]
         )
+        if attrs.get("require"):
+            lines.append("    - require:")
+            for req in attrs.get("require") or []:
+                if isinstance(req, dict):
+                    for req_kind, req_name in req.items():
+                        lines.append(f"      - {req_kind}: {_yaml_quote(req_name)}")
+        lines.append("")
 
     for path, attrs in sorted(srole.files.items()):
         lines.extend(
@@ -696,6 +1048,101 @@ def _render_static_role(srole: SaltRole) -> str:
                 f"  service.{state_fun}:",
                 f"    - name: {_yaml_quote(svc.get('name') or name)}",
                 f"    - enable: {_yaml_bool(svc.get('enable', False))}",
+                "",
+            ]
+        )
+
+    flatpak_remote_state_ids: Dict[Tuple[str, str, str], str] = {}
+    for remote in srole.flatpak_remotes:
+        name = str(remote.get("name") or "").strip()
+        url = str(remote.get("url") or "").strip()
+        if not name or not url:
+            continue
+        state_id = str(
+            remote.get("state_id")
+            or _state_id("flatpak_remote", name, role=srole.module_name)
+        )
+        key = (
+            str(remote.get("method") or "system"),
+            str(remote.get("user") or ""),
+            name,
+        )
+        flatpak_remote_state_ids[key] = state_id
+        lines.extend(
+            [
+                f"{state_id}:",
+                "  cmd.run:",
+                f"    - name: {_yaml_quote(remote.get('add_cmd') or _flatpak_remote_add_cmd(remote))}",
+                f"    - unless: {_yaml_quote(remote.get('exists_cmd') or _flatpak_remote_exists_cmd(remote))}",
+            ]
+        )
+        remote_user = str(remote.get("user") or "")
+        if remote_user:
+            lines.append(f"    - runas: {_yaml_quote(remote_user)}")
+        env = remote.get("env") or {}
+        if env:
+            lines.append("    - env:")
+            for key_name, value in sorted(env.items()):
+                lines.append(f"      - {key_name}: {_yaml_quote(value)}")
+        if remote_user and remote_user in srole.users:
+            lines.extend(
+                [
+                    "    - require:",
+                    f"      - user: {_state_id('user', remote_user, role=srole.module_name)}",
+                ]
+            )
+        lines.append("")
+
+    for app in srole.flatpaks:
+        ref = _flatpak_ref(app)
+        if not ref:
+            continue
+        state_id = str(
+            app.get("state_id") or _state_id("flatpak", ref, role=srole.module_name)
+        )
+        method = str(app.get("method") or "system")
+        user = str(app.get("user") or "")
+        remote_name = str(app.get("remote") or "")
+        require_entries: List[Tuple[str, str]] = []
+        if user and user in srole.users:
+            require_entries.append(
+                ("user", _state_id("user", user, role=srole.module_name))
+            )
+        if remote_name:
+            remote_state_id = flatpak_remote_state_ids.get((method, user, remote_name))
+            if remote_state_id:
+                require_entries.append(("cmd", remote_state_id))
+        lines.extend(
+            [
+                f"{state_id}:",
+                "  cmd.run:",
+                f"    - name: {_yaml_quote(app.get('install_cmd') or _flatpak_install_cmd(app))}",
+                f"    - unless: {_yaml_quote(app.get('exists_cmd') or _flatpak_exists_cmd(app))}",
+            ]
+        )
+        if app.get("user"):
+            lines.append(f"    - runas: {_yaml_quote(app.get('user'))}")
+        env = app.get("env") or {}
+        if env:
+            lines.append("    - env:")
+            for key_name, value in sorted(env.items()):
+                lines.append(f"      - {key_name}: {_yaml_quote(value)}")
+        if require_entries:
+            lines.append("    - require:")
+            for req_kind, req_name in require_entries:
+                lines.append(f"      - {req_kind}: {req_name}")
+        lines.append("")
+
+    for snap in srole.snaps:
+        name = str(snap.get("name") or "").strip()
+        if not name:
+            continue
+        lines.extend(
+            [
+                f"{snap.get('state_id') or _state_id('snap', name, role=srole.module_name)}:",
+                "  cmd.run:",
+                f"    - name: {_yaml_quote(snap.get('install_cmd') or _snap_install_cmd(snap))}",
+                f"    - unless: {_yaml_quote(snap.get('exists_cmd') or _snap_exists_cmd(snap))}",
                 "",
             ]
         )
@@ -758,6 +1205,9 @@ def _render_static_role(srole: SaltRole) -> str:
                     ]
                 )
 
+    if srole.firewall_runtime:
+        _append_firewall_runtime_states(lines, srole.firewall_runtime)
+
     if "/etc/sysctl.d/99-enroll.conf" in srole.files:
         lines.extend(
             [
@@ -815,6 +1265,7 @@ def _role_pillar_values(srole: SaltRole) -> Dict[str, Any]:
                 "group": attrs.get("group") or "root",
                 "mode": str(attrs.get("mode") or "0755"),
                 "makedirs": True,
+                **({"require": attrs.get("require")} if attrs.get("require") else {}),
             }
             for path, attrs in sorted(srole.dirs.items())
         }
@@ -853,8 +1304,16 @@ def _role_pillar_values(srole: SaltRole) -> Dict[str, Any]:
         }
     if "/etc/sysctl.d/99-enroll.conf" in srole.files:
         data["sysctl_apply"] = True
+    if srole.flatpak_remotes:
+        data["flatpak_remotes"] = list(srole.flatpak_remotes)
+    if srole.flatpaks:
+        data["flatpaks"] = list(srole.flatpaks)
+    if srole.snaps:
+        data["snaps"] = list(srole.snaps)
     if srole.container_images:
         data["container_images"] = list(srole.container_images)
+    if srole.firewall_runtime:
+        data["firewall_runtime"] = dict(srole.firewall_runtime)
     if srole.notes:
         data["notes"] = list(srole.notes)
     return data
@@ -915,6 +1374,14 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "    - group: {{ attrs.get('group', 'root')|yaml_dquote }}",
         "    - mode: {{ attrs.get('mode', '0755')|string|yaml_dquote }}",
         "    - makedirs: {{ attrs.get('makedirs', True)|yaml_encode }}",
+        "{% if attrs.get('require') %}",
+        "    - require:",
+        "{% for req in attrs.get('require', []) %}",
+        "{% for req_kind, req_name in req.items() %}",
+        "      - {{ req_kind }}: {{ req_name|yaml_dquote }}",
+        "{% endfor %}",
+        "{% endfor %}",
+        "{% endif %}",
         "{% endfor %}",
         "",
         "{% for path, attrs in role.get('files', {}).items() %}",
@@ -948,6 +1415,45 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "    - enable: {{ svc.get('enable', False)|yaml_encode }}",
         "{% endfor %}",
         "",
+        "{% for remote in role.get('flatpak_remotes', []) %}",
+        "{{ remote.get('state_id') }}:",
+        "  cmd.run:",
+        "    - name: {{ remote.get('add_cmd')|yaml_dquote }}",
+        "    - unless: {{ remote.get('exists_cmd')|yaml_dquote }}",
+        "{% if remote.get('user') %}",
+        "    - runas: {{ remote.get('user')|yaml_dquote }}",
+        "{% endif %}",
+        "{% if remote.get('env') %}",
+        "    - env:",
+        "{% for env_key, env_value in remote.get('env', {}).items() %}",
+        "      - {{ env_key }}: {{ env_value|yaml_dquote }}",
+        "{% endfor %}",
+        "{% endif %}",
+        "{% endfor %}",
+        "",
+        "{% for app in role.get('flatpaks', []) %}",
+        "{{ app.get('state_id') }}:",
+        "  cmd.run:",
+        "    - name: {{ app.get('install_cmd')|yaml_dquote }}",
+        "    - unless: {{ app.get('exists_cmd')|yaml_dquote }}",
+        "{% if app.get('user') %}",
+        "    - runas: {{ app.get('user')|yaml_dquote }}",
+        "{% endif %}",
+        "{% if app.get('env') %}",
+        "    - env:",
+        "{% for env_key, env_value in app.get('env', {}).items() %}",
+        "      - {{ env_key }}: {{ env_value|yaml_dquote }}",
+        "{% endfor %}",
+        "{% endif %}",
+        "{% endfor %}",
+        "",
+        "{% for snap in role.get('snaps', []) %}",
+        "{{ snap.get('state_id') }}:",
+        "  cmd.run:",
+        "    - name: {{ snap.get('install_cmd')|yaml_dquote }}",
+        "    - unless: {{ snap.get('exists_cmd')|yaml_dquote }}",
+        "{% endfor %}",
+        "",
         "{% for image in role.get('container_images', []) %}",
         "{% if image.get('engine') == 'docker' and image.get('pull_ref') %}",
         f"enroll_docker_pull_{role_key}_{{{{ loop.index }}}}:",
@@ -979,6 +1485,31 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "{% endfor %}",
         "{% endif %}",
         "{% endfor %}",
+        "",
+        "{% set firewall_runtime = role.get('firewall_runtime', {}) %}",
+        "{% if firewall_runtime.get('ipset_restore_cmd') %}",
+        "enroll_firewall_runtime_ipset_restore:",
+        "  cmd.run:",
+        "    - name: {{ firewall_runtime.get('ipset_restore_cmd')|yaml_dquote }}",
+        "    - onchanges:",
+        "      - file: {{ firewall_runtime.get('ipset_save')|yaml_dquote }}",
+        "{% endif %}",
+        "",
+        "{% if firewall_runtime.get('iptables_v4_restore_cmd') %}",
+        "enroll_firewall_runtime_iptables_v4_restore:",
+        "  cmd.run:",
+        "    - name: {{ firewall_runtime.get('iptables_v4_restore_cmd')|yaml_dquote }}",
+        "    - onchanges:",
+        "      - file: {{ firewall_runtime.get('iptables_v4_save')|yaml_dquote }}",
+        "{% endif %}",
+        "",
+        "{% if firewall_runtime.get('iptables_v6_restore_cmd') %}",
+        "enroll_firewall_runtime_iptables_v6_restore:",
+        "  cmd.run:",
+        "    - name: {{ firewall_runtime.get('iptables_v6_restore_cmd')|yaml_dquote }}",
+        "    - onchanges:",
+        "      - file: {{ firewall_runtime.get('iptables_v6_save')|yaml_dquote }}",
+        "{% endif %}",
         "",
         "{% if role.get('sysctl_apply') and '/etc/sysctl.d/99-enroll.conf' in role.get('files', {}) %}",
         f"enroll_apply_sysctl_{role_key}:",
@@ -1164,10 +1695,12 @@ This Salt target reuses the existing harvest state without changing harvesting b
 - `/etc/sysctl.d/99-enroll.conf` plus an `onchanges` sysctl apply command when present.
 - Docker images by digest using guarded `docker pull` / `docker tag` command states.
 - Podman images by digest using guarded `podman pull` / `podman tag` command states.
+- Flatpak remotes and applications using guarded `flatpak remote-add` / `flatpak install` command states.
+- Snap applications using guarded `snap install` command states.
+- Live firewall runtime snapshots using staged `/etc/enroll/firewall/*` files and guarded restore command states.
 
 ## Current limitations
 
-- Flatpak, Snap, and live firewall runtime snapshots are listed as notes when present rather than rendered as Salt states.
 - JinjaTurtle templating is applied on a best-effort basis for file formats it recognises; unrecognised files are copied literally.
 - Review generated resources before applying them broadly across unlike hosts.
 

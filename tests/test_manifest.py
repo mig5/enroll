@@ -1308,9 +1308,14 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
     tasks = (out / "roles" / "firewall_runtime" / "tasks" / "main.yml").read_text(
         encoding="utf-8"
     )
-    assert "ipset restore -exist" in tasks
-    assert "iptables-restore /etc/enroll/firewall/iptables.v4" in tasks
-    assert "ipset flush {{ item }}" in tasks
+    handlers = (out / "roles" / "firewall_runtime" / "handlers" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "notify: Restore captured ipsets" in tasks
+    assert "notify: Restore captured IPv4 iptables rules" in tasks
+    assert "ipset restore -exist" in handlers
+    assert "iptables-restore /etc/enroll/firewall/iptables.v4" in handlers
+    assert "ipset flush {{ item }}" in handlers
 
     defaults = (out / "roles" / "firewall_runtime" / "defaults" / "main.yml").read_text(
         encoding="utf-8"
@@ -1320,7 +1325,13 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
     assert "firewall_runtime_restore_iptables: true" in defaults
 
     pb = (out / "playbook.yml").read_text(encoding="utf-8")
+    assert "role: enroll_runtime" in pb
     assert "role: firewall_runtime" in pb
+    assert pb.index("role: enroll_runtime") < pb.index("role: firewall_runtime")
+    runtime_tasks = (out / "roles" / "enroll_runtime" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "path: /etc/enroll" in runtime_tasks
     assert (
         out / "roles" / "firewall_runtime" / "files" / "firewall" / "ipset.save"
     ).exists()
@@ -2076,6 +2087,8 @@ def test_manifest_renders_container_image_role_for_ansible(tmp_path: Path):
     assert podman_digest in defaults
     assert "community.docker.docker_image_pull" in tasks
     assert "community.docker.docker_image_tag" in tasks
+    assert "selectattr('pull_ref')" in tasks
+    assert "item.pull_ref | default('', true) | length > 0" in tasks
     assert "containers.podman.podman_image" in tasks
     assert "containers.podman.podman_tag" in tasks
     assert "repository:" in tasks

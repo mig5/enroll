@@ -747,25 +747,7 @@ def _render_firewall_runtime_tasks(var_prefix: str) -> str:
     owner: root
     group: root
     mode: "0600"
-  when: ({var_prefix}_ipset_save | default('') | length) > 0
-
-- name: Flush captured ipsets before restoring members
-  ansible.builtin.command:
-    cmd: "ipset flush {{{{ item }}}}"
-  loop: "{{{{ {var_prefix}_ipset_sets | default([]) }}}}"
-  register: _enroll_ipset_flush
-  failed_when: false
-  changed_when: false
-  when:
-    - ({var_prefix}_ipset_save | default('') | length) > 0
-    - {var_prefix}_sync_ipsets_exact | default(true) | bool
-
-- name: Restore captured ipsets
-  ansible.builtin.shell: "ipset restore -exist < /etc/enroll/firewall/ipset.save"
-  args:
-    executable: /bin/sh
-  register: _enroll_ipset_restore
-  changed_when: _enroll_ipset_restore.rc == 0
+  notify: Restore captured ipsets
   when: ({var_prefix}_ipset_save | default('') | length) > 0
 
 - name: Deploy captured IPv4 iptables snapshot
@@ -780,16 +762,8 @@ def _render_firewall_runtime_tasks(var_prefix: str) -> str:
     owner: root
     group: root
     mode: "0600"
+  notify: Restore captured IPv4 iptables rules
   when: ({var_prefix}_iptables_v4_save | default('') | length) > 0
-
-- name: Restore captured IPv4 iptables rules
-  ansible.builtin.command:
-    cmd: iptables-restore /etc/enroll/firewall/iptables.v4
-  register: _enroll_iptables_v4_restore
-  changed_when: _enroll_iptables_v4_restore.rc == 0
-  when:
-    - ({var_prefix}_iptables_v4_save | default('') | length) > 0
-    - {var_prefix}_restore_iptables | default(true) | bool
 
 - name: Deploy captured IPv6 iptables snapshot
   vars:
@@ -803,13 +777,50 @@ def _render_firewall_runtime_tasks(var_prefix: str) -> str:
     owner: root
     group: root
     mode: "0600"
+  notify: Restore captured IPv6 iptables rules
   when: ({var_prefix}_iptables_v6_save | default('') | length) > 0
+"""
+
+
+def _render_firewall_runtime_handlers(var_prefix: str) -> str:
+    """Render handlers for live ipset/iptables snapshots.
+
+    Runtime firewall snapshots are intentionally applied only when Enroll's
+    staged snapshot file changes. Live iptables/ipset state is volatile, and
+    daemons such as Docker may mutate counters/chains between configuration
+    management runs. Treating restore as a file-change handler keeps repeated
+    Ansible runs idempotent while still applying a new harvested snapshot.
+    """
+    return f"""---
+- name: Flush captured ipsets before restoring members
+  ansible.builtin.command:
+    cmd: "ipset flush {{{{ item }}}}"
+  loop: "{{{{ {var_prefix}_ipset_sets | default([]) }}}}"
+  listen: Restore captured ipsets
+  register: _enroll_ipset_flush
+  failed_when: false
+  changed_when: false
+  when: {var_prefix}_sync_ipsets_exact | default(true) | bool
+
+- name: Restore captured ipsets
+  ansible.builtin.shell: "ipset restore -exist < /etc/enroll/firewall/ipset.save"
+  args:
+    executable: /bin/sh
+  listen: Restore captured ipsets
+  when: ({var_prefix}_ipset_save | default('') | length) > 0
+
+- name: Restore captured IPv4 iptables rules
+  ansible.builtin.command:
+    cmd: iptables-restore /etc/enroll/firewall/iptables.v4
+  listen: Restore captured IPv4 iptables rules
+  when:
+    - ({var_prefix}_iptables_v4_save | default('') | length) > 0
+    - {var_prefix}_restore_iptables | default(true) | bool
 
 - name: Restore captured IPv6 iptables rules
   ansible.builtin.command:
     cmd: ip6tables-restore /etc/enroll/firewall/iptables.v6
-  register: _enroll_iptables_v6_restore
-  changed_when: _enroll_iptables_v6_restore.rc == 0
+  listen: Restore captured IPv6 iptables rules
   when:
     - ({var_prefix}_iptables_v6_save | default('') | length) > 0
     - {var_prefix}_restore_iptables | default(true) | bool
@@ -1236,9 +1247,9 @@ def _render_container_images_role(
     name: "{{ item.pull_ref }}"
     pull: not_present
     platform: "{{ item.platform | default(omit, true) }}"
-  loop: "{{ container_images | default([]) | selectattr('engine', 'equalto', 'docker') | selectattr('pull_ref', 'defined') | list }}"
+  loop: "{{ container_images | default([]) | selectattr('engine', 'equalto', 'docker') | selectattr('pull_ref') | list }}"
   when:
-    - item.pull_ref | default('') | length > 0
+    - item.pull_ref | default('', true) | length > 0
   become: true
 
 - name: Tag Docker images with harvested tag aliases
@@ -1246,11 +1257,11 @@ def _render_container_images_role(
     name: "{{ item.0.pull_ref }}"
     repository:
       - "{{ item.1.ref }}"
-  loop: "{{ query('subelements', container_images | default([]) | selectattr('engine', 'equalto', 'docker') | selectattr('pull_ref', 'defined') | list, 'tag_aliases', {'skip_missing': True}) }}"
+  loop: "{{ query('subelements', container_images | default([]) | selectattr('engine', 'equalto', 'docker') | selectattr('pull_ref') | list, 'tag_aliases', {'skip_missing': True}) }}"
   when:
-    - item.0.pull_ref | default('') | length > 0
-    - item.1.repository | default('') | length > 0
-    - item.1.tag | default('') | length > 0
+    - item.0.pull_ref | default('', true) | length > 0
+    - item.1.repository | default('', true) | length > 0
+    - item.1.tag | default('', true) | length > 0
   become: true
 
 - name: Pull system Podman images by immutable registry digest
@@ -1259,9 +1270,9 @@ def _render_container_images_role(
     state: present
     force: false
     platform: "{{ item.platform | default(omit, true) }}"
-  loop: "{{ container_images | default([]) | selectattr('engine', 'equalto', 'podman') | rejectattr('scope', 'equalto', 'user') | selectattr('pull_ref', 'defined') | list }}"
+  loop: "{{ container_images | default([]) | selectattr('engine', 'equalto', 'podman') | rejectattr('scope', 'equalto', 'user') | selectattr('pull_ref') | list }}"
   when:
-    - item.pull_ref | default('') | length > 0
+    - item.pull_ref | default('', true) | length > 0
   become: true
 
 - name: Tag system Podman images with harvested tag aliases
@@ -1269,10 +1280,10 @@ def _render_container_images_role(
     image: "{{ item.0.pull_ref }}"
     target_names:
       - "{{ item.1.ref }}"
-  loop: "{{ query('subelements', container_images | default([]) | selectattr('engine', 'equalto', 'podman') | rejectattr('scope', 'equalto', 'user') | selectattr('pull_ref', 'defined') | list, 'tag_aliases', {'skip_missing': True}) }}"
+  loop: "{{ query('subelements', container_images | default([]) | selectattr('engine', 'equalto', 'podman') | rejectattr('scope', 'equalto', 'user') | selectattr('pull_ref') | list, 'tag_aliases', {'skip_missing': True}) }}"
   when:
-    - item.0.pull_ref | default('') | length > 0
-    - item.1.ref | default('') | length > 0
+    - item.0.pull_ref | default('', true) | length > 0
+    - item.1.ref | default('', true) | length > 0
   become: true
 
 - name: Pull user Podman images by immutable registry digest
@@ -1281,10 +1292,10 @@ def _render_container_images_role(
     state: present
     force: false
     platform: "{{ item.platform | default(omit, true) }}"
-  loop: "{{ container_images | default([]) | selectattr('engine', 'equalto', 'podman') | selectattr('scope', 'equalto', 'user') | selectattr('pull_ref', 'defined') | list }}"
+  loop: "{{ container_images | default([]) | selectattr('engine', 'equalto', 'podman') | selectattr('scope', 'equalto', 'user') | selectattr('pull_ref') | list }}"
   when:
-    - item.pull_ref | default('') | length > 0
-    - item.user | default('') | length > 0
+    - item.pull_ref | default('', true) | length > 0
+    - item.user | default('', true) | length > 0
   become: true
   become_user: "{{ item.user }}"
 
@@ -1293,11 +1304,11 @@ def _render_container_images_role(
     image: "{{ item.0.pull_ref }}"
     target_names:
       - "{{ item.1.ref }}"
-  loop: "{{ query('subelements', container_images | default([]) | selectattr('engine', 'equalto', 'podman') | selectattr('scope', 'equalto', 'user') | selectattr('pull_ref', 'defined') | list, 'tag_aliases', {'skip_missing': True}) }}"
+  loop: "{{ query('subelements', container_images | default([]) | selectattr('engine', 'equalto', 'podman') | selectattr('scope', 'equalto', 'user') | selectattr('pull_ref') | list, 'tag_aliases', {'skip_missing': True}) }}"
   when:
-    - item.0.pull_ref | default('') | length > 0
-    - item.0.user | default('') | length > 0
-    - item.1.ref | default('') | length > 0
+    - item.0.pull_ref | default('', true) | length > 0
+    - item.0.user | default('', true) | length > 0
+    - item.1.ref | default('', true) | length > 0
   become: true
   become_user: "{{ item.0.user }}"
 """
@@ -2539,6 +2550,31 @@ Captured parameter count: {param_count}
     return role
 
 
+def _render_enroll_runtime_role(ctx: AnsibleManifestContext) -> str:
+    role = "enroll_runtime"
+    role_dir = os.path.join(ctx.roles_root, role)
+    _write_role_scaffold(role_dir)
+    tasks = """---
+- name: Ensure Enroll runtime directory exists
+  ansible.builtin.file:
+    path: /etc/enroll
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+"""
+    with open(os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8") as f:
+        f.write(tasks.rstrip() + "\n")
+    with open(os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8") as f:
+        f.write("---\ndependencies: []\n")
+    with open(os.path.join(role_dir, "README.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "# enroll_runtime\n\n"
+            "Generated by Enroll to hold common runtime scaffolding used by other generated roles.\n"
+        )
+    return role
+
+
 def _render_firewall_runtime_role(
     ctx: AnsibleManifestContext,
     firewall_runtime_snapshot: Dict[str, Any],
@@ -2608,6 +2644,11 @@ def _render_firewall_runtime_role(
     )
     with open(os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8") as f:
         f.write(tasks.rstrip() + "\n")
+
+    with open(
+        os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
+    ) as f:
+        f.write(_render_firewall_runtime_handlers(var_prefix).rstrip() + "\n")
 
     with open(os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8") as f:
         f.write("---\ndependencies: []\n")
@@ -3091,6 +3132,9 @@ class AnsibleManifestRenderer:
         firewall_role = _render_firewall_runtime_role(
             ctx, roles.get("firewall_runtime", {})
         )
+        enroll_runtime_role = (
+            _render_enroll_runtime_role(ctx) if firewall_role else None
+        )
         service_roles = _render_service_roles(ctx, services_to_manifest)
 
         occupied_role_names = set(managed_roles.values())
@@ -3101,6 +3145,7 @@ class AnsibleManifestRenderer:
             container_role,
             sysctl_role,
             firewall_role,
+            enroll_runtime_role,
         ):
             if role:
                 occupied_role_names.add(role)
@@ -3127,7 +3172,7 @@ class AnsibleManifestRenderer:
         ordered_roles = _ordered_playbook_roles(
             rendered_roles, ["cron", "logrotate"] + common_tail_roles
         )
-        for role in (sysctl_role, firewall_role):
+        for role in (enroll_runtime_role, sysctl_role, firewall_role):
             _add_role(ordered_roles, role)
 
         _write_manifest_playbook(ctx, ordered_roles)

@@ -472,7 +472,7 @@ Or with absolute paths:
 sudo puppet apply --modulepath /tmp/enroll-puppet/modules /tmp/enroll-puppet/manifests/site.pp --noop
 ```
 
-Docker images with registry digests are rendered as `docker::image` resources and require the Puppet environment to provide `puppetlabs-docker`; the generated module metadata records that dependency. Podman images with registry digests are rendered as guarded `podman pull` / `podman tag` exec resources. Images without `RepoDigest` are recorded in harvest state and notes, but are not converted into exact pull resources. Flatpak, Snap, and live firewall runtime snapshots are listed as notes in the generated Puppet README rather than converted into Puppet resources.
+Docker images with registry digests are currently managed with `exec` statements. I know that's nasty, but the `puppetlabs-docker` module is even nastier and creates non-idempotent bash scripts for executing on every run. Worse, if you then reharvest that host that has Puppet installed, you'll get a File resource collision with that very shell script. Believe me, for the simple use case of 'make sure this Docker image is installed', this simple solution is better.
 
 ### Salt target
 ```bash
@@ -498,9 +498,8 @@ Re-running Salt `--fqdn` output into the same directory adds or replaces that mi
 
 Docker and Podman images with registry digests are rendered as guarded `cmd.run` states that use the local `docker`/`podman` CLI directly (`pull`, `image inspect`, and `tag`).
 
-This is because Salt Stack, in 3008, does not have proper Docker extensions that actually work. Wow.
+This is because Salt Stack, in 3008, does not have proper Docker extensions that actually work. Wow. It's a bit like Puppet. Seriously, you should probably just be using Ansible.
 
-Certain other things, like in Puppet, are not 'manifested' into Salt states unlike Ansible, at this time: these are Flatpak, Snap, and live firewall rules.
 
 ### Manifest with `--sops`
 ```bash

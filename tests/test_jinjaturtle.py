@@ -147,3 +147,87 @@ def test_openssh_paths_are_jinjaturtle_supported_and_forced_to_ssh() -> None:
 
     assert can_jinjify_path("/etc/ssh/sshd_config")
     assert can_jinjify_path("/etc/ssh/ssh_config")
+
+
+def test_jinjify_managed_files_namespaces_multiple_templates(
+    monkeypatch, tmp_path: Path
+):
+    from enroll.jinjaturtle import jinjify_managed_files
+
+    bundle = tmp_path / "bundle"
+    template_root = tmp_path / "templates"
+    for rel in ("etc/foo/a.yaml", "etc/foo/b.yaml"):
+        path = bundle / "artifacts" / "foo" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ignore: []\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_run_jinjaturtle(jt_exe, src_path, *, role_name, force_format=None):
+        calls.append((Path(src_path).name, role_name))
+        return JinjifyResult(
+            template_text=f"ignore: {{{{ {role_name}_ignore }}}}\n",
+            vars_text=f"{role_name}_ignore: []\n",
+        )
+
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    templated, vars_text = jinjify_managed_files(
+        bundle,
+        "foo",
+        template_root,
+        [
+            {"path": "/etc/foo/a.yaml", "src_rel": "etc/foo/a.yaml"},
+            {"path": "/etc/foo/b.yaml", "src_rel": "etc/foo/b.yaml"},
+        ],
+        jt_exe="jinjaturtle",
+        jt_enabled=True,
+        overwrite_templates=True,
+        role_name="foo",
+    )
+
+    assert templated == {"etc/foo/a.yaml", "etc/foo/b.yaml"}
+    assert calls == [
+        ("a.yaml", "foo_etc_foo_a_yaml"),
+        ("b.yaml", "foo_etc_foo_b_yaml"),
+    ]
+    assert "foo_etc_foo_a_yaml_ignore: []" in vars_text
+    assert "foo_etc_foo_b_yaml_ignore: []" in vars_text
+    assert (template_root / "etc" / "foo" / "a.yaml.j2").read_text(
+        encoding="utf-8"
+    ) == "ignore: {{ foo_etc_foo_a_yaml_ignore }}\n"
+
+
+def test_jinjify_managed_files_rejects_templates_with_missing_defaults(
+    monkeypatch, tmp_path: Path
+):
+    from enroll.jinjaturtle import jinjify_managed_files
+
+    bundle = tmp_path / "bundle"
+    template_root = tmp_path / "templates"
+    artifact = bundle / "artifacts" / "foo" / "etc" / "foo" / "pdk.yaml"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("ignore: []\n", encoding="utf-8")
+
+    def fake_run_jinjaturtle(jt_exe, src_path, *, role_name, force_format=None):
+        return JinjifyResult(
+            template_text=f"ignore: {{{{ {role_name}_ignore }}}}\n",
+            vars_text="--- {}\n",
+        )
+
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    templated, vars_text = jinjify_managed_files(
+        bundle,
+        "foo",
+        template_root,
+        [{"path": "/etc/foo/pdk.yaml", "src_rel": "etc/foo/pdk.yaml"}],
+        jt_exe="jinjaturtle",
+        jt_enabled=True,
+        overwrite_templates=True,
+        role_name="foo",
+    )
+
+    assert templated == set()
+    assert vars_text == ""
+    assert not (template_root / "etc" / "foo" / "pdk.yaml.j2").exists()

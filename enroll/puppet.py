@@ -29,9 +29,20 @@ class PuppetRole(CMModule):
             module_name=_puppet_name(role_name, fallback="enroll_role"),
         )
         self.container_images: List[Dict[str, Any]] = []
+        self.flatpak_remotes: List[Dict[str, Any]] = []
+        self.flatpaks: List[Dict[str, Any]] = []
+        self.snaps: List[Dict[str, Any]] = []
+        self.firewall_runtime: Dict[str, Any] = {}
 
     def has_resources(self) -> bool:
-        return super().has_resources() or bool(self.container_images)
+        return (
+            super().has_resources()
+            or bool(self.container_images)
+            or bool(self.flatpak_remotes)
+            or bool(self.flatpaks)
+            or bool(self.snaps)
+            or bool(self.firewall_runtime)
+        )
 
     def add_package_snapshot(self, snap: Dict[str, Any]) -> None:
         pkg = str(snap.get("package") or "").strip()
@@ -83,10 +94,108 @@ class PuppetRole(CMModule):
                 "supplementary_groups": supplementary,
             }
 
-        if snap.get("user_flatpaks") or snap.get("user_flatpak_remotes"):
-            self.notes.append(
-                "Per-user Flatpak resources were detected but are not yet rendered as native Puppet resources."
+        home_by_user = {
+            str(u.get("name")): str(u.get("home") or "")
+            for u in (snap.get("users", []) or [])
+            if isinstance(u, dict) and u.get("name")
+        }
+        for remote in snap.get("user_flatpak_remotes", []) or []:
+            item = _normalise_flatpak_remote(remote)
+            user = str(item.get("user") or "").strip()
+            if user and not item.get("home"):
+                item["home"] = home_by_user.get(user) or f"/home/{user}"
+            if item.get("method") == "user" and item.get("name") and item.get("url"):
+                self.flatpak_remotes.append(_prepare_flatpak_remote(item))
+        for uname, flatpaks in (snap.get("user_flatpaks", {}) or {}).items():
+            user = str(uname)
+            for fp in flatpaks or []:
+                item = _normalise_flatpak_item(
+                    fp, method="user", user=user, home=home_by_user.get(user) or None
+                )
+                if item.get("name"):
+                    self.flatpaks.append(_prepare_flatpak_item(item))
+
+    def add_flatpak_snapshot(self, snap: Dict[str, Any]) -> None:
+        for remote in snap.get("remotes", []) or []:
+            item = _normalise_flatpak_remote(remote)
+            if item.get("name") and item.get("url"):
+                self.flatpak_remotes.append(_prepare_flatpak_remote(item))
+        for fp in snap.get("system_flatpaks", []) or []:
+            item = _normalise_flatpak_item(fp, method="system")
+            if item.get("name"):
+                self.flatpaks.append(_prepare_flatpak_item(item))
+        for note in snap.get("notes", []) or []:
+            self.notes.append(str(note))
+
+    def add_snap_snapshot(self, snap: Dict[str, Any]) -> None:
+        for raw in snap.get("system_snaps", []) or []:
+            item = _normalise_snap_item(raw)
+            if item.get("name"):
+                self.snaps.append(_prepare_snap_item(item))
+        for note in snap.get("notes", []) or []:
+            self.notes.append(str(note))
+
+    def add_firewall_runtime_snapshot(
+        self,
+        snap: Dict[str, Any],
+        *,
+        bundle_dir: str,
+        artifact_role: str,
+        module_files_dir: Path,
+        file_prefix: Optional[str] = None,
+    ) -> None:
+        self.packages.update(
+            str(p).strip() for p in (snap.get("packages") or []) if str(p).strip()
+        )
+        self.add_managed_dir(
+            "/etc/enroll/firewall",
+            owner="root",
+            group="root",
+            mode="0750",
+            require="File['/etc/enroll']",
+            reason="firewall_runtime",
+        )
+        runtime: Dict[str, Any] = {}
+        for key, dest_name, mode in (
+            ("ipset_save", "ipset.save", "0600"),
+            ("iptables_v4_save", "iptables.v4", "0600"),
+            ("iptables_v6_save", "iptables.v6", "0600"),
+        ):
+            src_rel = str(snap.get(key) or "").strip()
+            if not src_rel:
+                continue
+            role_rel = _copy_artifact(
+                bundle_dir,
+                artifact_role,
+                src_rel,
+                module_files_dir,
+                dst_prefix=file_prefix,
             )
+            if not role_rel:
+                self.notes.append(
+                    f"Firewall runtime artifact {src_rel!r} was referenced but not found."
+                )
+                continue
+            dest = f"/etc/enroll/firewall/{dest_name}"
+            self.add_managed_file(
+                dest,
+                owner="root",
+                group="root",
+                mode=mode,
+                source=_source_uri(self.module_name, role_rel),
+                reason="firewall_runtime",
+            )
+            runtime[key] = dest
+        ipset_sets = [
+            str(x).strip() for x in (snap.get("ipset_sets") or []) if str(x).strip()
+        ]
+        if ipset_sets:
+            runtime["ipset_sets"] = ipset_sets
+        if runtime:
+            runtime.update(_firewall_runtime_commands(runtime))
+            self.firewall_runtime.update(runtime)
+        for note in snap.get("notes", []) or []:
+            self.notes.append(str(note))
 
     def add_container_images_snapshot(self, snap: Dict[str, Any]) -> None:
         for raw in snap.get("images", []) or []:
@@ -265,8 +374,202 @@ def _container_tag_cmd(engine: str, pull_ref: str, tag_ref: str) -> str:
     return f"{engine} tag {_shell_quote(pull_ref)} {_shell_quote(tag_ref)}"
 
 
+def _normalise_flatpak_item(
+    item: Dict[str, Any],
+    *,
+    method: str,
+    user: Optional[str] = None,
+    home: Optional[str] = None,
+) -> Dict[str, Any]:
+    out = dict(item)
+    out["method"] = str(out.get("method") or method or "system").strip() or "system"
+    if user and not out.get("user"):
+        out["user"] = user
+    if home and not out.get("home"):
+        out["home"] = home
+    ref = str(out.get("ref") or "").strip()
+    if ref and not out.get("name"):
+        out["name"] = ref.rsplit("/", 1)[-1]
+    name = str(out.get("name") or out.get("app_id") or "").strip()
+    if name:
+        out["name"] = name
+    remote = str(out.get("remote") or "").strip()
+    if remote:
+        out["remote"] = remote
+    branch = str(out.get("branch") or out.get("origin") or "").strip()
+    if branch:
+        out["branch"] = branch
+    if ref:
+        out["ref"] = ref
+    return out
+
+
+def _normalise_flatpak_remote(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    name = str(out.get("name") or out.get("remote") or "").strip()
+    url = str(out.get("url") or out.get("from_url") or "").strip()
+    method = str(out.get("method") or out.get("scope") or "system").strip() or "system"
+    if name:
+        out["name"] = name
+    if url:
+        out["url"] = url
+    out["method"] = "user" if method == "user" else "system"
+    return out
+
+
+def _normalise_snap_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    name = str(out.get("name") or "").strip()
+    if name:
+        out["name"] = name
+    channel = str(out.get("tracking") or out.get("channel") or "").strip()
+    if channel:
+        out["channel"] = channel
+    notes = [str(note).lower() for note in (out.get("notes") or [])]
+    confinement = str(out.get("confinement") or "").strip().lower()
+    out["classic"] = confinement == "classic" or any(
+        "classic" in note for note in notes
+    )
+    out["devmode"] = any("devmode" in note or "dev mode" in note for note in notes)
+    out["dangerous"] = any("dangerous" in note for note in notes)
+    revision = str(out.get("revision") or "").strip()
+    if revision and not channel:
+        out["revision"] = revision
+    return out
+
+
+def _flatpak_scope(item: Dict[str, Any]) -> str:
+    return "--user" if str(item.get("method") or "system") == "user" else "--system"
+
+
+def _flatpak_home(item: Dict[str, Any]) -> Optional[str]:
+    user = str(item.get("user") or "").strip()
+    if not user:
+        return None
+    return str(item.get("home") or f"/home/{user}")
+
+
+def _flatpak_exec_env(item: Dict[str, Any]) -> List[str]:
+    home = _flatpak_home(item)
+    if not home:
+        return []
+    return [f"HOME={home}", f"XDG_DATA_HOME={home}/.local/share"]
+
+
+def _flatpak_remote_exists_cmd(item: Dict[str, Any]) -> str:
+    return (
+        f"flatpak {_flatpak_scope(item)} remote-list --columns=name "
+        f"| grep -Fx -- {_shell_quote(item.get('name'))}"
+    )
+
+
+def _flatpak_remote_add_cmd(item: Dict[str, Any]) -> str:
+    return (
+        f"flatpak {_flatpak_scope(item)} remote-add --if-not-exists "
+        f"{_shell_quote(item.get('name'))} {_shell_quote(item.get('url'))}"
+    )
+
+
+def _flatpak_ref(item: Dict[str, Any]) -> str:
+    ref = str(item.get("ref") or "").strip()
+    if ref:
+        return ref
+    return str(item.get("name") or "").strip()
+
+
+def _flatpak_exists_cmd(item: Dict[str, Any]) -> str:
+    return f"flatpak {_flatpak_scope(item)} info {_shell_quote(_flatpak_ref(item))} >/dev/null 2>&1"
+
+
+def _flatpak_install_cmd(item: Dict[str, Any]) -> str:
+    args = ["flatpak", _flatpak_scope(item), "install", "-y"]
+    remote = str(item.get("remote") or "").strip()
+    if remote:
+        args.append(remote)
+    args.append(_flatpak_ref(item))
+    return " ".join(_shell_quote(arg) for arg in args)
+
+
+def _prepare_flatpak_remote(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    method = str(out.get("method") or "system")
+    user = str(out.get("user") or "")
+    name = str(out.get("name") or "")
+    out["state_id"] = _state_title("flatpak-remote", f"{method}-{user}-{name}")
+    out["add_cmd"] = _flatpak_remote_add_cmd(out)
+    out["exists_cmd"] = _flatpak_remote_exists_cmd(out)
+    out["environment"] = _flatpak_exec_env(out)
+    return out
+
+
+def _prepare_flatpak_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    method = str(out.get("method") or "system")
+    user = str(out.get("user") or "")
+    ref = _flatpak_ref(out)
+    out["state_id"] = _state_title("flatpak", f"{method}-{user}-{ref}")
+    out["install_cmd"] = _flatpak_install_cmd(out)
+    out["exists_cmd"] = _flatpak_exists_cmd(out)
+    out["environment"] = _flatpak_exec_env(out)
+    return out
+
+
+def _snap_exists_cmd(item: Dict[str, Any]) -> str:
+    return f"snap list {_shell_quote(item.get('name'))} >/dev/null 2>&1"
+
+
+def _snap_install_cmd(item: Dict[str, Any]) -> str:
+    args = ["snap", "install", str(item.get("name") or "")]
+    channel = str(item.get("channel") or "").strip()
+    revision = str(item.get("revision") or "").strip()
+    if channel:
+        args.append(f"--channel={channel}")
+    elif revision:
+        args.append(f"--revision={revision}")
+    if item.get("classic"):
+        args.append("--classic")
+    if item.get("devmode"):
+        args.append("--devmode")
+    if item.get("dangerous"):
+        args.append("--dangerous")
+    return " ".join(_shell_quote(arg) for arg in args if str(arg))
+
+
+def _prepare_snap_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item)
+    name = str(out.get("name") or "")
+    out["state_id"] = _state_title("snap", name)
+    out["install_cmd"] = _snap_install_cmd(out)
+    out["exists_cmd"] = _snap_exists_cmd(out)
+    return out
+
+
 def _pp_array(values: Iterable[Any]) -> str:
     return "[" + ", ".join(_pp_quote(v) for v in values) + "]"
+
+
+def _puppet_exec_attrs(
+    command: str,
+    unless: str,
+    *,
+    item: Optional[Dict[str, Any]] = None,
+    require: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    attrs: List[Tuple[str, str]] = [
+        ("command", _pp_quote(command)),
+        ("unless", _pp_quote(unless)),
+        ("path", "['/usr/bin', '/bin']"),
+    ]
+    if item:
+        user = str(item.get("user") or "").strip()
+        if user:
+            attrs.append(("user", _pp_quote(user)))
+            env = item.get("environment") or _flatpak_exec_env(item)
+            if env:
+                attrs.append(("environment", _pp_array(env)))
+    if require:
+        attrs.append(("require", require))
+    return attrs
 
 
 def _resource(
@@ -293,6 +596,71 @@ def _state_title(prefix: str, value: Any) -> str:
     return f"enroll-{prefix}-{safe}"
 
 
+def _firewall_ipset_restore_cmd(path: str, sets: List[str]) -> str:
+    flush_parts = [f"ipset flush {_shell_quote(name)} || true" for name in sets]
+    flush = "; ".join(flush_parts)
+    restore = f"ipset restore -exist < {_shell_quote(path)}"
+    if flush:
+        return f"/bin/sh -c {_shell_quote(flush + '; ' + restore)}"
+    return f"/bin/sh -c {_shell_quote(restore)}"
+
+
+def _firewall_runtime_commands(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    ipset_path = str(runtime.get("ipset_save") or "")
+    if ipset_path:
+        sets = [str(x) for x in (runtime.get("ipset_sets") or []) if str(x)]
+        out["ipset_restore_cmd"] = _firewall_ipset_restore_cmd(ipset_path, sets)
+    ipt4_path = str(runtime.get("iptables_v4_save") or "")
+    if ipt4_path:
+        out["iptables_v4_restore_cmd"] = f"iptables-restore {_shell_quote(ipt4_path)}"
+    ipt6_path = str(runtime.get("iptables_v6_save") or "")
+    if ipt6_path:
+        out["iptables_v6_restore_cmd"] = f"ip6tables-restore {_shell_quote(ipt6_path)}"
+    return out
+
+
+def _render_firewall_runtime_execs(
+    lines: List[str], runtime: Dict[str, Any], *, indent: str = "  "
+) -> None:
+    specs = [
+        (
+            "ipset",
+            "ipset_save",
+            "ipset_restore_cmd",
+            "enroll-firewall-runtime-ipset-restore",
+        ),
+        (
+            "iptables_v4",
+            "iptables_v4_save",
+            "iptables_v4_restore_cmd",
+            "enroll-firewall-runtime-iptables-v4-restore",
+        ),
+        (
+            "iptables_v6",
+            "iptables_v6_save",
+            "iptables_v6_restore_cmd",
+            "enroll-firewall-runtime-iptables-v6-restore",
+        ),
+    ]
+    for _family, path_key, cmd_key, title in specs:
+        path = str(runtime.get(path_key) or "")
+        command = str(runtime.get(cmd_key) or "")
+        if not path or not command:
+            continue
+        attrs: List[Tuple[str, str]] = [
+            ("command", _pp_quote(command)),
+            ("path", "['/sbin', '/usr/sbin', '/bin', '/usr/bin']"),
+            ("refreshonly", "true"),
+            ("subscribe", f"File[{_pp_quote(path)}]"),
+        ]
+        lines.append(f"{indent}exec {{ {_pp_quote(title)}:")
+        for key, value in attrs:
+            lines.append(f"{indent}  {key} => {value},")
+        lines.append(f"{indent}}}")
+        lines.append("")
+
+
 def _copy_artifact(
     bundle_dir: str,
     role: str,
@@ -315,23 +683,6 @@ def _copy_artifact(
 
 def _source_uri(module_name: str, module_rel: str) -> str:
     return f"puppet:///modules/{module_name}/{module_rel}"
-
-
-def _add_flatpak_snap_notes(roles: Dict[str, Any], out: Dict[str, PuppetRole]) -> None:
-    flatpak = roles.get("flatpak") or {}
-    if isinstance(flatpak, dict) and (
-        flatpak.get("system_flatpaks") or flatpak.get("remotes")
-    ):
-        prole = out.setdefault("flatpak", PuppetRole("flatpak"))
-        prole.notes.append(
-            "Flatpak resources were detected but are not yet rendered as native Puppet resources."
-        )
-    snap = roles.get("snap") or {}
-    if isinstance(snap, dict) and snap.get("system_snaps"):
-        prole = out.setdefault("snap", PuppetRole("snap"))
-        prole.notes.append(
-            "Snap resources were detected but are not yet rendered as native Puppet resources."
-        )
 
 
 def _node_data_filename(fqdn: str) -> str:
@@ -480,15 +831,37 @@ def _collect_puppet_roles(
         packages = [
             str(p).strip() for p in (fw.get("packages") or []) if str(p).strip()
         ]
-        if has_fw or packages:
-            prole = ensure_role(str(fw.get("role_name") or "firewall_runtime"))
-            prole.packages.update(packages)
+        if has_fw or packages or fw.get("notes"):
             if has_fw:
-                prole.notes.append(
-                    "Live firewall runtime snapshots were detected but are not yet rendered as Puppet resources."
+                runtime_role = ensure_role("enroll_runtime")
+                runtime_role.add_managed_dir(
+                    "/etc/enroll",
+                    owner="root",
+                    group="root",
+                    mode="0750",
+                    reason="enroll_runtime",
                 )
+            role_name = str(fw.get("role_name") or "firewall_runtime")
+            prole = ensure_role(role_name)
+            prole.add_firewall_runtime_snapshot(
+                fw,
+                bundle_dir=bundle_dir,
+                artifact_role=role_name,
+                module_files_dir=modules_dir / prole.module_name / "files",
+                file_prefix=node_file_prefix,
+            )
 
-    _add_flatpak_snap_notes(roles, out)
+    flatpak = roles.get("flatpak") or {}
+    if isinstance(flatpak, dict) and (
+        flatpak.get("system_flatpaks") or flatpak.get("remotes") or flatpak.get("notes")
+    ):
+        prole = ensure_role(str(flatpak.get("role_name") or "flatpak"))
+        prole.add_flatpak_snapshot(flatpak)
+
+    snap = roles.get("snap") or {}
+    if isinstance(snap, dict) and (snap.get("system_snaps") or snap.get("notes")):
+        prole = ensure_role(str(snap.get("role_name") or "snap"))
+        prole.add_snap_snapshot(snap)
 
     puppet_roles = sorted(out.values(), key=lambda r: role_order_key(r.role_name))
     resolve_catalog_conflicts(puppet_roles)
@@ -549,6 +922,7 @@ def _render_role_class(prole: PuppetRole) -> str:
                 ("owner", _pp_quote(d.get("owner") or "root")),
                 ("group", _pp_quote(d.get("group") or "root")),
                 ("mode", _pp_quote(d.get("mode") or "0755")),
+                *([("require", str(d.get("require")))] if d.get("require") else []),
             ],
         )
 
@@ -586,6 +960,82 @@ def _render_role_class(prole: PuppetRole) -> str:
                 ("ensure", _pp_quote(svc["ensure"])),
                 ("enable", _pp_bool(bool(svc["enable"]))),
             ],
+        )
+
+    flatpak_remote_titles: Dict[Tuple[str, str, str], str] = {}
+    for remote in prole.flatpak_remotes:
+        name = str(remote.get("name") or "").strip()
+        url = str(remote.get("url") or "").strip()
+        if not name or not url:
+            continue
+        title = str(remote.get("state_id") or _state_title("flatpak-remote", name))
+        key = (
+            str(remote.get("method") or "system"),
+            str(remote.get("user") or ""),
+            name,
+        )
+        flatpak_remote_titles[key] = title
+        remote_user = str(remote.get("user") or "").strip()
+        remote_require = None
+        if remote_user and remote_user in prole.users:
+            remote_require = f"User[{_pp_quote(remote_user)}]"
+        _resource(
+            lines,
+            "exec",
+            title,
+            _puppet_exec_attrs(
+                str(remote.get("add_cmd") or _flatpak_remote_add_cmd(remote)),
+                str(remote.get("exists_cmd") or _flatpak_remote_exists_cmd(remote)),
+                item=remote,
+                require=remote_require,
+            ),
+        )
+
+    for app in prole.flatpaks:
+        ref = _flatpak_ref(app)
+        if not ref:
+            continue
+        title = str(app.get("state_id") or _state_title("flatpak", ref))
+        requires: List[str] = []
+        user = str(app.get("user") or "").strip()
+        if user:
+            requires.append(f"User[{_pp_quote(user)}]")
+        remote = str(app.get("remote") or "").strip()
+        if remote:
+            remote_title = flatpak_remote_titles.get(
+                (str(app.get("method") or "system"), user, remote)
+            )
+            if remote_title:
+                requires.append(f"Exec[{_pp_quote(remote_title)}]")
+        require_expr = None
+        if len(requires) == 1:
+            require_expr = requires[0]
+        elif requires:
+            require_expr = "[" + ", ".join(requires) + "]"
+        _resource(
+            lines,
+            "exec",
+            title,
+            _puppet_exec_attrs(
+                str(app.get("install_cmd") or _flatpak_install_cmd(app)),
+                str(app.get("exists_cmd") or _flatpak_exists_cmd(app)),
+                item=app,
+                require=require_expr,
+            ),
+        )
+
+    for snap in prole.snaps:
+        name = str(snap.get("name") or "").strip()
+        if not name:
+            continue
+        _resource(
+            lines,
+            "exec",
+            str(snap.get("state_id") or _state_title("snap", name)),
+            _puppet_exec_attrs(
+                str(snap.get("install_cmd") or _snap_install_cmd(snap)),
+                str(snap.get("exists_cmd") or _snap_exists_cmd(snap)),
+            ),
         )
 
     for image in prole.container_images:
@@ -698,6 +1148,9 @@ def _render_role_class(prole: PuppetRole) -> str:
                     ],
                 )
 
+    if prole.firewall_runtime:
+        _render_firewall_runtime_execs(lines, prole.firewall_runtime)
+
     if has_sysctl_conf:
         lines.append("  if $sysctl_apply {")
         lines.append("    exec { 'enroll-apply-sysctl':")
@@ -776,7 +1229,7 @@ def _role_hiera_values(prole: PuppetRole) -> Dict[str, Any]:
             path: _attrs_with_ensure(
                 prole.dirs[path],
                 "directory",
-                allowed={"owner", "group", "mode"},
+                allowed={"owner", "group", "mode", "require"},
             )
             for path in sorted(prole.dirs)
         }
@@ -810,8 +1263,16 @@ def _role_hiera_values(prole: PuppetRole) -> Dict[str, Any]:
             for name in sorted(prole.services)
         }
 
+    if prole.flatpak_remotes:
+        data[f"{prefix}flatpak_remotes"] = list(prole.flatpak_remotes)
+    if prole.flatpaks:
+        data[f"{prefix}flatpaks"] = list(prole.flatpaks)
+    if prole.snaps:
+        data[f"{prefix}snaps"] = list(prole.snaps)
     if prole.container_images:
         data[f"{prefix}container_images"] = list(prole.container_images)
+    if prole.firewall_runtime:
+        data[f"{prefix}firewall_runtime"] = dict(prole.firewall_runtime)
 
     if prole.notes:
         data[f"{prefix}notes"] = list(prole.notes)
@@ -837,7 +1298,11 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         "  Hash[String, Hash] $files = {},",
         "  Hash[String, Hash] $links = {},",
         "  Hash[String, Hash] $services = {},",
+        "  Array[Hash] $flatpak_remotes = [],",
+        "  Array[Hash] $flatpaks = [],",
+        "  Array[Hash] $snaps = [],",
         "  Array[Hash] $container_images = [],",
+        "  Hash $firewall_runtime = {},",
         "  Array[String] $notes = [],",
         "  Boolean $sysctl_apply = true,",
         "  Boolean $sysctl_ignore_apply_errors = true,",
@@ -885,6 +1350,34 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         "    }",
         "  }",
         "",
+        "  $flatpak_remotes.each |Integer $idx, Hash $remote| {",
+        "    exec { $remote['state_id']:",
+        "      command => $remote['add_cmd'],",
+        "      unless  => $remote['exists_cmd'],",
+        "      path    => ['/usr/bin', '/bin'],",
+        "      user    => $remote['user'],",
+        "      environment => $remote['environment'],",
+        "    }",
+        "  }",
+        "",
+        "  $flatpaks.each |Integer $idx, Hash $app| {",
+        "    exec { $app['state_id']:",
+        "      command => $app['install_cmd'],",
+        "      unless  => $app['exists_cmd'],",
+        "      path    => ['/usr/bin', '/bin'],",
+        "      user    => $app['user'],",
+        "      environment => $app['environment'],",
+        "    }",
+        "  }",
+        "",
+        "  $snaps.each |Integer $idx, Hash $snap| {",
+        "    exec { $snap['state_id']:",
+        "      command => $snap['install_cmd'],",
+        "      unless  => $snap['exists_cmd'],",
+        "      path    => ['/usr/bin', '/bin'],",
+        "    }",
+        "  }",
+        "",
         "  $container_images.each |Integer $idx, Hash $image| {",
         "    if $image['engine'] == 'docker' and $image['pull_ref'] {",
         '      exec { "enroll-docker-pull-${idx}":',
@@ -914,6 +1407,33 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         '          require => Exec["enroll-podman-pull-${idx}"],',
         "        }",
         "      }",
+        "    }",
+        "  }",
+        "",
+        "  if $firewall_runtime['ipset_restore_cmd'] {",
+        "    exec { 'enroll-firewall-runtime-ipset-restore':",
+        "      command     => $firewall_runtime['ipset_restore_cmd'],",
+        "      path        => ['/sbin', '/usr/sbin', '/bin', '/usr/bin'],",
+        "      refreshonly => true,",
+        "      subscribe   => File[$firewall_runtime['ipset_save']],",
+        "    }",
+        "  }",
+        "",
+        "  if $firewall_runtime['iptables_v4_restore_cmd'] {",
+        "    exec { 'enroll-firewall-runtime-iptables-v4-restore':",
+        "      command     => $firewall_runtime['iptables_v4_restore_cmd'],",
+        "      path        => ['/sbin', '/usr/sbin', '/bin', '/usr/bin'],",
+        "      refreshonly => true,",
+        "      subscribe   => File[$firewall_runtime['iptables_v4_save']],",
+        "    }",
+        "  }",
+        "",
+        "  if $firewall_runtime['iptables_v6_restore_cmd'] {",
+        "    exec { 'enroll-firewall-runtime-iptables-v6-restore':",
+        "      command     => $firewall_runtime['iptables_v6_restore_cmd'],",
+        "      path        => ['/sbin', '/usr/sbin', '/bin', '/usr/bin'],",
+        "      refreshonly => true,",
+        "      subscribe   => File[$firewall_runtime['iptables_v6_save']],",
         "    }",
         "  }",
         "",
@@ -1145,7 +1665,6 @@ This Puppet target reuses the existing harvest state without changing harvesting
 
 ## Current limitations
 
-- Flatpak, Snap, and live firewall runtime snapshots are listed as notes when present rather than rendered as Puppet resources.
 - JinjaTurtle templating is currently Ansible-oriented and is not applied to Puppet output.
 - Review generated resources before applying them broadly across unlike hosts.
 

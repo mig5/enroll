@@ -9,3 +9,5 @@ dist
 *.csv
 *.html
 coverage.xml
+*.orig
+*.rej

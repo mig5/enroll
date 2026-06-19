@@ -2,4 +2,4 @@
 
 set -eou pipefail
 
-poetry run pytest -q tests -vvv --cov=enroll
+poetry run pytest -q tests -vvv --cov=enroll --cov-report=term-missing

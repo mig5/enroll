@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 import shutil
 import subprocess  # nosec
 import tempfile
@@ -74,6 +76,49 @@ class JinjifiedArtifact:
     context: Dict[str, Any]
 
 
+_JINJA_EXPR_VAR_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\b")
+_JINJA_FOR_RE = re.compile(
+    r"{%\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+)
+_JINJA_SPECIAL_VARS = {"loop", "true", "false", "none", "True", "False", "None"}
+
+
+def _find_undeclared_jinja_vars(template_text: str) -> Set[str]:
+    try:
+        from jinja2 import Environment, meta  # type: ignore
+
+        env = Environment()  # nosec B701 - parsing config templates, not rendering HTML
+        ast = env.parse(template_text)
+        return set(meta.find_undeclared_variables(ast))
+    except Exception:
+        locals_from_loops: Set[str] = set()
+        collection_vars: Set[str] = set()
+        for match in _JINJA_FOR_RE.finditer(template_text):
+            locals_from_loops.add(match.group(1))
+            collection_vars.add(match.group(2))
+
+        referenced = set(_JINJA_EXPR_VAR_RE.findall(template_text)) | collection_vars
+        referenced -= locals_from_loops
+        referenced -= _JINJA_SPECIAL_VARS
+        return referenced
+
+
+def missing_jinja_template_vars(
+    template_text: str, context: Dict[str, Any]
+) -> Set[str]:
+    """Return variables referenced by a JinjaTurtle template but absent from vars.
+
+    This is a defensive check for Enroll's best-effort templating path. If
+    JinjaTurtle ever emits a placeholder without a matching default variable,
+    Enroll should fall back to copying the raw harvested file rather than
+    generating an Ansible role that fails at apply time.
+    """
+
+    referenced = _find_undeclared_jinja_vars(template_text)
+    referenced -= _JINJA_SPECIAL_VARS
+    return {name for name in referenced if name not in context}
+
+
 def jinjify_artifact(
     bundle_dir: str | Path,
     artifact_role: str,
@@ -113,6 +158,15 @@ def jinjify_artifact(
 
     template_rel = Path(src_rel).as_posix() + ".j2"
     template_dst = Path(template_root) / template_rel
+
+    context = yaml_load_mapping(result.vars_text)
+    if missing_jinja_template_vars(result.template_text, context):
+        # If this role was generated into an existing output directory, avoid
+        # leaving an obsolete .j2 behind after falling back to a raw copy.
+        if overwrite_templates and template_dst.exists():
+            template_dst.unlink()
+        return None
+
     if overwrite_templates or not template_dst.exists():
         template_dst.parent.mkdir(parents=True, exist_ok=True)
         template_dst.write_text(result.template_text, encoding="utf-8")
@@ -121,8 +175,30 @@ def jinjify_artifact(
         template_rel=template_rel,
         template_text=result.template_text,
         vars_text=result.vars_text,
-        context=yaml_load_mapping(result.vars_text),
+        context=context,
     )
+
+
+def managed_file_var_prefix(role_name: str, src_rel: str) -> str:
+    """Return a JinjaTurtle-safe variable prefix for one managed file.
+
+    JinjaTurtle's ``--role-name`` is a variable prefix. Enroll can place many
+    unrelated managed files in one generated role, so using only the role name
+    can collide for common keys such as ``enabled``, ``ignore``, or ``name``.
+    Include the relative artifact path when a role templates multiple files.
+    """
+
+    raw = f"{role_name}_{src_rel}"
+    safe = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_").lower()
+    safe = re.sub(r"_+", "_", safe)
+    if not safe:
+        safe = "managed_file"
+    if len(safe) > 96:
+        digest = hashlib.sha1(  # nosec B324
+            raw.encode("utf-8", errors="replace")
+        ).hexdigest()[:8]
+        safe = safe[:80].rstrip("_") + "_" + digest
+    return safe
 
 
 def jinjify_managed_files(
@@ -145,6 +221,15 @@ def jinjify_managed_files(
     """
     templated: Set[str] = set()
     vars_map: Dict[str, Any] = {}
+    base_role_name = role_name or artifact_role
+    candidates = [
+        mf
+        for mf in managed_files
+        if str(mf.get("path") or "")
+        and str(mf.get("src_rel") or "")
+        and can_jinjify_path(str(mf.get("path") or ""))
+    ]
+    namespace_by_file = len(candidates) > 1
 
     for mf in managed_files:
         dest_path = str(mf.get("path") or "")
@@ -161,7 +246,11 @@ def jinjify_managed_files(
             jt_exe=jt_exe,
             jt_enabled=jt_enabled,
             overwrite_templates=overwrite_templates,
-            role_name=role_name or artifact_role,
+            role_name=(
+                managed_file_var_prefix(base_role_name, src_rel)
+                if namespace_by_file
+                else base_role_name
+            ),
         )
         if converted is None:
             continue

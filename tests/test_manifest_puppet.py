@@ -712,3 +712,89 @@ def test_manifest_puppet_renders_container_images_static_and_hiera(tmp_path: Pat
     assert "podman pull" in (
         fqdn_out / "data" / "nodes" / "node.example.yaml"
     ).read_text(encoding="utf-8")
+
+
+def test_manifest_puppet_renders_firewall_runtime_resources(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    fw_dir = bundle / "artifacts" / "firewall_runtime" / "firewall"
+    fw_dir.mkdir(parents=True, exist_ok=True)
+    (fw_dir / "ipset.save").write_text(
+        "create blocklist hash:ip family inet\nadd blocklist 203.0.113.10\n",
+        encoding="utf-8",
+    )
+    (fw_dir / "iptables.v4").write_text(
+        "*filter\n:INPUT DROP [0:0]\n-A INPUT -m set --match-set blocklist src -j DROP\nCOMMIT\n",
+        encoding="utf-8",
+    )
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "packages": ["ipset", "iptables"],
+                "ipset_save": "firewall/ipset.save",
+                "ipset_sets": ["blocklist"],
+                "iptables_v4_save": "firewall/iptables.v4",
+                "iptables_v6_save": None,
+                "notes": [],
+            }
+        },
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="puppet")
+
+    pp = (out / "modules" / "firewall_runtime" / "manifests" / "init.pp").read_text(
+        encoding="utf-8"
+    )
+    runtime_pp = (
+        out / "modules" / "enroll_runtime" / "manifests" / "init.pp"
+    ).read_text(encoding="utf-8")
+    assert "file { '/etc/enroll':" in runtime_pp
+    assert "file { '/etc/enroll':" not in pp
+    assert "file { '/etc/enroll/firewall':" in pp
+    assert "require => File['/etc/enroll']," in pp
+    assert "file { '/etc/enroll/firewall/ipset.save':" in pp
+    assert "ipset restore -exist" in pp
+    assert "ipset flush blocklist" in pp
+    assert "iptables-restore /etc/enroll/firewall/iptables.v4" in pp
+    assert "refreshonly => true" in pp
+    assert "subscribe => File['/etc/enroll/firewall/iptables.v4']" in pp
+    assert "iptables-save >" not in pp
+    assert "Live firewall runtime snapshots were detected" not in pp
+    assert (
+        out / "modules" / "firewall_runtime" / "files" / "firewall" / "ipset.save"
+    ).exists()
+
+    fqdn_out = tmp_path / "puppet-fqdn"
+    manifest.manifest(str(bundle), str(fqdn_out), target="puppet", fqdn="node.example")
+    node_data = yaml.safe_load(
+        (fqdn_out / "data" / "nodes" / "node.example.yaml").read_text(encoding="utf-8")
+    )
+    assert "enroll_runtime" in node_data["enroll::classes"]
+    assert "firewall_runtime" in node_data["enroll::classes"]
+    assert node_data["enroll::classes"].index("enroll_runtime") < node_data[
+        "enroll::classes"
+    ].index("firewall_runtime")
+    assert node_data["enroll_runtime::dirs"]["/etc/enroll"]["ensure"] == "directory"
+    assert node_data["firewall_runtime::firewall_runtime"]["ipset_sets"] == [
+        "blocklist"
+    ]
+    assert (
+        "ipset restore -exist"
+        in node_data["firewall_runtime::firewall_runtime"]["ipset_restore_cmd"]
+    )
+    assert (
+        node_data["firewall_runtime::files"]["/etc/enroll/firewall/ipset.save"][
+            "source"
+        ]
+        == "puppet:///modules/firewall_runtime/nodes/node.example/firewall/ipset.save"
+    )
+    fqdn_pp = (
+        fqdn_out / "modules" / "firewall_runtime" / "manifests" / "init.pp"
+    ).read_text(encoding="utf-8")
+    assert "Hash $firewall_runtime = {}" in fqdn_pp
+    assert "$firewall_runtime['ipset_restore_cmd']" in fqdn_pp

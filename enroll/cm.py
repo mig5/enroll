@@ -197,6 +197,7 @@ def role_order_key(role: str) -> tuple[int, str]:
         "extra_paths": 82,
         "container_images": 88,
         "users": 90,
+        "enroll_runtime": 94,
         "sysctl": 95,
         "firewall_runtime": 99,
     }
