@@ -800,7 +800,7 @@ def test_manifest_puppet_renders_firewall_runtime_resources(tmp_path: Path):
     assert "$firewall_runtime['ipset_restore_cmd']" in fqdn_pp
 
 
-def test_manifest_puppet_includes_enroll_runtime_for_firewall_notes_only(
+def test_manifest_puppet_omits_firewall_runtime_when_no_rules_were_sampled(
     tmp_path: Path,
 ):
     bundle = tmp_path / "bundle"
@@ -828,16 +828,7 @@ def test_manifest_puppet_includes_enroll_runtime_for_firewall_notes_only(
     manifest.manifest(str(bundle), str(out), target="puppet")
 
     site_pp = (out / "manifests" / "site.pp").read_text(encoding="utf-8")
-    assert "include enroll_runtime" in site_pp
-    assert "include firewall_runtime" in site_pp
-    assert site_pp.index("include enroll_runtime") < site_pp.index(
-        "include firewall_runtime"
-    )
-    runtime_pp = (
-        out / "modules" / "enroll_runtime" / "manifests" / "init.pp"
-    ).read_text(encoding="utf-8")
-    firewall_pp = (
-        out / "modules" / "firewall_runtime" / "manifests" / "init.pp"
-    ).read_text(encoding="utf-8")
-    assert "file { '/etc/enroll':" in runtime_pp
-    assert "require => File['/etc/enroll']," in firewall_pp
+    assert "include enroll_runtime" not in site_pp
+    assert "include firewall_runtime" not in site_pp
+    assert not (out / "modules" / "enroll_runtime").exists()
+    assert not (out / "modules" / "firewall_runtime").exists()

@@ -884,10 +884,7 @@ def _collect_salt_roles(
             or fw.get("iptables_v4_save")
             or fw.get("iptables_v6_save")
         )
-        packages = [
-            str(p).strip() for p in (fw.get("packages") or []) if str(p).strip()
-        ]
-        if has_fw or packages or fw.get("notes"):
+        if has_fw:
             runtime_role = ensure_role("enroll_runtime")
             runtime_role.add_managed_dir(
                 "/etc/enroll",
