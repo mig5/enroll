@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enroll.cm import CMModule
-from enroll.ansible_renderer.model import AnsibleRole
+from enroll.ansible import AnsibleRole
 
 
 def test_ansible_role_extends_cm_module_and_normalises_service_snapshot():

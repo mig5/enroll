@@ -675,7 +675,6 @@ def test_manifest_puppet_renders_container_images_static_and_hiera(tmp_path: Pat
     bundle = tmp_path / "bundle"
     out = tmp_path / "puppet"
     _write_state(bundle, state)
-
     manifest.manifest(str(bundle), str(out), target="puppet")
 
     site_pp = (out / "manifests" / "site.pp").read_text(encoding="utf-8")
@@ -683,8 +682,10 @@ def test_manifest_puppet_renders_container_images_static_and_hiera(tmp_path: Pat
     pp = (out / "modules" / "container_images" / "manifests" / "init.pp").read_text(
         encoding="utf-8"
     )
-    assert "docker::image" in pp
-    assert "image_digest => 'sha256:" + "a" * 64 + "'" in pp
+    assert "docker::image" not in pp
+    assert "docker pull" in pp
+    assert "Docker::Image" not in pp
+    assert digest in pp
     assert "docker tag" in pp
     assert "podman pull" in pp
     metadata = json.loads(
@@ -692,9 +693,7 @@ def test_manifest_puppet_renders_container_images_static_and_hiera(tmp_path: Pat
             encoding="utf-8"
         )
     )
-    assert metadata["dependencies"] == [
-        {"name": "puppetlabs-docker", "version_requirement": ">= 8.0.0 < 15.0.0"}
-    ]
+    assert metadata["dependencies"] == []
 
     fqdn_out = tmp_path / "puppet-fqdn"
     manifest.manifest(str(bundle), str(fqdn_out), target="puppet", fqdn="node.example")
@@ -706,7 +705,8 @@ def test_manifest_puppet_renders_container_images_static_and_hiera(tmp_path: Pat
         fqdn_out / "modules" / "container_images" / "manifests" / "init.pp"
     ).read_text(encoding="utf-8")
     assert "Array[Hash] $container_images = []" in fqdn_pp
-    assert "docker::image" in fqdn_pp
+    assert "docker::image" not in fqdn_pp
+    assert "enroll-docker-pull-${idx}" in fqdn_pp
     assert "enroll-podman-pull-${idx}" in fqdn_pp
     assert "$image['pull_cmd']" in fqdn_pp
     assert "podman pull" in (

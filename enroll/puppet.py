@@ -594,12 +594,29 @@ def _render_role_class(prole: PuppetRole) -> str:
         if not engine or not pull_ref:
             continue
         if engine == "docker":
-            attrs: List[Tuple[str, str]] = [("ensure", _pp_quote("present"))]
-            if image.get("image"):
-                attrs.append(("image", _pp_quote(image["image"])))
-            if image.get("image_digest"):
-                attrs.append(("image_digest", _pp_quote(image["image_digest"])))
-            _resource(lines, "docker::image", pull_ref, attrs)
+            pull_title = _state_title("docker-pull", pull_ref)
+            _resource(
+                lines,
+                "exec",
+                pull_title,
+                [
+                    (
+                        "command",
+                        _pp_quote(
+                            image.get("pull_cmd")
+                            or _container_pull_cmd(engine, pull_ref)
+                        ),
+                    ),
+                    (
+                        "unless",
+                        _pp_quote(
+                            image.get("pull_unless")
+                            or _container_exists_cmd(engine, pull_ref)
+                        ),
+                    ),
+                    ("path", "['/usr/bin', '/bin']"),
+                ],
+            )
             for alias in image.get("tag_aliases") or []:
                 tag_ref = str(alias.get("ref") or "").strip()
                 if not tag_ref:
@@ -624,7 +641,7 @@ def _render_role_class(prole: PuppetRole) -> str:
                             ),
                         ),
                         ("path", "['/usr/bin', '/bin']"),
-                        ("require", f"Docker::Image[{_pp_quote(pull_ref)}]"),
+                        ("require", f"Exec[{_pp_quote(pull_title)}]"),
                     ],
                 )
         elif engine == "podman":
@@ -870,17 +887,17 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         "",
         "  $container_images.each |Integer $idx, Hash $image| {",
         "    if $image['engine'] == 'docker' and $image['pull_ref'] {",
-        "      docker::image { $image['pull_ref']:",
-        "        ensure       => 'present',",
-        "        image        => $image['image'],",
-        "        image_digest => $image['image_digest'],",
+        '      exec { "enroll-docker-pull-${idx}":',
+        "        command => $image['pull_cmd'],",
+        "        unless  => $image['pull_unless'],",
+        "        path    => ['/usr/bin', '/bin'],",
         "      }",
         "      $image['tag_aliases'].each |Integer $tag_idx, Hash $alias| {",
         '        exec { "enroll-docker-tag-${idx}-${tag_idx}":',
         "          command => $alias['tag_cmd'],",
         "          unless  => $alias['tag_unless'],",
         "          path    => ['/usr/bin', '/bin'],",
-        "          require => Docker::Image[$image['pull_ref']],",
+        '          require => Exec["enroll-docker-pull-${idx}"],',
         "        }",
         "      }",
         "    } elsif $image['engine'] == 'podman' and $image['pull_ref'] {",
@@ -1014,13 +1031,6 @@ def _hiera_node_names(out: Path) -> List[str]:
 
 def _write_metadata(module_dir: Path, module_name: str, prole: PuppetRole) -> None:
     dependencies: List[Dict[str, str]] = []
-    if any(img.get("engine") == "docker" for img in prole.container_images):
-        dependencies.append(
-            {
-                "name": "puppetlabs-docker",
-                "version_requirement": ">= 8.0.0 < 15.0.0",
-            }
-        )
 
     (module_dir / "metadata.json").write_text(
         json.dumps(
@@ -1130,13 +1140,12 @@ This Puppet target reuses the existing harvest state without changing harvesting
 - Managed directories, files, and symlinks from harvested roles.
 - Basic service enablement/running-state resources.
 - `/etc/sysctl.d/99-enroll.conf` plus a refresh-only sysctl apply exec when present.
-- Docker images by digest using the `puppetlabs-docker` module's `docker::image` defined type (you must pre-install it).
+- Docker and Podman images by digest using guarded `exec` resources (`pull`/`tag` commands with `unless` checks).
 - Podman images by digest using guarded `podman pull` / `podman tag` exec resources.
 
 ## Current limitations
 
 - Flatpak, Snap, and live firewall runtime snapshots are listed as notes when present rather than rendered as Puppet resources.
-- Docker image resources require the `puppetlabs-docker` module to be installed in the Puppet environment.
 - JinjaTurtle templating is currently Ansible-oriented and is not applied to Puppet output.
 - Review generated resources before applying them broadly across unlike hosts.
 

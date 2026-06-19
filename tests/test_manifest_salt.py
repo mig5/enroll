@@ -469,7 +469,7 @@ def test_manifest_salt_renders_container_images_in_single_and_fqdn_modes(
 
 
 def test_manifest_salt_uses_jinjaturtle_templates(monkeypatch, tmp_path: Path):
-    from enroll import salt as salt_mod
+    import enroll.jinjaturtle as jinjaturtle_mod
     from enroll.jinjaturtle import JinjifyResult
 
     bundle = tmp_path / "bundle"
@@ -479,9 +479,9 @@ def test_manifest_salt_uses_jinjaturtle_templates(monkeypatch, tmp_path: Path):
     _write_state(bundle, state)
 
     monkeypatch.setattr(
-        salt_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
+        jinjaturtle_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
     )
-    monkeypatch.setattr(salt_mod, "can_jinjify_path", lambda _path: True)
+    monkeypatch.setattr(jinjaturtle_mod, "can_jinjify_path", lambda _path: True)
 
     def fake_run_jinjaturtle(
         jt_exe: str, src_path: str, *, role_name: str, force_format=None
@@ -494,7 +494,7 @@ def test_manifest_salt_uses_jinjaturtle_templates(monkeypatch, tmp_path: Path):
             vars_text="foo_setting: true\n",
         )
 
-    monkeypatch.setattr(salt_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
 
     manifest.manifest(str(bundle), str(out), target="salt", jinjaturtle="on")
 

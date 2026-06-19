@@ -17,13 +17,9 @@ from .cm import (
     role_order_key,
     section_label_for_packages,
 )
-from .jinjaturtle import (
-    can_jinjify_path,
-    find_jinjaturtle_cmd,
-    infer_other_formats,
-    run_jinjaturtle,
-)
+from .jinjaturtle import jinjify_artifact, resolve_jinjaturtle_mode
 from .state import inventory_packages_from_state, roles_from_state
+from .yamlutil import yaml_dump_mapping, yaml_load_mapping_file
 
 
 class SaltRole(CMModule):
@@ -363,27 +359,6 @@ def _template_source_uri(module_name: str, tmpl_rel: str) -> str:
     return f"salt://roles/{module_name}/templates/{tmpl_rel}"
 
 
-def _yaml_load_mapping(text: str) -> Dict[str, Any]:
-    try:
-        obj = yaml.safe_load(text)
-    except Exception:
-        return {}
-    return obj if isinstance(obj, dict) else {}
-
-
-def _resolve_jinjaturtle_mode(jinjaturtle: str) -> Tuple[Optional[str], bool]:
-    jt_exe = find_jinjaturtle_cmd()
-    if jinjaturtle not in {"auto", "on", "off"}:
-        raise ValueError("jinjaturtle must be one of: auto, on, off")
-    if jinjaturtle == "on":
-        if not jt_exe:
-            raise RuntimeError("jinjaturtle requested but not found on PATH")
-        return jt_exe, True
-    if jinjaturtle == "auto":
-        return jt_exe, jt_exe is not None
-    return jt_exe, False
-
-
 def _jinjify_managed_file(
     bundle_dir: str,
     artifact_role: str,
@@ -395,31 +370,19 @@ def _jinjify_managed_file(
     jt_enabled: bool,
     overwrite_templates: bool,
 ) -> Optional[Tuple[str, Dict[str, Any]]]:
-    if not (jt_enabled and jt_exe and can_jinjify_path(dest_path)):
+    converted = jinjify_artifact(
+        bundle_dir,
+        artifact_role,
+        src_rel,
+        dest_path,
+        role_dir / "templates",
+        jt_exe=jt_exe,
+        jt_enabled=jt_enabled,
+        overwrite_templates=overwrite_templates,
+    )
+    if converted is None:
         return None
-
-    artifact_path = Path(bundle_dir) / "artifacts" / artifact_role / src_rel
-    if not artifact_path.is_file():
-        return None
-
-    try:
-        result = run_jinjaturtle(
-            jt_exe,
-            str(artifact_path),
-            role_name=artifact_role,
-            force_format=infer_other_formats(dest_path),
-        )
-    except Exception:
-        return None  # nosec - best-effort template generation
-
-    context = _yaml_load_mapping(result.vars_text)
-    tmpl_rel = Path(src_rel).as_posix() + ".j2"
-    tmpl_dst = role_dir / "templates" / tmpl_rel
-    if overwrite_templates or not tmpl_dst.exists():
-        tmpl_dst.parent.mkdir(parents=True, exist_ok=True)
-        tmpl_dst.write_text(result.template_text, encoding="utf-8")
-
-    return tmpl_rel, context
+    return converted.template_rel, converted.context
 
 
 def _node_file_prefix(fqdn: str) -> str:
@@ -1039,19 +1002,13 @@ def _render_pillar_role(srole: SaltRole) -> str:
 def _write_yaml(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        yaml.safe_dump(data, sort_keys=True, explicit_start=True),
+        yaml_dump_mapping(data, sort_keys=True, explicit_start=True),
         encoding="utf-8",
     )
 
 
 def _load_yaml_mapping(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        obj = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return obj if isinstance(obj, dict) else {}
+    return yaml_load_mapping_file(path)
 
 
 def _write_top(path: Path, mapping: Dict[str, List[str]]) -> None:
@@ -1236,7 +1193,7 @@ class SaltManifestRenderer:
         self.out_dir = out_dir
         self.fqdn = fqdn
         self.no_common_roles = no_common_roles
-        self.jt_exe, self.jt_enabled = _resolve_jinjaturtle_mode(jinjaturtle)
+        self.jt_exe, self.jt_enabled = resolve_jinjaturtle_mode(jinjaturtle)
 
     def render(self) -> None:
         state = SaltRole.load_state(self.bundle_dir)
