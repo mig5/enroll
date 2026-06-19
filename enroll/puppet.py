@@ -832,15 +832,14 @@ def _collect_puppet_roles(
             str(p).strip() for p in (fw.get("packages") or []) if str(p).strip()
         ]
         if has_fw or packages or fw.get("notes"):
-            if has_fw:
-                runtime_role = ensure_role("enroll_runtime")
-                runtime_role.add_managed_dir(
-                    "/etc/enroll",
-                    owner="root",
-                    group="root",
-                    mode="0750",
-                    reason="enroll_runtime",
-                )
+            runtime_role = ensure_role("enroll_runtime")
+            runtime_role.add_managed_dir(
+                "/etc/enroll",
+                owner="root",
+                group="root",
+                mode="0750",
+                reason="enroll_runtime",
+            )
             role_name = str(fw.get("role_name") or "firewall_runtime")
             prole = ensure_role(role_name)
             prole.add_firewall_runtime_snapshot(

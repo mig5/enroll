@@ -624,3 +624,44 @@ def test_manifest_salt_renders_firewall_runtime_states(tmp_path: Path):
         fqdn_out / "states" / "roles" / "firewall_runtime" / "init.sls"
     ).read_text(encoding="utf-8")
     assert "firewall_runtime.get('ipset_restore_cmd')" in fqdn_sls
+
+
+def test_manifest_salt_includes_enroll_runtime_for_firewall_notes_only(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "packages": [],
+                "ipset_save": None,
+                "ipset_sets": [],
+                "iptables_v4_save": None,
+                "iptables_v6_save": None,
+                "notes": [
+                    "not running as root; live firewall runtime was not captured"
+                ],
+            }
+        },
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="salt")
+
+    top = yaml.safe_load((out / "states" / "top.sls").read_text(encoding="utf-8"))
+    assert "roles.enroll_runtime" in top["base"]["*"]
+    assert "roles.firewall_runtime" in top["base"]["*"]
+    assert top["base"]["*"].index("roles.enroll_runtime") < top["base"]["*"].index(
+        "roles.firewall_runtime"
+    )
+    runtime_sls = (out / "states" / "roles" / "enroll_runtime" / "init.sls").read_text(
+        encoding="utf-8"
+    )
+    firewall_sls = (
+        out / "states" / "roles" / "firewall_runtime" / "init.sls"
+    ).read_text(encoding="utf-8")
+    assert '"/etc/enroll":' in runtime_sls
+    assert '- file: "/etc/enroll"' in firewall_sls

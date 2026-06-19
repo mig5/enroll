@@ -798,3 +798,46 @@ def test_manifest_puppet_renders_firewall_runtime_resources(tmp_path: Path):
     ).read_text(encoding="utf-8")
     assert "Hash $firewall_runtime = {}" in fqdn_pp
     assert "$firewall_runtime['ipset_restore_cmd']" in fqdn_pp
+
+
+def test_manifest_puppet_includes_enroll_runtime_for_firewall_notes_only(
+    tmp_path: Path,
+):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "firewall_runtime": {
+                "role_name": "firewall_runtime",
+                "packages": [],
+                "ipset_save": None,
+                "ipset_sets": [],
+                "iptables_v4_save": None,
+                "iptables_v6_save": None,
+                "notes": [
+                    "not running as root; live firewall runtime was not captured"
+                ],
+            }
+        },
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="puppet")
+
+    site_pp = (out / "manifests" / "site.pp").read_text(encoding="utf-8")
+    assert "include enroll_runtime" in site_pp
+    assert "include firewall_runtime" in site_pp
+    assert site_pp.index("include enroll_runtime") < site_pp.index(
+        "include firewall_runtime"
+    )
+    runtime_pp = (
+        out / "modules" / "enroll_runtime" / "manifests" / "init.pp"
+    ).read_text(encoding="utf-8")
+    firewall_pp = (
+        out / "modules" / "firewall_runtime" / "manifests" / "init.pp"
+    ).read_text(encoding="utf-8")
+    assert "file { '/etc/enroll':" in runtime_pp
+    assert "require => File['/etc/enroll']," in firewall_pp
