@@ -22,6 +22,12 @@ PUPPET_DIR="${WORK_DIR}/puppet"
 PUPPET_FQDN_DIR="${WORK_DIR}/puppet-fqdn"
 SALT_DIR="${WORK_DIR}/salt"
 SALT_FQDN_DIR="${WORK_DIR}/salt-fqdn"
+ANSIBLE_JINJATURTLE_DIR="${WORK_DIR}/ansible-jinjaturtle"
+ANSIBLE_NO_JINJATURTLE_DIR="${WORK_DIR}/ansible-no-jinjaturtle"
+PUPPET_JINJATURTLE_DIR="${WORK_DIR}/puppet-jinjaturtle"
+PUPPET_NO_JINJATURTLE_DIR="${WORK_DIR}/puppet-no-jinjaturtle"
+SALT_JINJATURTLE_DIR="${WORK_DIR}/salt-jinjaturtle"
+SALT_NO_JINJATURTLE_DIR="${WORK_DIR}/salt-no-jinjaturtle"
 TEST_FQDN="${ENROLL_TEST_FQDN:-enroll-ci.example.test}"
 
 cleanup() {
@@ -84,6 +90,25 @@ apt_remove_purge() {
   run env DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge "$@"
 }
 
+ensure_jinjaturtle() {
+  section "Setup: JinjaTurtle apt package"
+  if command -v jinjaturtle >/dev/null 2>&1; then
+    printf 'jinjaturtle already available at: %s\n' "$(command -v jinjaturtle)"
+    return
+  fi
+
+  apt_install ca-certificates curl gnupg lsb-release
+  run mkdir -p /usr/share/keyrings
+  run bash -c "curl -fsSL https://mig5.net/static/mig5.asc | gpg --dearmor --yes -o /usr/share/keyrings/mig5.gpg"
+
+  local codename
+  codename="$(lsb_release -cs)"
+  run bash -c "printf '%s\n' 'deb [arch=amd64 signed-by=/usr/share/keyrings/mig5.gpg] https://apt.mig5.net ${codename} main' > /etc/apt/sources.list.d/mig5.list"
+  run apt-get update
+  APT_UPDATED=1
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jinjaturtle
+}
+
 require_cmd() {
   local cmd="$1"
   local hint="$2"
@@ -137,6 +162,138 @@ prepare_harvest_fixture() {
   run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIFF_DIR}"
   run bash -c "poetry run enroll diff --old '${BUNDLE_DIR}' --new '${BUNDLE_DIFF_DIR}' --format json | jq"
   apt_remove_purge cowsay
+}
+
+add_jinjaturtle_harvest_fixture() {
+  section "JinjaTurtle manifest fixture"
+
+  local fixture_rel="etc/enroll-tests-jinjaturtle.ini"
+  local fixture_path="${BUNDLE_DIR}/artifacts/etc_custom/${fixture_rel}"
+  mkdir -p "$(dirname "${fixture_path}")"
+  cat >"${fixture_path}" <<'EOF'
+[enroll_tests]
+enabled = true
+answer = 42
+EOF
+
+  BUNDLE_DIR="${BUNDLE_DIR}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+bundle_dir = Path(os.environ["BUNDLE_DIR"])
+state_path = bundle_dir / "state.json"
+state = json.loads(state_path.read_text(encoding="utf-8"))
+roles = state.setdefault("roles", {})
+etc_custom = roles.setdefault("etc_custom", {})
+etc_custom.setdefault("role_name", "etc_custom")
+etc_custom.setdefault("excluded", [])
+etc_custom.setdefault("notes", [])
+managed_files = etc_custom.setdefault("managed_files", [])
+fixture_path = "/etc/enroll-tests-jinjaturtle.ini"
+managed_files[:] = [
+    item
+    for item in managed_files
+    if not isinstance(item, dict) or item.get("path") != fixture_path
+]
+managed_files.append(
+    {
+        "path": fixture_path,
+        "src_rel": "etc/enroll-tests-jinjaturtle.ini",
+        "owner": "root",
+        "group": "root",
+        "mode": "0644",
+        "reason": "tests_jinjaturtle_fixture",
+    }
+)
+state_path.write_text(
+    json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+
+  run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIR}"
+}
+
+assert_template_files() {
+  local manifest_dir="$1"
+  local extension="$2"
+  local expected="$3"
+  local label="$4"
+  local found
+
+  found="$(find "${manifest_dir}" -type f -name "*.${extension}" -print -quit)"
+  if [[ "${expected}" == "present" ]]; then
+    if [[ -z "${found}" ]]; then
+      fail "Expected ${label} to contain at least one .${extension} template, but none were found."
+    fi
+    printf 'Found expected .%s template in %s: %s\n' "${extension}" "${label}" "${found}"
+  else
+    if [[ -n "${found}" ]]; then
+      fail "Expected ${label} to contain no .${extension} templates, but found ${found}."
+    fi
+    printf 'Confirmed no .%s templates in %s.\n' "${extension}" "${label}"
+  fi
+}
+
+run_ansible_jinjaturtle_variant() {
+  local out_dir="$1"
+  local expected="$2"
+  local label="$3"
+  shift 3
+
+  ensure_ansible
+  cd "${PROJECT_ROOT}"
+  rm -rf "${out_dir}"
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${out_dir}" --target ansible "$@"
+  assert_template_files "${out_dir}" "j2" "${expected}" "${label}"
+  run ansible-lint "${out_dir}"
+  cd "${out_dir}"
+  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+}
+
+run_puppet_jinjaturtle_variant() {
+  local out_dir="$1"
+  local expected="$2"
+  local label="$3"
+  shift 3
+
+  ensure_puppet
+  cd "${PROJECT_ROOT}"
+  rm -rf "${out_dir}"
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${out_dir}" --target puppet "$@"
+  assert_template_files "${out_dir}" "erb" "${expected}" "${label}"
+  run puppet apply --modulepath "${out_dir}/modules" "${out_dir}/manifests/site.pp" --noop
+}
+
+run_salt_jinjaturtle_variant() {
+  local out_dir="$1"
+  local expected="$2"
+  local label="$3"
+  shift 3
+
+  ensure_salt
+  cd "${PROJECT_ROOT}"
+  rm -rf "${out_dir}"
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${out_dir}" --target salt "$@"
+  assert_template_files "${out_dir}" "j2" "${expected}" "${label}"
+  run salt-call --local --retcode-passthrough --file-root "${out_dir}/states" state.apply test=True
+}
+
+run_jinjaturtle_manifest_tests() {
+  ensure_jinjaturtle
+  require_cmd jinjaturtle "Install JinjaTurtle before running the JinjaTurtle integration matrix."
+
+  section "Ansible JinjaTurtle manifest noop tests"
+  run_ansible_jinjaturtle_variant "${ANSIBLE_JINJATURTLE_DIR}" present "Ansible with JinjaTurtle on PATH"
+  run_ansible_jinjaturtle_variant "${ANSIBLE_NO_JINJATURTLE_DIR}" absent "Ansible with --no-jinjaturtle" --no-jinjaturtle
+
+  section "Puppet JinjaTurtle manifest noop tests"
+  run_puppet_jinjaturtle_variant "${PUPPET_JINJATURTLE_DIR}" present "Puppet with JinjaTurtle on PATH"
+  run_puppet_jinjaturtle_variant "${PUPPET_NO_JINJATURTLE_DIR}" absent "Puppet with --no-jinjaturtle" --no-jinjaturtle
+
+  section "Salt JinjaTurtle manifest noop tests"
+  run_salt_jinjaturtle_variant "${SALT_JINJATURTLE_DIR}" present "Salt with JinjaTurtle on PATH"
+  run_salt_jinjaturtle_variant "${SALT_NO_JINJATURTLE_DIR}" absent "Salt with --no-jinjaturtle" --no-jinjaturtle
 }
 
 run_ansible_noop_tests() {
@@ -203,9 +360,11 @@ main() {
   require_debian_ci
   run_pytests
   prepare_harvest_fixture
+  add_jinjaturtle_harvest_fixture
   run_ansible_noop_tests
   run_puppet_noop_tests
   run_salt_noop_tests
+  run_jinjaturtle_manifest_tests
 }
 
 main "$@"
