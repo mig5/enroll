@@ -6,7 +6,13 @@ from pathlib import Path
 import yaml
 
 from enroll import manifest
-from enroll.salt import SaltRole, _render_static_role, _role_pillar_values, _salt_name
+from enroll.salt import (
+    SaltRole,
+    _render_static_role,
+    _role_pillar_values,
+    _salt_name,
+    _state_id,
+)
 
 
 def _write_state(bundle: Path, state: dict) -> None:
@@ -186,6 +192,76 @@ def test_manifest_salt_writes_single_site_state_tree(tmp_path: Path):
     assert "sysctl -e -p /etc/sysctl.d/99-enroll.conf || true" in sysctl_sls
     assert (out / "README.md").exists()
     assert (out / "config" / "master.d" / "enroll.conf").exists()
+
+
+def test_manifest_salt_fqdn_package_watch_targets_declared_service_role(
+    tmp_path: Path,
+):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    artifact = bundle / "artifacts" / "apparmor" / "etc" / "apparmor" / "parser.conf"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("cache-loc /var/cache/apparmor\n", encoding="utf-8")
+
+    state = _sample_state()
+    state["inventory"] = {"packages": {"apparmor": {"section": "admin"}}}
+    state["roles"]["services"] = [
+        {
+            "unit": "apparmor.service",
+            "role_name": "apparmor_service",
+            "packages": ["apparmor"],
+            "active_state": "active",
+            "unit_file_state": "enabled",
+            "managed_dirs": [],
+            "managed_files": [],
+            "managed_links": [],
+        }
+    ]
+    state["roles"]["packages"] = [
+        {
+            "package": "apparmor",
+            "role_name": "apparmor",
+            "section": "admin",
+            "managed_dirs": [],
+            "managed_files": [
+                {
+                    "path": "/etc/apparmor/parser.conf",
+                    "src_rel": "etc/apparmor/parser.conf",
+                    "owner": "root",
+                    "group": "root",
+                    "mode": "0644",
+                }
+            ],
+            "managed_links": [],
+        }
+    ]
+    state["roles"]["sysctl"] = {
+        "role_name": "sysctl",
+        "managed_dirs": [],
+        "managed_files": [],
+        "managed_links": [],
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="salt", fqdn="vpn-ssh")
+
+    pillar_top = yaml.safe_load(
+        (out / "pillar" / "top.sls").read_text(encoding="utf-8")
+    )
+    node_sls = pillar_top["base"]["vpn-ssh"][0]
+    pillar_path = out / "pillar" / Path(*node_sls.split("."))
+    pillar = yaml.safe_load(pillar_path.with_suffix(".sls").read_text(encoding="utf-8"))
+    roles = pillar["enroll"]["roles"]
+    expected_service_state = _state_id(
+        "service", "apparmor.service", role="apparmor_service"
+    )
+
+    assert roles["apparmor"]["files"]["/etc/apparmor/parser.conf"]["watch_in"] == [
+        {"service": expected_service_state}
+    ]
+    assert roles["apparmor_service"]["services"]["apparmor.service"]["state_id"] == (
+        expected_service_state
+    )
 
 
 def test_manifest_salt_fqdn_mode_uses_pillar_and_accumulates_nodes(tmp_path: Path):

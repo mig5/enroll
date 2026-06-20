@@ -6,7 +6,7 @@ import re
 import shlex
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -150,6 +150,7 @@ class SaltRole(CMModule):
         jt_enabled: bool = False,
         overwrite_templates: bool = True,
         watch_services: Optional[List[str]] = None,
+        watch_service_states: Optional[List[str]] = None,
     ) -> None:
         for d in self.managed_dirs_from_snapshot(snap):
             path = str(d.get("path") or "").strip()
@@ -161,6 +162,12 @@ class SaltRole(CMModule):
                 makedirs=True,
                 reason=d.get("reason") or "managed_dir",
             )
+
+        watch_state_ids = _service_watch_state_ids(
+            self.module_name,
+            watch_services=watch_services,
+            watch_service_states=watch_service_states,
+        )
 
         for mf in self.managed_files_from_snapshot(snap):
             path = str(mf.get("path") or "").strip()
@@ -190,10 +197,9 @@ class SaltRole(CMModule):
                     "makedirs": True,
                     "reason": mf.get("reason") or "managed_file",
                 }
-                if watch_services and not path.startswith("/etc/systemd/system/"):
+                if watch_state_ids and not path.startswith("/etc/systemd/system/"):
                     attrs["watch_in"] = [
-                        {"service": _state_id("service", unit, role=self.module_name)}
-                        for unit in watch_services
+                        {"service": state_id} for state_id in watch_state_ids
                     ]
                 self.add_managed_file(path, **attrs)
                 continue
@@ -218,10 +224,9 @@ class SaltRole(CMModule):
                 "makedirs": True,
                 "reason": mf.get("reason") or "managed_file",
             }
-            if watch_services and not path.startswith("/etc/systemd/system/"):
+            if watch_state_ids and not path.startswith("/etc/systemd/system/"):
                 attrs["watch_in"] = [
-                    {"service": _state_id("service", unit, role=self.module_name)}
-                    for unit in watch_services
+                    {"service": state_id} for state_id in watch_state_ids
                 ]
             self.add_managed_file(path, **attrs)
 
@@ -269,6 +274,55 @@ def _state_id(prefix: str, value: Any, *, role: str = "") -> str:
         parts.append(role)
     parts.extend([label[:40], digest])
     return "_".join(parts)
+
+
+def _service_watch_state_ids(
+    role_name: str,
+    *,
+    watch_services: Optional[Iterable[str]] = None,
+    watch_service_states: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """Return de-duplicated Salt service state ids for watch_in requisites."""
+
+    out: List[str] = []
+    seen = set()
+    for state_id in watch_service_states or []:
+        value = str(state_id or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    for unit in watch_services or []:
+        unit_s = str(unit or "").strip()
+        if not unit_s:
+            continue
+        value = _state_id("service", unit_s, role=role_name)
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _active_service_state_ids_by_unit(
+    entries: Iterable[Dict[str, Any]],
+) -> Dict[str, str]:
+    """Return generated Salt service state ids keyed by active systemd unit."""
+
+    by_unit: Dict[str, str] = {}
+    for entry in entries:
+        if str(entry.get("kind") or "package") != "service":
+            continue
+        snap = entry.get("snapshot") or {}
+        if not isinstance(snap, dict):
+            continue
+        unit = str(snap.get("unit") or "").strip()
+        if not unit or str(snap.get("active_state") or "") != "active":
+            continue
+        source_label = str(snap.get("role_name") or snap.get("unit") or "service")
+        role_name = _salt_name(
+            str(entry.get("role_label") or source_label), fallback="service"
+        )
+        by_unit.setdefault(unit, _state_id("service", unit, role=role_name))
+    return by_unit
 
 
 def _yaml_quote(value: Any) -> str:
@@ -639,6 +693,9 @@ def _collect_salt_roles(
     service_units_by_package = CMModule.active_service_units_by_package(
         package_service_entries
     )
+    service_state_ids_by_unit = _active_service_state_ids_by_unit(
+        package_service_entries
+    )
 
     for entry in package_service_entries:
         snap = entry.get("snapshot") or {}
@@ -654,6 +711,7 @@ def _collect_salt_roles(
         )
         srole = ensure_role(role_name)
         watch_services: List[str] = []
+        watch_service_states: List[str] = []
         if kind == "service":
             srole.add_service_snapshot(snap)
             unit = str(snap.get("unit") or "").strip()
@@ -664,6 +722,13 @@ def _collect_salt_roles(
             watch_services = CMModule.active_service_units_for_package_snapshot(
                 snap, service_units_by_package
             )
+            watch_service_states = [
+                service_state_ids_by_unit[unit]
+                for unit in watch_services
+                if unit in service_state_ids_by_unit
+            ]
+            if watch_service_states:
+                watch_services = []
         srole.add_managed_content(
             snap,
             bundle_dir=bundle_dir,
@@ -674,6 +739,7 @@ def _collect_salt_roles(
             jt_enabled=jt_enabled,
             overwrite_templates=not bool(fqdn),
             watch_services=watch_services,
+            watch_service_states=watch_service_states,
         )
 
     container_images = roles.get("container_images") or {}
