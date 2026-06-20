@@ -1323,7 +1323,7 @@ def _normalise_container_image_item(item: Any) -> Dict[str, Any]:
 # --- Container image role renderer ---
 _CONTAINER_COLLECTIONS = [
     {"name": "community.docker", "version": ">=4.0.0"},
-    {"name": "containers.podman", "version": ">=1.0.0"},
+    {"name": "containers.podman", "version": ">=1.20.0"},
 ]
 
 
