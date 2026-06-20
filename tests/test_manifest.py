@@ -433,7 +433,8 @@ def test_manifest_groups_excluded_package_paths_into_common_roles(tmp_path: Path
 
     assert (out / "roles" / "net").exists()
     assert not (out / "roles" / "secret_agent").exists()
-    readme = (out / "roles" / "net" / "README.md").read_text(encoding="utf-8")
+    assert not (out / "roles" / "net" / "README.md").exists()
+    readme = (out / "README.md").read_text(encoding="utf-8")
     assert "/etc/secret-agent/key" in readme
 
 
@@ -1461,24 +1462,32 @@ def test_copy2_replace_atomic(tmp_path: Path):
 
 
 def test_render_firewall_runtime_tasks_empty():
-    result = ansible_tasks._render_firewall_runtime_tasks("firewall_runtime")
+    result = ansible_tasks._render_role_tasks(
+        ansible_tasks.AnsibleRole("firewall_runtime"), firewall_runtime=True
+    )
     # Function always returns at least a basic playbook structure
     assert isinstance(result, str)
     assert len(result) > 0
 
 
 def test_render_firewall_runtime_tasks_with_iptables():
-    result = ansible_tasks._render_firewall_runtime_tasks("firewall_runtime")
+    result = ansible_tasks._render_role_tasks(
+        ansible_tasks.AnsibleRole("firewall_runtime"), firewall_runtime=True
+    )
     assert len(result) >= 1
 
 
 def test_render_firewall_runtime_tasks_with_ipset():
-    result = ansible_tasks._render_firewall_runtime_tasks("firewall_runtime")
+    result = ansible_tasks._render_role_tasks(
+        ansible_tasks.AnsibleRole("firewall_runtime"), firewall_runtime=True
+    )
     assert len(result) >= 1
 
 
 def test_render_firewall_runtime_tasks_with_ipv6():
-    result = ansible_tasks._render_firewall_runtime_tasks("firewall_runtime")
+    result = ansible_tasks._render_role_tasks(
+        ansible_tasks.AnsibleRole("firewall_runtime"), firewall_runtime=True
+    )
     assert len(result) >= 1
 
 
@@ -1608,7 +1617,8 @@ def test_manifest_renders_flatpak_and_snap_details(tmp_path: Path):
     users_tasks = (out / "roles" / "users" / "tasks" / "main.yml").read_text(
         encoding="utf-8"
     )
-    users_readme = (out / "roles" / "users" / "README.md").read_text(encoding="utf-8")
+    assert not (out / "roles" / "users" / "README.md").exists()
+    users_readme = (out / "README.md").read_text(encoding="utf-8")
     flatpak_defaults = (out / "roles" / "flatpak" / "defaults" / "main.yml").read_text(
         encoding="utf-8"
     )

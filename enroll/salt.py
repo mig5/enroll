@@ -12,10 +12,9 @@ import yaml
 
 from .cm import (
     CMModule,
-    package_section_label,
     resolve_catalog_conflicts,
     role_order_key,
-    section_label_for_packages,
+    markdown_list,
 )
 from .jinjaturtle import jinjify_artifact, resolve_jinjaturtle_mode
 from .state import inventory_packages_from_state, roles_from_state
@@ -24,6 +23,8 @@ from .yamlutil import yaml_dump_mapping, yaml_load_mapping_file
 
 class SaltRole(CMModule):
     """Salt-specific view of a renderer-neutral CMModule."""
+
+    managed_owner_attr = "user"
 
     def __init__(self, role_name: str) -> None:
         super().__init__(
@@ -34,110 +35,47 @@ class SaltRole(CMModule):
         self.flatpak_remotes: List[Dict[str, Any]] = []
         self.flatpaks: List[Dict[str, Any]] = []
         self.snaps: List[Dict[str, Any]] = []
-        self.firewall_runtime: Dict[str, Any] = {}
 
     def has_resources(self) -> bool:
-        return (
-            super().has_resources()
-            or bool(self.container_images)
-            or bool(self.flatpak_remotes)
-            or bool(self.flatpaks)
-            or bool(self.snaps)
-            or bool(self.firewall_runtime)
+        return self.has_resources_or_attrs(
+            "container_images", "flatpak_remotes", "flatpaks", "snaps"
         )
 
     @property
     def sls_name(self) -> str:
         return f"roles.{self.module_name}"
 
-    def add_package_snapshot(self, snap: Dict[str, Any]) -> None:
-        pkg = str(snap.get("package") or "").strip()
-        if pkg:
-            self.packages.add(pkg)
-
     def add_service_snapshot(self, snap: Dict[str, Any]) -> None:
-        for pkg in snap.get("packages", []) or []:
-            pkg_s = str(pkg or "").strip()
-            if pkg_s:
-                self.packages.add(pkg_s)
-        unit = str(snap.get("unit") or "").strip()
-        if unit:
-            unit_file_state = str(snap.get("unit_file_state") or "")
-            self.services[unit] = {
-                "name": unit,
-                "state": "running" if snap.get("active_state") == "active" else "dead",
-                "enable": unit_file_state in ("enabled", "enabled-runtime"),
-            }
+        self.add_service_snapshot_state(
+            snap, state_key="state", running="running", stopped="dead"
+        )
 
     def add_users_snapshot(self, snap: Dict[str, Any]) -> None:
-        for u in snap.get("users", []) or []:
-            if not isinstance(u, dict):
-                continue
-            name = str(u.get("name") or "").strip()
-            if not name:
-                continue
-            primary_group = str(u.get("primary_group") or name).strip()
-            if primary_group:
-                self.groups.add(primary_group)
-            supplementary = sorted(
-                {
-                    str(g).strip()
-                    for g in (u.get("supplementary_groups") or [])
-                    if str(g).strip()
-                }
-            )
-            self.groups.update(supplementary)
+        records = self.user_records_from_snapshot(snap)
+        self.groups.update(self.user_group_names_from_records(records))
+        for record in records:
+            name = str(record.get("name") or "")
             user_data: Dict[str, Any] = {
                 "name": name,
-                "uid": u.get("uid"),
-                "gid": primary_group or u.get("gid"),
-                "home": u.get("home") or f"/home/{name}",
-                "shell": u.get("shell"),
-                "groups": supplementary,
+                "uid": record.get("uid"),
+                "gid": record.get("primary_group") or record.get("gid"),
+                "home": record.get("home"),
+                "shell": record.get("shell"),
+                "groups": record.get("supplementary_groups") or [],
             }
-            user_data.update(_gecos_attrs(u.get("gecos")))
+            user_data.update(_gecos_attrs(record.get("gecos")))
             self.users[name] = user_data
 
-        home_by_user = {
-            str(u.get("name")): str(u.get("home") or "")
-            for u in (snap.get("users", []) or [])
-            if isinstance(u, dict) and u.get("name")
-        }
-        for remote in snap.get("user_flatpak_remotes", []) or []:
-            item = _normalise_flatpak_remote(remote)
-            user = str(item.get("user") or "").strip()
-            if user and not item.get("home"):
-                item["home"] = home_by_user.get(user) or f"/home/{user}"
-            if item.get("method") == "user" and item.get("name") and item.get("url"):
-                self.flatpak_remotes.append(_prepare_flatpak_remote(item))
-        for uname, flatpaks in (snap.get("user_flatpaks", {}) or {}).items():
-            user = str(uname)
-            for fp in flatpaks or []:
-                item = _normalise_flatpak_item(
-                    fp, method="user", user=user, home=home_by_user.get(user) or None
-                )
-                if item.get("name"):
-                    self.flatpaks.append(_prepare_flatpak_item(item))
+        self.add_user_flatpaks_snapshot(snap)
 
-    def add_flatpak_snapshot(self, snap: Dict[str, Any]) -> None:
-        for remote in snap.get("remotes", []) or []:
-            item = _normalise_flatpak_remote(remote)
-            if item.get("name") and item.get("url"):
-                self.flatpak_remotes.append(_prepare_flatpak_remote(item))
-        for fp in snap.get("system_flatpaks", []) or []:
-            item = _normalise_flatpak_item(fp, method="system")
-            if item.get("name"):
-                self.flatpaks.append(_prepare_flatpak_item(item))
-        for note in snap.get("notes", []) or []:
-            self.notes.append(str(note))
+    def prepare_flatpak_remote(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        return _prepare_flatpak_remote(item)
 
-    def add_snap_snapshot(self, snap: Dict[str, Any]) -> None:
-        for raw in snap.get("system_snaps", []) or []:
-            item = _normalise_snap_item(raw)
-            if item.get("name"):
-                self.snaps.append(_prepare_snap_item(item))
-        for note in snap.get("notes", []) or []:
-            self.notes.append(str(note))
+    def prepare_flatpak_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        return _prepare_flatpak_item(item)
+
+    def prepare_snap_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        return _prepare_snap_item(item)
 
     def add_firewall_runtime_snapshot(
         self,
@@ -148,58 +86,16 @@ class SaltRole(CMModule):
         role_files_dir: Path,
         file_prefix: Optional[str] = None,
     ) -> None:
-        self.packages.update(
-            str(p).strip() for p in (snap.get("packages") or []) if str(p).strip()
+        super().add_firewall_runtime_snapshot(
+            snap,
+            bundle_dir=bundle_dir,
+            artifact_role=artifact_role,
+            files_dir=role_files_dir,
+            copy_artifact=_copy_artifact,
+            source_uri=_source_uri,
+            file_prefix=file_prefix,
+            dir_attrs={"require": [{"file": "/etc/enroll"}]},
         )
-        self.add_managed_dir(
-            "/etc/enroll/firewall",
-            user="root",
-            group="root",
-            mode="0750",
-            require=[{"file": "/etc/enroll"}],
-            reason="firewall_runtime",
-        )
-        runtime: Dict[str, Any] = {}
-        for key, dest_name, mode in (
-            ("ipset_save", "ipset.save", "0600"),
-            ("iptables_v4_save", "iptables.v4", "0600"),
-            ("iptables_v6_save", "iptables.v6", "0600"),
-        ):
-            src_rel = str(snap.get(key) or "").strip()
-            if not src_rel:
-                continue
-            role_rel = _copy_artifact(
-                bundle_dir,
-                artifact_role,
-                src_rel,
-                role_files_dir,
-                dst_prefix=file_prefix,
-            )
-            if not role_rel:
-                self.notes.append(
-                    f"Firewall runtime artifact {src_rel!r} was referenced but not found."
-                )
-                continue
-            dest = f"/etc/enroll/firewall/{dest_name}"
-            self.add_managed_file(
-                dest,
-                user="root",
-                group="root",
-                mode=mode,
-                source=_source_uri(self.module_name, role_rel),
-                reason="firewall_runtime",
-            )
-            runtime[key] = dest
-        ipset_sets = [
-            str(x).strip() for x in (snap.get("ipset_sets") or []) if str(x).strip()
-        ]
-        if ipset_sets:
-            runtime["ipset_sets"] = ipset_sets
-        if runtime:
-            runtime.update(_firewall_runtime_commands(runtime))
-            self.firewall_runtime.update(runtime)
-        for note in snap.get("notes", []) or []:
-            self.notes.append(str(note))
 
     def add_container_images_snapshot(self, snap: Dict[str, Any]) -> None:
         for raw in snap.get("images", []) or []:
@@ -413,70 +309,6 @@ def _container_tag_cmd(engine: str, pull_ref: str, tag_ref: str) -> str:
     return f"{engine} tag {_shell_quote(pull_ref)} {_shell_quote(tag_ref)}"
 
 
-def _normalise_flatpak_item(
-    item: Dict[str, Any],
-    *,
-    method: str,
-    user: Optional[str] = None,
-    home: Optional[str] = None,
-) -> Dict[str, Any]:
-    out = dict(item)
-    out["method"] = str(out.get("method") or method or "system").strip() or "system"
-    if user and not out.get("user"):
-        out["user"] = user
-    if home and not out.get("home"):
-        out["home"] = home
-    ref = str(out.get("ref") or "").strip()
-    if ref and not out.get("name"):
-        out["name"] = ref.rsplit("/", 1)[-1]
-    name = str(out.get("name") or out.get("app_id") or "").strip()
-    if name:
-        out["name"] = name
-    remote = str(out.get("remote") or "").strip()
-    if remote:
-        out["remote"] = remote
-    branch = str(out.get("branch") or out.get("origin") or "").strip()
-    if branch:
-        out["branch"] = branch
-    if ref:
-        out["ref"] = ref
-    return out
-
-
-def _normalise_flatpak_remote(item: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(item)
-    name = str(out.get("name") or out.get("remote") or "").strip()
-    url = str(out.get("url") or out.get("from_url") or "").strip()
-    method = str(out.get("method") or out.get("scope") or "system").strip() or "system"
-    if name:
-        out["name"] = name
-    if url:
-        out["url"] = url
-    out["method"] = "user" if method == "user" else "system"
-    return out
-
-
-def _normalise_snap_item(item: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(item)
-    name = str(out.get("name") or "").strip()
-    if name:
-        out["name"] = name
-    channel = str(out.get("tracking") or out.get("channel") or "").strip()
-    if channel:
-        out["channel"] = channel
-    notes = [str(note).lower() for note in (out.get("notes") or [])]
-    confinement = str(out.get("confinement") or "").strip().lower()
-    out["classic"] = confinement == "classic" or any(
-        "classic" in note for note in notes
-    )
-    out["devmode"] = any("devmode" in note or "dev mode" in note for note in notes)
-    out["dangerous"] = any("dangerous" in note for note in notes)
-    revision = str(out.get("revision") or "").strip()
-    if revision and not channel:
-        out["revision"] = revision
-    return out
-
-
 def _flatpak_scope(item: Dict[str, Any]) -> str:
     return "--user" if str(item.get("method") or "system") == "user" else "--system"
 
@@ -580,30 +412,6 @@ def _prepare_snap_item(item: Dict[str, Any]) -> Dict[str, Any]:
     out["state_id"] = _state_id("snap", name)
     out["install_cmd"] = _snap_install_cmd(out)
     out["exists_cmd"] = _snap_exists_cmd(out)
-    return out
-
-
-def _firewall_ipset_restore_cmd(path: str, sets: List[str]) -> str:
-    flush_parts = [f"ipset flush {_shell_quote(name)} || true" for name in sets]
-    flush = "; ".join(flush_parts)
-    restore = f"ipset restore -exist < {_shell_quote(path)}"
-    if flush:
-        return f"/bin/sh -c {_shell_quote(flush + '; ' + restore)}"
-    return f"/bin/sh -c {_shell_quote(restore)}"
-
-
-def _firewall_runtime_commands(runtime: Dict[str, Any]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    ipset_path = str(runtime.get("ipset_save") or "")
-    if ipset_path:
-        sets = [str(x) for x in (runtime.get("ipset_sets") or []) if str(x)]
-        out["ipset_restore_cmd"] = _firewall_ipset_restore_cmd(ipset_path, sets)
-    ipt4_path = str(runtime.get("iptables_v4_save") or "")
-    if ipt4_path:
-        out["iptables_v4_restore_cmd"] = f"iptables-restore {_shell_quote(ipt4_path)}"
-    ipt6_path = str(runtime.get("iptables_v6_save") or "")
-    if ipt6_path:
-        out["iptables_v6_restore_cmd"] = f"ip6tables-restore {_shell_quote(ipt6_path)}"
     return out
 
 
@@ -807,60 +615,29 @@ def _collect_salt_roles(
             overwrite_templates=not bool(fqdn),
         )
 
-    for svc in roles.get("services", []) or []:
-        if not isinstance(svc, dict):
-            continue
-        original_role_name = _salt_name(
-            str(svc.get("role_name") or svc.get("unit") or "service"),
-            fallback="service",
+    for entry in CMModule.package_service_entries(
+        roles, inventory_packages, use_common_roles=use_common_roles
+    ):
+        snap = entry.get("snapshot") or {}
+        kind = str(entry.get("kind") or "package")
+        fallback = "service" if kind == "service" else "package"
+        source_label = str(
+            snap.get("role_name") or snap.get("unit") or snap.get("package") or fallback
         )
-        if use_common_roles:
-            role_name = _salt_name(
-                section_label_for_packages(
-                    [
-                        str(p).strip()
-                        for p in (svc.get("packages") or [])
-                        if str(p).strip()
-                    ],
-                    inventory_packages,
-                ),
-                fallback="package_group",
-            )
-        else:
-            role_name = original_role_name
+        original_role_name = _salt_name(source_label, fallback=fallback)
+        role_name = _salt_name(
+            str(entry.get("role_label") or source_label),
+            fallback="package_group" if use_common_roles else fallback,
+        )
         srole = ensure_role(role_name)
-        srole.add_service_snapshot(svc)
-        srole.add_managed_content(
-            svc,
-            bundle_dir=bundle_dir,
-            artifact_role=str(svc.get("role_name") or original_role_name),
-            role_files_dir=states_dir / "roles" / srole.module_name / "files",
-            file_prefix=node_file_prefix,
-            jt_exe=jt_exe,
-            jt_enabled=jt_enabled,
-            overwrite_templates=not bool(fqdn),
-        )
-
-    for pkg in roles.get("packages", []) or []:
-        if not isinstance(pkg, dict):
-            continue
-        original_role_name = _salt_name(
-            str(pkg.get("role_name") or pkg.get("package") or "package"),
-            fallback="package",
-        )
-        if use_common_roles:
-            role_name = _salt_name(
-                package_section_label(pkg, inventory_packages),
-                fallback="package_group",
-            )
+        if kind == "service":
+            srole.add_service_snapshot(snap)
         else:
-            role_name = original_role_name
-        srole = ensure_role(role_name)
-        srole.add_package_snapshot(pkg)
+            srole.add_package_snapshot(snap)
         srole.add_managed_content(
-            pkg,
+            snap,
             bundle_dir=bundle_dir,
-            artifact_role=str(pkg.get("role_name") or original_role_name),
+            artifact_role=str(snap.get("role_name") or original_role_name),
             role_files_dir=states_dir / "roles" / srole.module_name / "files",
             file_prefix=node_file_prefix,
             jt_exe=jt_exe,
@@ -1621,17 +1398,12 @@ def _render_readme(
 ) -> str:
     host = state.get("host", {}) if isinstance(state.get("host"), dict) else {}
     hostname = host.get("hostname") or "unknown"
-    role_lines = (
-        "\n".join(
-            f"- `{r.sls_name}` from Enroll role `{r.role_name}`" for r in salt_roles
-        )
-        or "- None."
+    role_lines = markdown_list(
+        f"`{r.sls_name}` from Enroll role `{r.role_name}`" for r in salt_roles
     )
-    notes: List[str] = []
-    for r in salt_roles:
-        for note in r.notes:
-            notes.append(f"`{r.sls_name}`: {note}")
-    notes_text = "\n".join(f"- {n}" for n in notes) or "- None."
+    notes_text = markdown_list(
+        f"`{r.sls_name}`: {note}" for r in salt_roles for note in r.notes
+    )
 
     if fqdn:
         node_display = (
