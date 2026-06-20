@@ -295,7 +295,7 @@ If you intend to keep harvests/manifests long-term (especially in git), strongly
 
 ## JinjaTurtle integration
 
-If [JinjaTurtle](https://git.mig5.net/mig5/jinjaturtle) is installed, `enroll` can generate Jinja2 templates for ini/json/xml/toml-style config in renderers that consume Jinja templates.
+If [JinjaTurtle](https://git.mig5.net/mig5/jinjaturtle) is installed, `enroll` can generate templates for ini/json/xml/toml-style config in renderers.
 
 For Ansible:
 - Templates live in `roles/<role>/templates/...`
@@ -308,7 +308,10 @@ For Salt:
 - `file.managed` uses `template: jinja` with per-file `context` values
 - In `--fqdn` mode, template context values are written to pillar with the file metadata
 
-Puppet output does not use `.erb` templates at this time.
+For Puppet:
+- JinjaTurtle will use its 'erb' mode if you are running a recent-enough version.
+- Templates will be stored in `modules/<module>/templates/<file>.erb`
+- In `--fqdn` mode, template context values are written to Hiera data.
 
 You can force template generation on with `--jinjaturtle` or disable it with `--no-jinjaturtle`.
 

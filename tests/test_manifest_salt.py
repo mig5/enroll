@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from pathlib import Path
 
 import yaml
 
 from enroll import manifest
-from enroll.salt import SaltRole, _render_static_role, _role_pillar_values, _salt_name
+from enroll.salt import (
+    SaltRole,
+    _render_pillar_role,
+    _render_static_role,
+    _role_pillar_values,
+    _salt_name,
+    _state_id,
+)
 
 
 def _write_state(bundle: Path, state: dict) -> None:
@@ -186,6 +194,76 @@ def test_manifest_salt_writes_single_site_state_tree(tmp_path: Path):
     assert "sysctl -e -p /etc/sysctl.d/99-enroll.conf || true" in sysctl_sls
     assert (out / "README.md").exists()
     assert (out / "config" / "master.d" / "enroll.conf").exists()
+
+
+def test_manifest_salt_fqdn_package_watch_targets_declared_service_role(
+    tmp_path: Path,
+):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    artifact = bundle / "artifacts" / "apparmor" / "etc" / "apparmor" / "parser.conf"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("cache-loc /var/cache/apparmor\n", encoding="utf-8")
+
+    state = _sample_state()
+    state["inventory"] = {"packages": {"apparmor": {"section": "admin"}}}
+    state["roles"]["services"] = [
+        {
+            "unit": "apparmor.service",
+            "role_name": "apparmor_service",
+            "packages": ["apparmor"],
+            "active_state": "active",
+            "unit_file_state": "enabled",
+            "managed_dirs": [],
+            "managed_files": [],
+            "managed_links": [],
+        }
+    ]
+    state["roles"]["packages"] = [
+        {
+            "package": "apparmor",
+            "role_name": "apparmor",
+            "section": "admin",
+            "managed_dirs": [],
+            "managed_files": [
+                {
+                    "path": "/etc/apparmor/parser.conf",
+                    "src_rel": "etc/apparmor/parser.conf",
+                    "owner": "root",
+                    "group": "root",
+                    "mode": "0644",
+                }
+            ],
+            "managed_links": [],
+        }
+    ]
+    state["roles"]["sysctl"] = {
+        "role_name": "sysctl",
+        "managed_dirs": [],
+        "managed_files": [],
+        "managed_links": [],
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="salt", fqdn="vpn-ssh")
+
+    pillar_top = yaml.safe_load(
+        (out / "pillar" / "top.sls").read_text(encoding="utf-8")
+    )
+    node_sls = pillar_top["base"]["vpn-ssh"][0]
+    pillar_path = out / "pillar" / Path(*node_sls.split("."))
+    pillar = yaml.safe_load(pillar_path.with_suffix(".sls").read_text(encoding="utf-8"))
+    roles = pillar["enroll"]["roles"]
+    expected_service_state = _state_id(
+        "service", "apparmor.service", role="apparmor_service"
+    )
+
+    assert roles["apparmor"]["files"]["/etc/apparmor/parser.conf"]["watch_in"] == [
+        {"service": expected_service_state}
+    ]
+    assert roles["apparmor_service"]["services"]["apparmor.service"]["state_id"] == (
+        expected_service_state
+    )
 
 
 def test_manifest_salt_fqdn_mode_uses_pillar_and_accumulates_nodes(tmp_path: Path):
@@ -538,6 +616,71 @@ def test_manifest_salt_uses_jinjaturtle_templates(monkeypatch, tmp_path: Path):
     ]
     assert file_data["template"] == "jinja"
     assert file_data["context"] == {"foo_setting": True}
+
+
+def test_manifest_salt_rewrites_jinjaturtle_json_filters(monkeypatch, tmp_path: Path):
+    import enroll.jinjaturtle as jinjaturtle_mod
+    from enroll.jinjaturtle import JinjifyResult
+
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    state = _sample_state()
+    _write_sample_artifacts(bundle)
+    _write_state(bundle, state)
+
+    monkeypatch.setattr(
+        jinjaturtle_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
+    )
+    monkeypatch.setattr(jinjaturtle_mod, "can_jinjify_path", lambda _path: True)
+
+    def fake_run_jinjaturtle(
+        jt_exe: str, src_path: str, *, role_name: str, force_format=None
+    ):
+        return JinjifyResult(
+            template_text='{ "setting": {{ foo_setting | to_json(ensure_ascii=False) }} }\n',
+            vars_text='foo_setting: "alpha"\n',
+        )
+
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    manifest.manifest(str(bundle), str(out), target="salt", jinjaturtle="on")
+
+    template_text = (
+        out / "states" / "roles" / "net" / "templates" / "etc" / "foo.conf.j2"
+    ).read_text(encoding="utf-8")
+    assert "to_json" not in template_text
+    assert "foo_setting__enroll_json" in template_text
+    sls = (out / "states" / "roles" / "net" / "init.sls").read_text(encoding="utf-8")
+    assert "foo_setting__enroll_json:" in sls
+    assert '"alpha"' in sls
+
+
+def test_manifest_salt_pillar_role_uses_json_for_template_context() -> None:
+    role = SaltRole("foo")
+    role.add_managed_file(
+        "/etc/foo.json",
+        source="salt://roles/foo/templates/etc/foo.json.j2",
+        user="root",
+        group="root",
+        mode="0644",
+        makedirs=True,
+        template="jinja",
+        context=OrderedDict(
+            [("foo_name", "alpha"), ("foo_nested", OrderedDict([("x", 1)]))]
+        ),
+    )
+
+    pillar = _role_pillar_values(role)
+    assert type(pillar["files"]["/etc/foo.json"]["context"]) is dict
+    assert type(pillar["files"]["/etc/foo.json"]["context"]["foo_nested"]) is dict
+
+    rendered = _render_static_role(role)
+    assert "foo_nested:" in rendered
+    context_block = (
+        _render_pillar_role(role).split("context:", 1)[1].split("{% endif %}", 1)[0]
+    )
+    assert "|yaml_encode" not in context_block
+    assert "|tojson" in _render_pillar_role(role)
 
 
 def test_manifest_salt_renders_firewall_runtime_states(tmp_path: Path):

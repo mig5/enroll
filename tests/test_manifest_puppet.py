@@ -184,9 +184,9 @@ def test_manifest_puppet_writes_control_repo_style_output(tmp_path: Path):
     assert node_data["foo::files"]["/etc/foo/foo.conf"]["source"] == (
         "puppet:///modules/foo/nodes/test.example/etc/foo.conf"
     )
-    assert node_data["foo::files"]["/etc/foo/foo.conf"]["notify"] == (
-        "Service['foo.service']"
-    )
+    assert node_data["foo::files"]["/etc/foo/foo.conf"]["notify_services"] == [
+        "foo.service"
+    ]
     assert node_data["foo::services"]["foo.service"] == {
         "ensure": "running",
         "enable": True,
@@ -252,6 +252,111 @@ def test_manifest_puppet_writes_control_repo_style_output(tmp_path: Path):
         / "sysctl"
         / "99-enroll.conf"
     ).exists()
+
+
+def test_manifest_puppet_fqdn_package_notify_service_declared_in_same_role(
+    tmp_path: Path,
+):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    artifact = bundle / "artifacts" / "apparmor" / "etc" / "apparmor" / "parser.conf"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("cache-loc /var/cache/apparmor\n", encoding="utf-8")
+
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "vpn-ssh", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {"apparmor": {"section": "admin"}}},
+        "roles": {
+            "services": [
+                {
+                    "unit": "apparmor.service",
+                    "role_name": "apparmor_service",
+                    "packages": ["apparmor"],
+                    "active_state": "active",
+                    "unit_file_state": "enabled",
+                    "managed_dirs": [],
+                    "managed_files": [],
+                    "managed_links": [],
+                }
+            ],
+            "packages": [
+                {
+                    "package": "apparmor",
+                    "role_name": "apparmor",
+                    "section": "admin",
+                    "managed_dirs": [],
+                    "managed_files": [
+                        {
+                            "path": "/etc/apparmor/parser.conf",
+                            "src_rel": "etc/apparmor/parser.conf",
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                        }
+                    ],
+                    "managed_links": [],
+                }
+            ],
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "sysctl": {"role_name": "sysctl", "managed_dirs": [], "managed_files": []},
+            "firewall_runtime": {"role_name": "firewall_runtime", "packages": []},
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "managed_dirs": [],
+                "managed_files": [],
+                "managed_links": [],
+            },
+        },
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="puppet", fqdn="vpn-ssh")
+
+    node_data = yaml.safe_load(
+        (out / "data" / "nodes" / "vpn-ssh.yaml").read_text(encoding="utf-8")
+    )
+    assert node_data["apparmor::files"]["/etc/apparmor/parser.conf"][
+        "notify_services"
+    ] == ["apparmor.service"]
+    assert node_data["apparmor::services"]["apparmor.service"] == {
+        "ensure": "running",
+        "enable": True,
+    }
+
+    apparmor_pp = (out / "modules" / "apparmor" / "manifests" / "init.pp").read_text(
+        encoding="utf-8"
+    )
+    assert "Hash[String, Hash] $services = {}" in apparmor_pp
+    assert "service { $resource_title:" in apparmor_pp
+    assert apparmor_pp.index("$services.each") < apparmor_pp.index("$files.each")
+    assert "$attrs['notify_services'].map" in apparmor_pp
+    assert "notify  => $notify_targets" in apparmor_pp
 
 
 def test_manifest_puppet_fqdn_mode_can_accumulate_separate_node_data(
@@ -999,3 +1104,224 @@ def test_puppet_names_are_sanitised_for_target_reserved_words() -> None:
     assert _puppet_name("123") == "role_123"
     assert _puppet_name("node") == "role_node"
     assert _puppet_name("web-app") == "web_app"
+
+
+def test_manifest_puppet_uses_jinjaturtle_erb_templates(monkeypatch, tmp_path: Path):
+    import enroll.jinjaturtle as jinjaturtle_mod
+    from enroll.jinjaturtle import JinjifyResult
+
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    artifact = bundle / "artifacts" / "foo" / "etc" / "foo.ini"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("[main]\nkey = 1\n", encoding="utf-8")
+
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "services": [
+                {
+                    "unit": "foo.service",
+                    "role_name": "foo",
+                    "packages": ["foo"],
+                    "active_state": "active",
+                    "unit_file_state": "enabled",
+                    "managed_dirs": [],
+                    "managed_files": [
+                        {
+                            "path": "/etc/foo.ini",
+                            "src_rel": "etc/foo.ini",
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                        }
+                    ],
+                    "managed_links": [],
+                }
+            ],
+            "packages": [],
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "sysctl": {"role_name": "sysctl", "managed_dirs": [], "managed_files": []},
+            "firewall_runtime": {"role_name": "firewall_runtime", "packages": []},
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "managed_dirs": [],
+                "managed_files": [],
+                "managed_links": [],
+            },
+        },
+    }
+    _write_state(bundle, state)
+
+    monkeypatch.setattr(
+        jinjaturtle_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
+    )
+    monkeypatch.setattr(jinjaturtle_mod, "can_jinjify_path", lambda _path: True)
+
+    calls = []
+
+    def fake_run_jinjaturtle(
+        jt_exe: str,
+        src_path: str,
+        *,
+        role_name: str,
+        force_format=None,
+        template_engine: str = "jinja2",
+        puppet_class=None,
+    ):
+        calls.append((role_name, template_engine, puppet_class))
+        assert template_engine == "erb"
+        assert puppet_class == "foo"
+        return JinjifyResult(
+            template_text="[main]\nkey = <%= @main_key %>\n",
+            vars_text="foo::main_key: 1\n",
+        )
+
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    manifest.manifest(
+        str(bundle),
+        str(out),
+        target="puppet",
+        jinjaturtle="on",
+        no_common_roles=True,
+    )
+
+    assert calls == [("foo", "erb", "foo")]
+    assert (out / "modules" / "foo" / "templates" / "etc" / "foo.ini.erb").read_text(
+        encoding="utf-8"
+    ) == "[main]\nkey = <%= @main_key %>\n"
+    assert not (out / "modules" / "foo" / "files" / "etc" / "foo.ini").exists()
+
+    init_pp = (out / "modules" / "foo" / "manifests" / "init.pp").read_text(
+        encoding="utf-8"
+    )
+    assert "Any $main_key = 1," in init_pp
+    assert "content => template('foo/etc/foo.ini.erb')" in init_pp
+    assert "source =>" not in init_pp
+
+
+def test_manifest_puppet_fqdn_writes_erb_template_values_to_node_hiera(
+    monkeypatch, tmp_path: Path
+):
+    import enroll.jinjaturtle as jinjaturtle_mod
+    from enroll.jinjaturtle import JinjifyResult
+
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    artifact = bundle / "artifacts" / "foo" / "etc" / "foo.ini"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("[main]\nkey = 1\n", encoding="utf-8")
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "services": [
+                {
+                    "unit": "foo.service",
+                    "role_name": "foo",
+                    "packages": ["foo"],
+                    "active_state": "active",
+                    "unit_file_state": "enabled",
+                    "managed_dirs": [],
+                    "managed_files": [
+                        {"path": "/etc/foo.ini", "src_rel": "etc/foo.ini"}
+                    ],
+                    "managed_links": [],
+                }
+            ],
+            "packages": [],
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "sysctl": {"role_name": "sysctl", "managed_dirs": [], "managed_files": []},
+            "firewall_runtime": {"role_name": "firewall_runtime", "packages": []},
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_dirs": [],
+                "managed_files": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "managed_dirs": [],
+                "managed_files": [],
+                "managed_links": [],
+            },
+        },
+    }
+    _write_state(bundle, state)
+
+    monkeypatch.setattr(
+        jinjaturtle_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
+    )
+    monkeypatch.setattr(jinjaturtle_mod, "can_jinjify_path", lambda _path: True)
+    monkeypatch.setattr(
+        jinjaturtle_mod,
+        "run_jinjaturtle",
+        lambda *a, **k: JinjifyResult(
+            template_text="[main]\nkey = <%= @main_key %>\n",
+            vars_text="foo::main_key: 1\n",
+        ),
+    )
+
+    manifest.manifest(
+        str(bundle), str(out), target="puppet", fqdn="test.example", jinjaturtle="on"
+    )
+
+    node_data = yaml.safe_load(
+        (out / "data" / "nodes" / "test.example.yaml").read_text(encoding="utf-8")
+    )
+    assert node_data["foo::main_key"] == 1
+    assert node_data["foo::files"]["/etc/foo.ini"]["template"] == "foo/etc/foo.ini.erb"
+    assert "source" not in node_data["foo::files"]["/etc/foo.ini"]
+    init_pp = (out / "modules" / "foo" / "manifests" / "init.pp").read_text(
+        encoding="utf-8"
+    )
+    assert "Any $main_key = undef," in init_pp
+    assert "content => template($attrs['template'])" in init_pp

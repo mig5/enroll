@@ -17,6 +17,12 @@ from .cm import (
     markdown_list,
 )
 from .state import inventory_packages_from_state, roles_from_state
+from .jinjaturtle import (
+    can_jinjify_path,
+    jinjify_artifact,
+    managed_file_var_prefix,
+    resolve_jinjaturtle_mode,
+)
 
 
 class PuppetRole(CMModule):
@@ -31,6 +37,7 @@ class PuppetRole(CMModule):
         self.flatpak_remotes: List[Dict[str, Any]] = []
         self.flatpaks: List[Dict[str, Any]] = []
         self.snaps: List[Dict[str, Any]] = []
+        self.template_hiera: Dict[str, Any] = {}
 
     def has_resources(self) -> bool:
         return self.has_resources_or_attrs(
@@ -133,8 +140,12 @@ class PuppetRole(CMModule):
         bundle_dir: str,
         artifact_role: str,
         module_files_dir: Path,
+        module_templates_dir: Optional[Path] = None,
         file_prefix: Optional[str] = None,
         notify_services: Optional[List[str]] = None,
+        jt_exe: Optional[str] = None,
+        jt_enabled: bool = False,
+        overwrite_templates: bool = True,
     ) -> None:
         for d in self.managed_dirs_from_snapshot(snap):
             path = str(d.get("path") or "").strip()
@@ -146,33 +157,75 @@ class PuppetRole(CMModule):
                 reason=d.get("reason") or "managed_dir",
             )
 
-        for mf in self.managed_files_from_snapshot(snap):
+        managed_files = list(self.managed_files_from_snapshot(snap))
+        candidates = [
+            mf
+            for mf in managed_files
+            if str(mf.get("path") or "")
+            and str(mf.get("src_rel") or "")
+            and can_jinjify_path(str(mf.get("path") or ""))
+        ]
+        namespace_by_file = len(candidates) > 1
+
+        for mf in managed_files:
             path = str(mf.get("path") or "").strip()
             src_rel = str(mf.get("src_rel") or "").strip()
             if not path or not src_rel:
                 continue
-            module_rel = _copy_artifact(
-                bundle_dir,
-                artifact_role,
-                src_rel,
-                module_files_dir,
-                dst_prefix=file_prefix,
-            )
-            if not module_rel:
-                self.notes.append(
-                    f"Skipped {path}: harvested artifact {artifact_role}/{src_rel} was not present."
+
+            template_rel: Optional[str] = None
+            if module_templates_dir is not None:
+                role_prefix = (
+                    managed_file_var_prefix(self.module_name, src_rel)
+                    if namespace_by_file
+                    else self.module_name
                 )
-                continue
+                converted = jinjify_artifact(
+                    bundle_dir,
+                    artifact_role,
+                    src_rel,
+                    path,
+                    module_templates_dir,
+                    jt_exe=jt_exe,
+                    jt_enabled=jt_enabled,
+                    overwrite_templates=overwrite_templates,
+                    role_name=role_prefix,
+                    template_engine="erb",
+                    puppet_class=self.module_name,
+                )
+                if converted is not None:
+                    template_rel = converted.template_rel
+                    self.template_hiera.update(converted.context)
+
             attrs: Dict[str, Any] = {
                 "owner": mf.get("owner") or "root",
                 "group": mf.get("group") or "root",
                 "mode": mf.get("mode") or "0644",
-                "source": _source_uri(self.module_name, module_rel),
                 "reason": mf.get("reason") or "managed_file",
             }
+            if template_rel is not None:
+                attrs["template"] = f"{self.module_name}/{template_rel}"
+            else:
+                module_rel = _copy_artifact(
+                    bundle_dir,
+                    artifact_role,
+                    src_rel,
+                    module_files_dir,
+                    dst_prefix=file_prefix,
+                )
+                if not module_rel:
+                    self.notes.append(
+                        f"Skipped {path}: harvested artifact {artifact_role}/{src_rel} was not present."
+                    )
+                    continue
+                attrs["source"] = _source_uri(self.module_name, module_rel)
             if notify_services and not path.startswith("/etc/systemd/system/"):
-                refs = [f"Service[{_pp_quote(unit)}]" for unit in notify_services]
-                attrs["notify"] = refs[0] if len(refs) == 1 else f"[{', '.join(refs)}]"
+                notify_units = [unit for unit in notify_services if str(unit).strip()]
+                notify_value = _service_notify_value(notify_units)
+                if notify_value:
+                    attrs["notify"] = notify_value
+                    attrs["notify_services"] = notify_units
+                    attrs["_notify_services"] = notify_units
             self.add_managed_file(path, **attrs)
 
         for ml in self.managed_links_from_snapshot(snap):
@@ -380,6 +433,43 @@ def _pp_array(values: Iterable[Any]) -> str:
     return "[" + ", ".join(_pp_quote(v) for v in values) + "]"
 
 
+def _pp_value(value: Any) -> str:
+    """Render a conservative Puppet literal for generated class defaults."""
+
+    if value is None:
+        return "undef"
+    if isinstance(value, bool):
+        return _pp_bool(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_pp_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        parts = []
+        for key in sorted(value, key=lambda k: str(k)):
+            parts.append(f"{_pp_quote(key)} => {_pp_value(value[key])}")
+        return "{" + ", ".join(parts) + "}"
+    return _pp_quote(value)
+
+
+def _template_param_defaults(prole: PuppetRole) -> Dict[str, Any]:
+    prefix = f"{prole.module_name}::"
+    out: Dict[str, Any] = {}
+    for key, value in prole.template_hiera.items():
+        key_s = str(key)
+        if key_s.startswith(prefix):
+            local = key_s[len(prefix) :]
+        elif "::" in key_s:
+            local = key_s.split("::", 1)[1]
+        else:
+            local = key_s
+        if local:
+            out[local] = value
+    return out
+
+
 def _puppet_exec_attrs(
     command: str,
     unless: str,
@@ -469,6 +559,65 @@ def _render_firewall_runtime_execs(
         lines.append("")
 
 
+def _active_service_snapshots_by_unit(
+    entries: Iterable[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Return active service snapshots keyed by systemd unit name."""
+
+    by_unit: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        if str(entry.get("kind") or "package") != "service":
+            continue
+        snap = entry.get("snapshot") or {}
+        if not isinstance(snap, dict):
+            continue
+        unit = str(snap.get("unit") or "").strip()
+        if not unit or str(snap.get("active_state") or "") != "active":
+            continue
+        by_unit.setdefault(unit, snap)
+    return by_unit
+
+
+def _service_notify_value(units: Iterable[str]) -> Optional[str]:
+    refs = [f"Service[{_pp_quote(unit)}]" for unit in units if str(unit).strip()]
+    if not refs:
+        return None
+    return refs[0] if len(refs) == 1 else f"[{', '.join(refs)}]"
+
+
+def _sync_service_notifications(puppet_roles: Iterable[PuppetRole]) -> None:
+    """Remove generated service notifications that do not target this catalog."""
+
+    roles = list(puppet_roles)
+    declared_services = {unit for role in roles for unit in role.services}
+    for role in roles:
+        for path, attrs in role.files.items():
+            notify_units = [
+                str(unit).strip()
+                for unit in (attrs.get("_notify_services") or [])
+                if str(unit).strip()
+            ]
+            if not notify_units:
+                attrs.pop("_notify_services", None)
+                continue
+            kept = [unit for unit in notify_units if unit in declared_services]
+            missing = sorted(set(notify_units) - set(kept))
+            if missing:
+                role.notes.append(
+                    "Skipped service notification for "
+                    f"{path}: no generated Service resource for "
+                    f"{', '.join(missing)}."
+                )
+            notify_value = _service_notify_value(kept)
+            if notify_value:
+                attrs["notify"] = notify_value
+                attrs["notify_services"] = kept
+            else:
+                attrs.pop("notify", None)
+                attrs.pop("notify_services", None)
+            attrs.pop("_notify_services", None)
+
+
 def _copy_artifact(
     bundle_dir: str,
     role: str,
@@ -515,6 +664,8 @@ def _collect_puppet_roles(
     *,
     fqdn: Optional[str] = None,
     no_common_roles: bool = False,
+    jt_exe: Optional[str] = None,
+    jt_enabled: bool = False,
 ) -> List[PuppetRole]:
     roles = roles_from_state(state)
     inventory_packages = inventory_packages_from_state(state)
@@ -541,13 +692,18 @@ def _collect_puppet_roles(
             str(snap.get("role_name") or key), fallback="enroll_role"
         )
         prole = ensure_role(role_name)
-        module_files_dir = modules_dir / prole.module_name / "files"
+        module_dir = modules_dir / prole.module_name
+        module_files_dir = module_dir / "files"
         prole.add_managed_content(
             snap,
             bundle_dir=bundle_dir,
             artifact_role=str(snap.get("role_name") or key),
             module_files_dir=module_files_dir,
+            module_templates_dir=module_dir / "templates",
             file_prefix=node_file_prefix,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not bool(fqdn),
         )
 
     users_snap = roles.get("users") or {}
@@ -557,12 +713,17 @@ def _collect_puppet_roles(
         )
         prole = ensure_role(role_name)
         prole.add_users_snapshot(users_snap)
+        module_dir = modules_dir / prole.module_name
         prole.add_managed_content(
             users_snap,
             bundle_dir=bundle_dir,
             artifact_role=str(users_snap.get("role_name") or "users"),
-            module_files_dir=modules_dir / prole.module_name / "files",
+            module_files_dir=module_dir / "files",
+            module_templates_dir=module_dir / "templates",
             file_prefix=node_file_prefix,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not bool(fqdn),
         )
 
     package_service_entries = list(
@@ -571,6 +732,9 @@ def _collect_puppet_roles(
         )
     )
     service_units_by_package = CMModule.active_service_units_by_package(
+        package_service_entries
+    )
+    service_snapshots_by_unit = _active_service_snapshots_by_unit(
         package_service_entries
     )
 
@@ -598,13 +762,22 @@ def _collect_puppet_roles(
             notify_services = CMModule.active_service_units_for_package_snapshot(
                 snap, service_units_by_package
             )
+            for unit in notify_services:
+                service_snap = service_snapshots_by_unit.get(unit)
+                if service_snap is not None:
+                    prole.add_service_snapshot(service_snap)
+        module_dir = modules_dir / prole.module_name
         prole.add_managed_content(
             snap,
             bundle_dir=bundle_dir,
             artifact_role=str(snap.get("role_name") or original_role_name),
-            module_files_dir=modules_dir / prole.module_name / "files",
+            module_files_dir=module_dir / "files",
+            module_templates_dir=module_dir / "templates",
             file_prefix=node_file_prefix,
             notify_services=notify_services,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
+            overwrite_templates=not bool(fqdn),
         )
 
     container_images = roles.get("container_images") or {}
@@ -656,17 +829,29 @@ def _collect_puppet_roles(
 
     puppet_roles = sorted(out.values(), key=lambda r: role_order_key(r.role_name))
     resolve_catalog_conflicts(puppet_roles)
+    _sync_service_notifications(puppet_roles)
     return [r for r in puppet_roles if r.has_resources()]
 
 
 def _render_role_class(prole: PuppetRole) -> str:
     has_sysctl_conf = "/etc/sysctl.d/99-enroll.conf" in prole.files
+    template_defaults = _template_param_defaults(prole)
+    params: List[str] = []
     if has_sysctl_conf:
+        params.extend(
+            [
+                "  Boolean $sysctl_apply = true,",
+                "  Boolean $sysctl_ignore_apply_errors = true,",
+            ]
+        )
+    for name, value in sorted(template_defaults.items()):
+        params.append(f"  Any ${name} = {_pp_value(value)},")
+
+    if params:
         lines: List[str] = [
             "# Generated by Enroll from harvest state.",
             f"class {prole.module_name} (",
-            "  Boolean $sysctl_apply = true,",
-            "  Boolean $sysctl_ignore_apply_errors = true,",
+            *params,
             ") {",
             "",
         ]
@@ -718,19 +903,20 @@ def _render_role_class(prole: PuppetRole) -> str:
         )
 
     for path, f in sorted(prole.files.items()):
-        _resource(
-            lines,
-            "file",
-            path,
+        file_attrs: List[Tuple[str, str]] = [("ensure", _pp_quote("file"))]
+        if f.get("template"):
+            file_attrs.append(("content", f"template({_pp_quote(f.get('template'))})"))
+        else:
+            file_attrs.append(("source", _pp_quote(f.get("source") or "")))
+        file_attrs.extend(
             [
-                ("ensure", _pp_quote("file")),
-                ("source", _pp_quote(f.get("source") or "")),
                 ("owner", _pp_quote(f.get("owner") or "root")),
                 ("group", _pp_quote(f.get("group") or "root")),
                 ("mode", _pp_quote(f.get("mode") or "0644")),
                 *([("notify", str(f.get("notify")))] if f.get("notify") else []),
-            ],
+            ]
         )
+        _resource(lines, "file", path, file_attrs)
 
     for path, lnk in sorted(prole.links.items()):
         _resource(
@@ -1031,7 +1217,14 @@ def _role_hiera_values(prole: PuppetRole) -> Dict[str, Any]:
             path: _attrs_with_ensure(
                 prole.files[path],
                 "file",
-                allowed={"source", "owner", "group", "mode", "notify"},
+                allowed={
+                    "source",
+                    "template",
+                    "owner",
+                    "group",
+                    "mode",
+                    "notify_services",
+                },
             )
             for path in sorted(prole.files)
         }
@@ -1069,6 +1262,8 @@ def _role_hiera_values(prole: PuppetRole) -> Dict[str, Any]:
     if prole.notes:
         data[f"{prefix}notes"] = list(prole.notes)
 
+    data.update(prole.template_hiera)
+
     if "/etc/sysctl.d/99-enroll.conf" in prole.files:
         data[f"{prefix}sysctl_apply"] = True
         data[f"{prefix}sysctl_ignore_apply_errors"] = True
@@ -1098,6 +1293,10 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         "  Array[String] $notes = [],",
         "  Boolean $sysctl_apply = true,",
         "  Boolean $sysctl_ignore_apply_errors = true,",
+        *[
+            f"  Any ${name} = undef,"
+            for name in sorted(_template_param_defaults(prole))
+        ],
         ") {",
         "",
         "  $packages.each |String $package_name| {",
@@ -1124,20 +1323,46 @@ def _render_hiera_role_class(prole: PuppetRole) -> str:
         "    }",
         "  }",
         "",
-        "  $files.each |String $resource_title, Hash $attrs| {",
-        "    file { $resource_title:",
+        "  # Declare services before files so file notify relationships can",
+        "  # resolve in Hiera-driven classes.",
+        "  $services.each |String $resource_title, Hash $attrs| {",
+        "    service { $resource_title:",
         "      * => $attrs,",
+        "    }",
+        "  }",
+        "",
+        "  $files.each |String $resource_title, Hash $attrs| {",
+        "    $file_attrs = $attrs.filter |$key, $value| {",
+        "      $key != 'template' and $key != 'notify_services'",
+        "    }",
+        "    if $attrs['notify_services'] {",
+        "      $notify_targets = $attrs['notify_services'].map |String $unit| { Service[$unit] }",
+        "      if $attrs['template'] {",
+        "        file { $resource_title:",
+        "          *       => $file_attrs,",
+        "          content => template($attrs['template']),",
+        "          notify  => $notify_targets,",
+        "        }",
+        "      } else {",
+        "        file { $resource_title:",
+        "          *      => $file_attrs,",
+        "          notify => $notify_targets,",
+        "        }",
+        "      }",
+        "    } elsif $attrs['template'] {",
+        "      file { $resource_title:",
+        "        *       => $file_attrs,",
+        "        content => template($attrs['template']),",
+        "      }",
+        "    } else {",
+        "      file { $resource_title:",
+        "        * => $file_attrs,",
+        "      }",
         "    }",
         "  }",
         "",
         "  $links.each |String $resource_title, Hash $attrs| {",
         "    file { $resource_title:",
-        "      * => $attrs,",
-        "    }",
-        "  }",
-        "",
-        "  $services.each |String $resource_title, Hash $attrs| {",
-        "    service { $resource_title:",
         "      * => $attrs,",
         "    }",
         "  }",
@@ -1385,7 +1610,8 @@ def _render_readme(
 - `hiera.yaml` configures per-node lookup from `data/nodes/%{{trusted.certname}}.yaml` with a fallback to `data/common.yaml`.
 - `data/nodes/{_node_data_filename(fqdn or '')}` contains this node's class list and class parameter data.
 - `modules/<role>/manifests/init.pp` contains reusable, data-driven classes.
-- `modules/<role>/files/nodes/<fqdn>/...` contains node-specific harvested file artifacts, avoiding clashes between hosts."""
+- `modules/<role>/files/nodes/<fqdn>/...` contains node-specific harvested raw file artifacts, avoiding clashes between hosts.
+- `modules/<role>/templates/` contains ERB templates when JinjaTurtle can convert a harvested config file."""
         apply = f"""Run from this generated output directory, passing the node certname so Hiera selects the right node data:
 
 ```bash
@@ -1395,14 +1621,15 @@ sudo puppet apply --modulepath ./modules --hiera_config ./hiera.yaml --certname 
 If you depend on other pre-installed Puppet modules, you may need to pass in other modulepaths as well, e.g:
 
 ```bash
-sudo puppet apply --modulepath ./modules:/etc/puppet/code/modules --hiera_config ./hiera.yaml --certname {fqdn} manifests/site.pp --noop
+sudo puppet apply --modulepath ./modules:/etc/puppet/code/modules --hiera_config ./hiera.yaml --certname {fqdn} manifests/site.pp --noop --test
 ```
 
 For Puppet agent/control-repo use, place this output where `hiera.yaml`, `data/`, `manifests/`, and `modules/` form the environment root. Re-running Enroll with another `--fqdn` into the same output directory adds or replaces that node's YAML without deleting existing node data."""
     else:
         layout = """- `manifests/site.pp` declares a `node` block and includes the generated classes in manifest order.
 - `modules/<role>/manifests/init.pp` contains resources for each generated Enroll role/snapshot or common package group.
-- `modules/<role>/files/` contains harvested file artifacts for that role or group.
+- `modules/<role>/files/` contains harvested raw file artifacts for that role or group.
+- `modules/<role>/templates/` contains ERB templates when JinjaTurtle can convert a harvested config file.
 - Generated module names avoid Puppet reserved words such as `default`."""
         apply = """Run from this generated output directory so Puppet can find `./modules`, or pass an absolute module path:
 
@@ -1413,7 +1640,7 @@ sudo puppet apply --modulepath ./modules manifests/site.pp --noop --test
 If you depend on other pre-installed Puppet modules, you may need to pass in other modulepaths as well, e.g:
 
 ```bash
-sudo puppet apply --modulepath ./modules:/etc/puppet/code/modules manifests/site.pp --noop
+sudo puppet apply --modulepath ./modules:/etc/puppet/code/modules manifests/site.pp --noop --test
 ```"""
     return f"""# Enroll Puppet manifest
 
@@ -1449,7 +1676,7 @@ This Puppet target reuses the existing harvest state without changing harvesting
 
 ## Current limitations
 
-- JinjaTurtle templating is currently Ansible/Salt-oriented and is not applied to Puppet output - there are no erb templates, just raw files.
+- JinjaTurtle/ERB templating is best-effort. Files that JinjaTurtle cannot parse are copied as raw module files.
 - Review generated resources before applying them broadly across unlike hosts.
 
 ## Notes
@@ -1468,11 +1695,13 @@ class PuppetManifestRenderer:
         *,
         fqdn: Optional[str] = None,
         no_common_roles: bool = False,
+        jinjaturtle: str = "auto",
     ) -> None:
         self.bundle_dir = bundle_dir
         self.out_dir = out_dir
         self.fqdn = fqdn
         self.no_common_roles = no_common_roles
+        self.jinjaturtle = jinjaturtle
 
     def render(self) -> None:
         """Render Puppet modules/site.pp from a harvest bundle."""
@@ -1492,12 +1721,16 @@ class PuppetManifestRenderer:
         manifests_dir.mkdir(parents=True, exist_ok=True)
         modules_dir.mkdir(parents=True, exist_ok=True)
 
+        jt_exe, jt_enabled = resolve_jinjaturtle_mode(self.jinjaturtle)
+
         puppet_roles = _collect_puppet_roles(
             state,
             bundle_dir,
             modules_dir,
             fqdn=fqdn,
             no_common_roles=no_common_roles,
+            jt_exe=jt_exe,
+            jt_enabled=jt_enabled,
         )
         for prole in puppet_roles:
             module_dir = modules_dir / prole.module_name
@@ -1544,10 +1777,12 @@ def manifest_from_bundle_dir(
     *,
     fqdn: Optional[str] = None,
     no_common_roles: bool = False,
+    jinjaturtle: str = "auto",
 ) -> None:
     PuppetManifestRenderer(
         bundle_dir,
         out_dir,
         fqdn=fqdn,
         no_common_roles=no_common_roles,
+        jinjaturtle=jinjaturtle,
     ).render()

@@ -6,7 +6,7 @@ import re
 import shlex
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import yaml
 
@@ -150,6 +150,7 @@ class SaltRole(CMModule):
         jt_enabled: bool = False,
         overwrite_templates: bool = True,
         watch_services: Optional[List[str]] = None,
+        watch_service_states: Optional[List[str]] = None,
     ) -> None:
         for d in self.managed_dirs_from_snapshot(snap):
             path = str(d.get("path") or "").strip()
@@ -161,6 +162,12 @@ class SaltRole(CMModule):
                 makedirs=True,
                 reason=d.get("reason") or "managed_dir",
             )
+
+        watch_state_ids = _service_watch_state_ids(
+            self.module_name,
+            watch_services=watch_services,
+            watch_service_states=watch_service_states,
+        )
 
         for mf in self.managed_files_from_snapshot(snap):
             path = str(mf.get("path") or "").strip()
@@ -190,10 +197,9 @@ class SaltRole(CMModule):
                     "makedirs": True,
                     "reason": mf.get("reason") or "managed_file",
                 }
-                if watch_services and not path.startswith("/etc/systemd/system/"):
+                if watch_state_ids and not path.startswith("/etc/systemd/system/"):
                     attrs["watch_in"] = [
-                        {"service": _state_id("service", unit, role=self.module_name)}
-                        for unit in watch_services
+                        {"service": state_id} for state_id in watch_state_ids
                     ]
                 self.add_managed_file(path, **attrs)
                 continue
@@ -218,10 +224,9 @@ class SaltRole(CMModule):
                 "makedirs": True,
                 "reason": mf.get("reason") or "managed_file",
             }
-            if watch_services and not path.startswith("/etc/systemd/system/"):
+            if watch_state_ids and not path.startswith("/etc/systemd/system/"):
                 attrs["watch_in"] = [
-                    {"service": _state_id("service", unit, role=self.module_name)}
-                    for unit in watch_services
+                    {"service": state_id} for state_id in watch_state_ids
                 ]
             self.add_managed_file(path, **attrs)
 
@@ -269,6 +274,105 @@ def _state_id(prefix: str, value: Any, *, role: str = "") -> str:
         parts.append(role)
     parts.extend([label[:40], digest])
     return "_".join(parts)
+
+
+def _plain_salt_data(value: Any) -> Any:
+    """Return data made from plain JSON/YAML-safe containers.
+
+    Salt's Jinja ``yaml_encode`` filter cannot represent Salt/PyYAML
+    ``OrderedDict`` values.  Normalise generated template contexts before we
+    write static SLS or pillar data, and before passing context to file.managed.
+    """
+
+    if isinstance(value, Mapping):
+        return {str(key): _plain_salt_data(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_plain_salt_data(item) for item in value]
+    if isinstance(value, tuple):
+        return [_plain_salt_data(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_plain_salt_data(item) for item in value)
+    return value
+
+
+_TO_JSON_FILTER_RE = re.compile(
+    r"{{\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*"
+    r"\|\s*to_json\s*\([^)]*\)\s*}}"
+)
+
+
+def _saltify_jinjaturtle_template(
+    template_text: str, context: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any]]:
+    """Translate JinjaTurtle's Ansible-oriented Jinja into Salt-safe Jinja.
+
+    JinjaTurtle emits Ansible's ``to_json`` filter for JSON/TOML values. Salt's
+    Jinja environment does not provide that filter.  For ordinary generated
+    context variables, pre-render a JSON string and substitute a plain variable
+    reference.  For loop-local expressions such as ``item`` or ``item.name`` we
+    fall back to Jinja's built-in ``tojson`` filter.
+    """
+
+    salt_context = _plain_salt_data(context)
+
+    def replace(match: re.Match[str]) -> str:
+        expr = match.group(1)
+        if "." not in expr and expr in salt_context:
+            json_var = f"{expr}__enroll_json"
+            salt_context[json_var] = json.dumps(salt_context[expr], ensure_ascii=False)
+            return "{{ " + json_var + " }}"
+        return "{{ " + expr + " | tojson }}"
+
+    return _TO_JSON_FILTER_RE.sub(replace, template_text), salt_context
+
+
+def _service_watch_state_ids(
+    role_name: str,
+    *,
+    watch_services: Optional[Iterable[str]] = None,
+    watch_service_states: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """Return de-duplicated Salt service state ids for watch_in requisites."""
+
+    out: List[str] = []
+    seen = set()
+    for state_id in watch_service_states or []:
+        value = str(state_id or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    for unit in watch_services or []:
+        unit_s = str(unit or "").strip()
+        if not unit_s:
+            continue
+        value = _state_id("service", unit_s, role=role_name)
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _active_service_state_ids_by_unit(
+    entries: Iterable[Dict[str, Any]],
+) -> Dict[str, str]:
+    """Return generated Salt service state ids keyed by active systemd unit."""
+
+    by_unit: Dict[str, str] = {}
+    for entry in entries:
+        if str(entry.get("kind") or "package") != "service":
+            continue
+        snap = entry.get("snapshot") or {}
+        if not isinstance(snap, dict):
+            continue
+        unit = str(snap.get("unit") or "").strip()
+        if not unit or str(snap.get("active_state") or "") != "active":
+            continue
+        source_label = str(snap.get("role_name") or snap.get("unit") or "service")
+        role_name = _salt_name(
+            str(entry.get("role_label") or source_label), fallback="service"
+        )
+        by_unit.setdefault(unit, _state_id("service", unit, role=role_name))
+    return by_unit
 
 
 def _yaml_quote(value: Any) -> str:
@@ -547,7 +651,24 @@ def _jinjify_managed_file(
     )
     if converted is None:
         return None
-    return converted.template_rel, converted.context
+
+    template_text, context = _saltify_jinjaturtle_template(
+        converted.template_text, converted.context
+    )
+    template_path = role_dir / "templates" / converted.template_rel
+    if template_text != converted.template_text:
+        existing = (
+            template_path.read_text(encoding="utf-8") if template_path.exists() else ""
+        )
+        if (
+            overwrite_templates
+            or not template_path.exists()
+            or _TO_JSON_FILTER_RE.search(existing)
+        ):
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(template_text, encoding="utf-8")
+
+    return converted.template_rel, context
 
 
 def _node_file_prefix(fqdn: str) -> str:
@@ -639,6 +760,9 @@ def _collect_salt_roles(
     service_units_by_package = CMModule.active_service_units_by_package(
         package_service_entries
     )
+    service_state_ids_by_unit = _active_service_state_ids_by_unit(
+        package_service_entries
+    )
 
     for entry in package_service_entries:
         snap = entry.get("snapshot") or {}
@@ -654,6 +778,7 @@ def _collect_salt_roles(
         )
         srole = ensure_role(role_name)
         watch_services: List[str] = []
+        watch_service_states: List[str] = []
         if kind == "service":
             srole.add_service_snapshot(snap)
             unit = str(snap.get("unit") or "").strip()
@@ -664,6 +789,13 @@ def _collect_salt_roles(
             watch_services = CMModule.active_service_units_for_package_snapshot(
                 snap, service_units_by_package
             )
+            watch_service_states = [
+                service_state_ids_by_unit[unit]
+                for unit in watch_services
+                if unit in service_state_ids_by_unit
+            ]
+            if watch_service_states:
+                watch_services = []
         srole.add_managed_content(
             snap,
             bundle_dir=bundle_dir,
@@ -674,6 +806,7 @@ def _collect_salt_roles(
             jt_enabled=jt_enabled,
             overwrite_templates=not bool(fqdn),
             watch_services=watch_services,
+            watch_service_states=watch_service_states,
         )
 
     container_images = roles.get("container_images") or {}
@@ -732,7 +865,7 @@ def _append_yaml_value(lines: List[str], key: str, value: Any, *, indent: int) -
     prefix = " " * indent
     if isinstance(value, dict):
         dumped = yaml.safe_dump(
-            value, sort_keys=True, default_flow_style=False
+            _plain_salt_data(value), sort_keys=True, default_flow_style=False
         ).rstrip()
         if not dumped:
             lines.append(f"{prefix}- {key}: {{}}")
@@ -1090,7 +1223,11 @@ def _role_pillar_values(srole: SaltRole) -> Dict[str, Any]:
                 **(
                     {"template": attrs.get("template")} if attrs.get("template") else {}
                 ),
-                **({"context": attrs.get("context")} if attrs.get("context") else {}),
+                **(
+                    {"context": _plain_salt_data(attrs.get("context"))}
+                    if attrs.get("context")
+                    else {}
+                ),
                 **(
                     {"watch_in": attrs.get("watch_in")} if attrs.get("watch_in") else {}
                 ),
@@ -1211,7 +1348,7 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "    - template: {{ attrs.get('template')|yaml_dquote }}",
         "{% endif %}",
         "{% if attrs.get('context') %}",
-        "    - context: {{ attrs.get('context')|yaml_encode }}",
+        "    - context: {{ attrs.get('context')|tojson }}",
         "{% endif %}",
         "{% if attrs.get('watch_in') %}",
         "    - watch_in:",

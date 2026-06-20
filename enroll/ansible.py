@@ -816,7 +816,7 @@ def _render_readme(
 - `roles/<role>/files/...` and `roles/<role>/templates/...` contain reusable role artifacts where applicable."""
         apply = f"""```bash
 ansible-galaxy collection install -r requirements.yml
-ansible-playbook -i inventory/hosts.ini playbooks/{fqdn}.yml --check
+ansible-playbook -i inventory/hosts.ini playbooks/{fqdn}.yml --check --diff
 ```"""
     else:
         layout = """- `playbook.yml` applies the generated roles to the current inventory.

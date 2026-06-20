@@ -210,6 +210,7 @@ def manifest(
                     out,
                     fqdn=fqdn,
                     no_common_roles=no_common_roles,
+                    jinjaturtle=jinjaturtle,
                 )
             elif target == "salt":
                 manifest_salt_from_bundle_dir(
@@ -246,6 +247,7 @@ def manifest(
                 str(tmp_out),
                 fqdn=fqdn,
                 no_common_roles=no_common_roles,
+                jinjaturtle=jinjaturtle,
             )
         elif target == "salt":
             manifest_salt_from_bundle_dir(
