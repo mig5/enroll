@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "enroll"
 version = "0.7.0b4"
-description = "Enroll a server's running state retrospectively into Ansible"
+description = "Enroll a server's running state retrospectively into Ansible, Puppet or Salt"
 authors = ["Miguel Jacq <mig@mig5.net>"]
 license = "GPL-3.0-or-later"
 readme = "README.md"
