@@ -6,7 +6,7 @@ import re
 import shlex
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import yaml
 
@@ -274,6 +274,56 @@ def _state_id(prefix: str, value: Any, *, role: str = "") -> str:
         parts.append(role)
     parts.extend([label[:40], digest])
     return "_".join(parts)
+
+
+def _plain_salt_data(value: Any) -> Any:
+    """Return data made from plain JSON/YAML-safe containers.
+
+    Salt's Jinja ``yaml_encode`` filter cannot represent Salt/PyYAML
+    ``OrderedDict`` values.  Normalise generated template contexts before we
+    write static SLS or pillar data, and before passing context to file.managed.
+    """
+
+    if isinstance(value, Mapping):
+        return {str(key): _plain_salt_data(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_plain_salt_data(item) for item in value]
+    if isinstance(value, tuple):
+        return [_plain_salt_data(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_plain_salt_data(item) for item in value)
+    return value
+
+
+_TO_JSON_FILTER_RE = re.compile(
+    r"{{\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*"
+    r"\|\s*to_json\s*\([^)]*\)\s*}}"
+)
+
+
+def _saltify_jinjaturtle_template(
+    template_text: str, context: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any]]:
+    """Translate JinjaTurtle's Ansible-oriented Jinja into Salt-safe Jinja.
+
+    JinjaTurtle emits Ansible's ``to_json`` filter for JSON/TOML values. Salt's
+    Jinja environment does not provide that filter.  For ordinary generated
+    context variables, pre-render a JSON string and substitute a plain variable
+    reference.  For loop-local expressions such as ``item`` or ``item.name`` we
+    fall back to Jinja's built-in ``tojson`` filter.
+    """
+
+    salt_context = _plain_salt_data(context)
+
+    def replace(match: re.Match[str]) -> str:
+        expr = match.group(1)
+        if "." not in expr and expr in salt_context:
+            json_var = f"{expr}__enroll_json"
+            salt_context[json_var] = json.dumps(salt_context[expr], ensure_ascii=False)
+            return "{{ " + json_var + " }}"
+        return "{{ " + expr + " | tojson }}"
+
+    return _TO_JSON_FILTER_RE.sub(replace, template_text), salt_context
 
 
 def _service_watch_state_ids(
@@ -601,7 +651,24 @@ def _jinjify_managed_file(
     )
     if converted is None:
         return None
-    return converted.template_rel, converted.context
+
+    template_text, context = _saltify_jinjaturtle_template(
+        converted.template_text, converted.context
+    )
+    template_path = role_dir / "templates" / converted.template_rel
+    if template_text != converted.template_text:
+        existing = (
+            template_path.read_text(encoding="utf-8") if template_path.exists() else ""
+        )
+        if (
+            overwrite_templates
+            or not template_path.exists()
+            or _TO_JSON_FILTER_RE.search(existing)
+        ):
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(template_text, encoding="utf-8")
+
+    return converted.template_rel, context
 
 
 def _node_file_prefix(fqdn: str) -> str:
@@ -798,7 +865,7 @@ def _append_yaml_value(lines: List[str], key: str, value: Any, *, indent: int) -
     prefix = " " * indent
     if isinstance(value, dict):
         dumped = yaml.safe_dump(
-            value, sort_keys=True, default_flow_style=False
+            _plain_salt_data(value), sort_keys=True, default_flow_style=False
         ).rstrip()
         if not dumped:
             lines.append(f"{prefix}- {key}: {{}}")
@@ -1156,7 +1223,11 @@ def _role_pillar_values(srole: SaltRole) -> Dict[str, Any]:
                 **(
                     {"template": attrs.get("template")} if attrs.get("template") else {}
                 ),
-                **({"context": attrs.get("context")} if attrs.get("context") else {}),
+                **(
+                    {"context": _plain_salt_data(attrs.get("context"))}
+                    if attrs.get("context")
+                    else {}
+                ),
                 **(
                     {"watch_in": attrs.get("watch_in")} if attrs.get("watch_in") else {}
                 ),
@@ -1277,7 +1348,7 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "    - template: {{ attrs.get('template')|yaml_dquote }}",
         "{% endif %}",
         "{% if attrs.get('context') %}",
-        "    - context: {{ attrs.get('context')|yaml_encode }}",
+        "    - context: {{ attrs.get('context')|tojson }}",
         "{% endif %}",
         "{% if attrs.get('watch_in') %}",
         "    - watch_in:",

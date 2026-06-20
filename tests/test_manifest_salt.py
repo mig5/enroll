@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from pathlib import Path
 
 import yaml
@@ -8,6 +9,7 @@ import yaml
 from enroll import manifest
 from enroll.salt import (
     SaltRole,
+    _render_pillar_role,
     _render_static_role,
     _role_pillar_values,
     _salt_name,
@@ -614,6 +616,71 @@ def test_manifest_salt_uses_jinjaturtle_templates(monkeypatch, tmp_path: Path):
     ]
     assert file_data["template"] == "jinja"
     assert file_data["context"] == {"foo_setting": True}
+
+
+def test_manifest_salt_rewrites_jinjaturtle_json_filters(monkeypatch, tmp_path: Path):
+    import enroll.jinjaturtle as jinjaturtle_mod
+    from enroll.jinjaturtle import JinjifyResult
+
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    state = _sample_state()
+    _write_sample_artifacts(bundle)
+    _write_state(bundle, state)
+
+    monkeypatch.setattr(
+        jinjaturtle_mod, "find_jinjaturtle_cmd", lambda: "/usr/bin/jinjaturtle"
+    )
+    monkeypatch.setattr(jinjaturtle_mod, "can_jinjify_path", lambda _path: True)
+
+    def fake_run_jinjaturtle(
+        jt_exe: str, src_path: str, *, role_name: str, force_format=None
+    ):
+        return JinjifyResult(
+            template_text='{ "setting": {{ foo_setting | to_json(ensure_ascii=False) }} }\n',
+            vars_text='foo_setting: "alpha"\n',
+        )
+
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    manifest.manifest(str(bundle), str(out), target="salt", jinjaturtle="on")
+
+    template_text = (
+        out / "states" / "roles" / "net" / "templates" / "etc" / "foo.conf.j2"
+    ).read_text(encoding="utf-8")
+    assert "to_json" not in template_text
+    assert "foo_setting__enroll_json" in template_text
+    sls = (out / "states" / "roles" / "net" / "init.sls").read_text(encoding="utf-8")
+    assert "foo_setting__enroll_json:" in sls
+    assert '"alpha"' in sls
+
+
+def test_manifest_salt_pillar_role_uses_json_for_template_context() -> None:
+    role = SaltRole("foo")
+    role.add_managed_file(
+        "/etc/foo.json",
+        source="salt://roles/foo/templates/etc/foo.json.j2",
+        user="root",
+        group="root",
+        mode="0644",
+        makedirs=True,
+        template="jinja",
+        context=OrderedDict(
+            [("foo_name", "alpha"), ("foo_nested", OrderedDict([("x", 1)]))]
+        ),
+    )
+
+    pillar = _role_pillar_values(role)
+    assert type(pillar["files"]["/etc/foo.json"]["context"]) is dict
+    assert type(pillar["files"]["/etc/foo.json"]["context"]["foo_nested"]) is dict
+
+    rendered = _render_static_role(role)
+    assert "foo_nested:" in rendered
+    context_block = (
+        _render_pillar_role(role).split("context:", 1)[1].split("{% endif %}", 1)[0]
+    )
+    assert "|yaml_encode" not in context_block
+    assert "|tojson" in _render_pillar_role(role)
 
 
 def test_manifest_salt_renders_firewall_runtime_states(tmp_path: Path):
