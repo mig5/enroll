@@ -49,6 +49,11 @@ class SaltRole(CMModule):
         self.add_service_snapshot_state(
             snap, state_key="state", running="running", stopped="dead"
         )
+        unit = self.service_unit_from_snapshot(snap)
+        if unit in self.services:
+            self.services[unit]["state_id"] = _state_id(
+                "service", unit, role=self.module_name
+            )
 
     def add_users_snapshot(self, snap: Dict[str, Any]) -> None:
         records = self.user_records_from_snapshot(snap)
@@ -144,6 +149,7 @@ class SaltRole(CMModule):
         jt_exe: Optional[str] = None,
         jt_enabled: bool = False,
         overwrite_templates: bool = True,
+        watch_services: Optional[List[str]] = None,
     ) -> None:
         for d in self.managed_dirs_from_snapshot(snap):
             path = str(d.get("path") or "").strip()
@@ -174,17 +180,22 @@ class SaltRole(CMModule):
             )
             if template is not None:
                 tmpl_rel, context = template
-                self.add_managed_file(
-                    path,
-                    user=mf.get("owner") or "root",
-                    group=mf.get("group") or "root",
-                    mode=mf.get("mode") or "0644",
-                    source=_template_source_uri(self.module_name, tmpl_rel),
-                    template="jinja",
-                    context=context,
-                    makedirs=True,
-                    reason=mf.get("reason") or "managed_file",
-                )
+                attrs: Dict[str, Any] = {
+                    "user": mf.get("owner") or "root",
+                    "group": mf.get("group") or "root",
+                    "mode": mf.get("mode") or "0644",
+                    "source": _template_source_uri(self.module_name, tmpl_rel),
+                    "template": "jinja",
+                    "context": context,
+                    "makedirs": True,
+                    "reason": mf.get("reason") or "managed_file",
+                }
+                if watch_services and not path.startswith("/etc/systemd/system/"):
+                    attrs["watch_in"] = [
+                        {"service": _state_id("service", unit, role=self.module_name)}
+                        for unit in watch_services
+                    ]
+                self.add_managed_file(path, **attrs)
                 continue
 
             role_rel = _copy_artifact(
@@ -199,15 +210,20 @@ class SaltRole(CMModule):
                     f"Skipped {path}: harvested artifact {artifact_role}/{src_rel} was not present."
                 )
                 continue
-            self.add_managed_file(
-                path,
-                user=mf.get("owner") or "root",
-                group=mf.get("group") or "root",
-                mode=mf.get("mode") or "0644",
-                source=_source_uri(self.module_name, role_rel),
-                makedirs=True,
-                reason=mf.get("reason") or "managed_file",
-            )
+            attrs = {
+                "user": mf.get("owner") or "root",
+                "group": mf.get("group") or "root",
+                "mode": mf.get("mode") or "0644",
+                "source": _source_uri(self.module_name, role_rel),
+                "makedirs": True,
+                "reason": mf.get("reason") or "managed_file",
+            }
+            if watch_services and not path.startswith("/etc/systemd/system/"):
+                attrs["watch_in"] = [
+                    {"service": _state_id("service", unit, role=self.module_name)}
+                    for unit in watch_services
+                ]
+            self.add_managed_file(path, **attrs)
 
         for ml in self.managed_links_from_snapshot(snap):
             path = str(ml.get("path") or "").strip()
@@ -615,9 +631,16 @@ def _collect_salt_roles(
             overwrite_templates=not bool(fqdn),
         )
 
-    for entry in CMModule.package_service_entries(
-        roles, inventory_packages, use_common_roles=use_common_roles
-    ):
+    package_service_entries = list(
+        CMModule.package_service_entries(
+            roles, inventory_packages, use_common_roles=use_common_roles
+        )
+    )
+    service_units_by_package = CMModule.active_service_units_by_package(
+        package_service_entries
+    )
+
+    for entry in package_service_entries:
         snap = entry.get("snapshot") or {}
         kind = str(entry.get("kind") or "package")
         fallback = "service" if kind == "service" else "package"
@@ -630,10 +653,17 @@ def _collect_salt_roles(
             fallback="package_group" if use_common_roles else fallback,
         )
         srole = ensure_role(role_name)
+        watch_services: List[str] = []
         if kind == "service":
             srole.add_service_snapshot(snap)
+            unit = str(snap.get("unit") or "").strip()
+            if unit and str(snap.get("active_state") or "") == "active":
+                watch_services = [unit]
         else:
             srole.add_package_snapshot(snap)
+            watch_services = CMModule.active_service_units_for_package_snapshot(
+                snap, service_units_by_package
+            )
         srole.add_managed_content(
             snap,
             bundle_dir=bundle_dir,
@@ -643,6 +673,7 @@ def _collect_salt_roles(
             jt_exe=jt_exe,
             jt_enabled=jt_enabled,
             overwrite_templates=not bool(fqdn),
+            watch_services=watch_services,
         )
 
     container_images = roles.get("container_images") or {}
@@ -798,6 +829,12 @@ def _render_static_role(srole: SaltRole) -> str:
             lines.append(f"    - template: {_yaml_quote(attrs.get('template'))}")
         if attrs.get("context"):
             _append_yaml_value(lines, "context", attrs.get("context"), indent=4)
+        if attrs.get("watch_in"):
+            lines.append("    - watch_in:")
+            for req in attrs.get("watch_in") or []:
+                if isinstance(req, dict):
+                    for req_kind, req_name in req.items():
+                        lines.append(f"      - {req_kind}: {_yaml_quote(req_name)}")
         lines.append("")
 
     for path, attrs in sorted(srole.links.items()):
@@ -817,7 +854,7 @@ def _render_static_role(srole: SaltRole) -> str:
         state_fun = "running" if svc.get("state") == "running" else "dead"
         lines.extend(
             [
-                f"{_state_id('service', name, role=srole.module_name)}:",
+                f"{svc.get('state_id') or _state_id('service', name, role=srole.module_name)}:",
                 f"  service.{state_fun}:",
                 f"    - name: {_yaml_quote(svc.get('name') or name)}",
                 f"    - enable: {_yaml_bool(svc.get('enable', False))}",
@@ -1054,6 +1091,9 @@ def _role_pillar_values(srole: SaltRole) -> Dict[str, Any]:
                     {"template": attrs.get("template")} if attrs.get("template") else {}
                 ),
                 **({"context": attrs.get("context")} if attrs.get("context") else {}),
+                **(
+                    {"watch_in": attrs.get("watch_in")} if attrs.get("watch_in") else {}
+                ),
             }
             for path, attrs in sorted(srole.files.items())
         }
@@ -1072,6 +1112,8 @@ def _role_pillar_values(srole: SaltRole) -> Dict[str, Any]:
                 "name": svc.get("name") or name,
                 "state": "running" if svc.get("state") == "running" else "dead",
                 "enable": bool(svc.get("enable", False)),
+                "state_id": svc.get("state_id")
+                or _state_id("service", name, role=srole.module_name),
             }
             for name, svc in sorted(srole.services.items())
         }
@@ -1171,6 +1213,14 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "{% if attrs.get('context') %}",
         "    - context: {{ attrs.get('context')|yaml_encode }}",
         "{% endif %}",
+        "{% if attrs.get('watch_in') %}",
+        "    - watch_in:",
+        "{% for req in attrs.get('watch_in') %}",
+        "{% for req_kind, req_name in req.items() %}",
+        "      - {{ req_kind }}: {{ req_name|yaml_dquote }}",
+        "{% endfor %}",
+        "{% endfor %}",
+        "{% endif %}",
         "{% endfor %}",
         "",
         "{% for path, attrs in role.get('links', {}).items() %}",
@@ -1182,7 +1232,9 @@ def _render_pillar_role(srole: SaltRole) -> str:
         "{% endfor %}",
         "",
         "{% for service_id, svc in role.get('services', {}).items() %}",
-        f"enroll_service_{role_key}_{{{{ loop.index }}}}:",
+        "{{ svc.get('state_id') or ('enroll_service_"
+        + role_key
+        + "_' ~ loop.index|string) }}:",
         "  service.{{ 'running' if svc.get('state') == 'running' else 'dead' }}:",
         "    - name: {{ svc.get('name', service_id)|yaml_dquote }}",
         "    - enable: {{ svc.get('enable', False)|yaml_encode }}",

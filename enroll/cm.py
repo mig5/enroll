@@ -411,6 +411,78 @@ class CMModule:
             )
             yield {"kind": "package", "snapshot": pkg, "role_label": role_label}
 
+    @staticmethod
+    def active_service_units_by_package(
+        entries: Iterable[Mapping[str, Any]],
+    ) -> Dict[str, List[Dict[str, str]]]:
+        """Return active service units keyed by the packages that produced them.
+
+        Renderers use this when a package-owned managed file should refresh the
+        service that package provides. The helper is deliberately conservative:
+        stopped/inactive services are not included, and ambiguous package->many
+        service mappings are left to the renderer/caller to resolve.
+        """
+
+        by_package: Dict[str, List[Dict[str, str]]] = {}
+        for entry in entries:
+            if str(entry.get("kind") or "package") != "service":
+                continue
+            snap = entry.get("snapshot") or {}
+            if not isinstance(snap, Mapping):
+                continue
+            unit = str(snap.get("unit") or "").strip()
+            if not unit or str(snap.get("active_state") or "") != "active":
+                continue
+            role_name = str(snap.get("role_name") or unit).strip()
+            for pkg in snap.get("packages", []) or []:
+                package = str(pkg or "").strip()
+                if package:
+                    by_package.setdefault(package, []).append(
+                        {"unit": unit, "role_name": role_name}
+                    )
+        for package, services in list(by_package.items()):
+            seen: Set[str] = set()
+            unique: List[Dict[str, str]] = []
+            for svc in services:
+                unit = svc.get("unit") or ""
+                if unit and unit not in seen:
+                    seen.add(unit)
+                    unique.append(svc)
+            by_package[package] = sorted(unique, key=lambda svc: svc.get("unit", ""))
+        return by_package
+
+    @staticmethod
+    def active_service_units_for_package_snapshot(
+        package_snapshot: Mapping[str, Any],
+        service_units_by_package: Mapping[str, List[Dict[str, str]]],
+    ) -> List[str]:
+        """Return active service units that a package snapshot can safely refresh.
+
+        If one active service is associated with the package, return it. If
+        several are associated, only return a role-name match; otherwise avoid
+        guessing and return no services. This prevents package-level config from
+        recreating the old broad-restart problem.
+        """
+
+        package = str(package_snapshot.get("package") or "").strip()
+        if not package:
+            return []
+        services = list(service_units_by_package.get(package) or [])
+        if len(services) == 1:
+            unit = services[0].get("unit") or ""
+            return [unit] if unit else []
+
+        role_name = str(package_snapshot.get("role_name") or "").strip()
+        if role_name:
+            matched = [
+                svc.get("unit") or ""
+                for svc in services
+                if svc.get("role_name") == role_name and svc.get("unit")
+            ]
+            if matched:
+                return sorted(set(matched))
+        return []
+
     def add_user_flatpaks_snapshot(self, snap: Dict[str, Any]) -> None:
         home_by_user = {
             str(u.get("name")): str(u.get("home") or "")

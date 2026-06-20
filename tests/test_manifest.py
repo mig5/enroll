@@ -284,6 +284,12 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     assert "foo_systemd_enabled: true" in defaults
     assert "foo_systemd_state: stopped" in defaults
 
+    handlers = (out / "roles" / "foo" / "handlers" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "- name: Restart service" in handlers
+    assert "state: restarted" in handlers
+
     # Playbook should include users, etc_custom, packages, and services
     pb = (out / "playbook.yml").read_text(encoding="utf-8")
     assert "role: users" in pb
@@ -626,6 +632,154 @@ def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
     tasks = (out / "roles" / "net" / "tasks" / "main.yml").read_text(encoding="utf-8")
     assert "Ensure grouped unit enablement matches harvest" in tasks
     assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
+    assert "Restart managed services" not in tasks
+
+    defaults_text = (out / "roles" / "net" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "notify:" in defaults_text
+    assert "- Restart managed service NetworkManager.service" in defaults_text
+    assert (
+        "Restart managed service NetworkManager-dispatcher.service" not in defaults_text
+    )
+
+    handlers = (out / "roles" / "net" / "handlers" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "Run systemd daemon-reload" in handlers
+    assert "- name: Restart managed service NetworkManager.service" in handlers
+    assert "name: NetworkManager.service" in handlers
+    assert "state: restarted" in handlers
+    assert "Restart managed services" not in handlers
+    assert "Restart managed service NetworkManager-dispatcher.service" not in handlers
+
+
+def test_manifest_common_package_file_notifies_matching_active_service(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    (bundle / "artifacts" / "docker" / "etc" / "docker").mkdir(
+        parents=True, exist_ok=True
+    )
+    (bundle / "artifacts" / "docker" / "etc" / "docker" / "daemon.json").write_text(
+        '{"log-driver":"json-file"}\n', encoding="utf-8"
+    )
+
+    state = {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {
+            "packages": {
+                "docker.io": {
+                    "version": "1.0",
+                    "arches": ["amd64"],
+                    "installations": [
+                        {"version": "1.0", "arch": "amd64", "section": "admin"}
+                    ],
+                    "section": "admin",
+                    "observed_via": [
+                        {"kind": "systemd_unit", "ref": "docker.service"},
+                        {"kind": "package_role", "ref": "docker"},
+                    ],
+                    "roles": ["docker"],
+                }
+            }
+        },
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [
+                {
+                    "unit": "docker.service",
+                    "role_name": "docker",
+                    "packages": ["docker.io"],
+                    "active_state": "active",
+                    "sub_state": "running",
+                    "unit_file_state": "enabled",
+                    "condition_result": "yes",
+                    "managed_files": [],
+                    "managed_dirs": [],
+                    "managed_links": [],
+                    "excluded": [],
+                    "notes": [],
+                }
+            ],
+            "packages": [
+                {
+                    "package": "docker.io",
+                    "role_name": "docker",
+                    "section": "admin",
+                    "has_config": True,
+                    "managed_files": [
+                        {
+                            "path": "/etc/docker/daemon.json",
+                            "src_rel": "etc/docker/daemon.json",
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                            "reason": "modified_conffile",
+                        }
+                    ],
+                    "managed_dirs": [],
+                    "managed_links": [],
+                    "excluded": [],
+                    "notes": [],
+                }
+            ],
+            "apt_config": {
+                "role_name": "apt_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "dnf_config": {
+                "role_name": "dnf_config",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "etc_custom": {
+                "role_name": "etc_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "usr_local_custom": {
+                "role_name": "usr_local_custom",
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "extra_paths": {
+                "role_name": "extra_paths",
+                "include_patterns": [],
+                "exclude_patterns": [],
+                "managed_files": [],
+                "excluded": [],
+                "notes": [],
+            },
+        },
+    }
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out))
+
+    defaults = (out / "roles" / "admin" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "dest: /etc/docker/daemon.json" in defaults
+    assert "- Restart managed service docker.service" in defaults
+
+    handlers = (out / "roles" / "admin" / "handlers" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "- name: Restart managed service docker.service" in handlers
+    assert "name: docker.service" in handlers
+    assert "Restart managed services" not in handlers
 
 
 def test_manifest_fqdn_implies_no_common_roles(tmp_path: Path):

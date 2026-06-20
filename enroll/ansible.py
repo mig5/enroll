@@ -1147,16 +1147,24 @@ def _single_service_restart_handler_body(var_prefix: str) -> str:
 """
 
 
-def _grouped_service_restart_handler_body(var_prefix: str) -> str:
-    return f"""- name: Restart managed services
+def _service_restart_handler_name(unit: str) -> str:
+    return f"Restart managed service {unit}"
+
+
+def _grouped_service_restart_handlers_body(role: AnsibleRole) -> str:
+    handlers: List[str] = []
+    for unit, svc in sorted(role.services.items()):
+        name = str(svc.get("name") or unit).strip()
+        if not name or str(svc.get("state") or "stopped") != "started":
+            continue
+        handlers.append(
+            f"""- name: {_service_restart_handler_name(name)}
   ansible.builtin.service:
-    name: "{{{{ item.name }}}}"
+    name: {name}
     state: restarted
-  loop: "{{{{ {var_prefix}_systemd_units | default([]) }}}}"
-  when:
-    - item.manage | default(false)
-    - (item.state | default('stopped')) == 'started'
 """
+        )
+    return "\n".join(_task_body(handler) for handler in handlers if _task_body(handler))
 
 
 def _render_role_handlers(
@@ -1165,6 +1173,7 @@ def _render_role_handlers(
     systemd_reload: bool = False,
     single_service: bool = False,
     grouped_services: bool = False,
+    restart_grouped_services: bool = False,
     sysctl: bool = False,
     firewall_runtime: bool = False,
     extra_handlers: str = "",
@@ -1174,8 +1183,8 @@ def _render_role_handlers(
         parts.append(_SYSTEMD_DAEMON_RELOAD_HANDLER)
     if single_service:
         parts.append(_single_service_restart_handler_body(role.var_prefix))
-    if grouped_services:
-        parts.append(_grouped_service_restart_handler_body(role.var_prefix))
+    if grouped_services and restart_grouped_services:
+        parts.append(_grouped_service_restart_handlers_body(role))
     if sysctl:
         parts.append(_render_sysctl_handlers(role.var_prefix))
     if firewall_runtime:
@@ -1242,7 +1251,7 @@ def _build_managed_files_var(
     managed_files: List[Dict[str, Any]],
     templated_src_rels: Set[str],
     *,
-    notify_other: Optional[str] = None,
+    notify_other: Optional[Any] = None,
     notify_systemd: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Convert enroll managed_files into an Ansible-friendly list of dicts.
@@ -1261,19 +1270,23 @@ def _build_managed_files_var(
         if is_unit and notify_systemd:
             notify.append(notify_systemd)
         if (not is_unit) and notify_other:
-            notify.append(notify_other)
-        out.append(
-            {
-                "dest": dest,
-                "src_rel": src_rel,
-                "owner": mf.get("owner") or "root",
-                "group": mf.get("group") or "root",
-                "mode": mf.get("mode") or "0644",
-                "kind": kind,
-                "is_systemd_unit": bool(is_unit),
-                "notify": notify,
-            }
-        )
+            if isinstance(notify_other, (list, tuple, set)):
+                notify.extend(str(item) for item in notify_other if str(item))
+            else:
+                notify.append(str(notify_other))
+        item = {
+            "dest": dest,
+            "src_rel": src_rel,
+            "owner": mf.get("owner") or "root",
+            "group": mf.get("group") or "root",
+            "mode": mf.get("mode") or "0644",
+            "kind": kind,
+            "is_systemd_unit": bool(is_unit),
+        }
+        if notify:
+            item["notify"] = notify
+        out.append(item)
+
     return out
 
 
@@ -1751,6 +1764,7 @@ def _role_managed_content_vars(
     entries: List[Dict[str, Any]],
     *,
     notify_by_kind: Optional[Dict[str, Optional[str]]] = None,
+    notify_service_handlers: bool = False,
     overwrite_templates: bool,
 ) -> Tuple[
     List[Dict[str, Any]],
@@ -1766,6 +1780,7 @@ def _role_managed_content_vars(
     seen_files: Set[Tuple[Any, Any, Any]] = set()
     seen_dirs: Set[Tuple[Any, Any, Any, Any]] = set()
     seen_links: Set[Tuple[Any, Any]] = set()
+    service_units_by_package = CMModule.active_service_units_by_package(entries)
 
     for entry in entries:
         kind = str(entry.get("kind") or "package")
@@ -1789,10 +1804,25 @@ def _role_managed_content_vars(
             )
             _copy_role_artifacts(ctx, role, source_role, exclude_rels=templated)
 
+        notify_other = (notify_by_kind or {}).get(kind)
+        if notify_service_handlers and kind == "service":
+            unit = str(snap.get("unit") or "").strip()
+            if unit and str(snap.get("active_state") or "") == "active":
+                notify_other = _service_restart_handler_name(unit)
+            else:
+                notify_other = None
+        elif notify_service_handlers and kind == "package":
+            notify_other = [
+                _service_restart_handler_name(unit)
+                for unit in CMModule.active_service_units_for_package_snapshot(
+                    snap, service_units_by_package
+                )
+            ]
+
         for item in _build_managed_files_var(
             managed_files,
             templated,
-            notify_other=(notify_by_kind or {}).get(kind),
+            notify_other=notify_other,
             notify_systemd="Run systemd daemon-reload",
         ):
             key = (item.get("dest"), item.get("src_rel"), item.get("kind"))
@@ -1896,6 +1926,8 @@ def _write_resource_ansible_role(
     site_defaults: Optional[Dict[str, Any]] = None,
     single_service: bool = False,
     grouped_services: bool = False,
+    restart_grouped_services: bool = False,
+    notify_service_handlers: bool = False,
     systemd_reload: bool = False,
 ) -> str:
     files_var, dirs_var, links_var, jt_vars = _role_managed_content_vars(
@@ -1903,6 +1935,7 @@ def _write_resource_ansible_role(
         role.role_name,
         role.entries,
         notify_by_kind=notify_by_kind,
+        notify_service_handlers=notify_service_handlers,
         overwrite_templates=overwrite_templates,
     )
     vars_map = _resource_role_vars(
@@ -1930,6 +1963,7 @@ def _write_resource_ansible_role(
             systemd_reload=systemd_reload,
             single_service=single_service,
             grouped_services=grouped_services,
+            restart_grouped_services=restart_grouped_services,
         ),
     )
 
@@ -1998,10 +2032,12 @@ def _render_common_ansible_roles(
         _write_resource_ansible_role(
             ctx,
             role,
-            notify_by_kind={"service": "Restart managed services"},
+            notify_by_kind={"service": None},
             overwrite_templates=True,
             extra_vars={f"{role.var_prefix}_systemd_units": systemd_units},
             grouped_services=True,
+            restart_grouped_services=True,
+            notify_service_handlers=True,
         )
         _add_role(rendered_roles, role.role_name)
 

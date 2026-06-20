@@ -38,3 +38,70 @@ def test_cm_module_uses_shared_state_io(tmp_path):
     assert CMModule.state_path(tmp_path) == written
     assert CMModule.load_state(tmp_path) == state
     assert CMModule._load_state(tmp_path) == state
+
+
+def test_active_service_units_for_package_snapshot_is_conservative():
+    entries = [
+        {
+            "kind": "service",
+            "snapshot": {
+                "unit": "docker.service",
+                "role_name": "docker",
+                "packages": ["docker.io"],
+                "active_state": "active",
+            },
+        },
+        {
+            "kind": "service",
+            "snapshot": {
+                "unit": "docker-cleanup.service",
+                "role_name": "docker_cleanup",
+                "packages": ["docker.io"],
+                "active_state": "inactive",
+            },
+        },
+    ]
+
+    by_package = CMModule.active_service_units_by_package(entries)
+
+    assert by_package == {
+        "docker.io": [{"unit": "docker.service", "role_name": "docker"}]
+    }
+    assert CMModule.active_service_units_for_package_snapshot(
+        {"package": "docker.io", "role_name": "docker"}, by_package
+    ) == ["docker.service"]
+
+
+def test_active_service_units_for_package_snapshot_avoids_ambiguous_restarts():
+    entries = [
+        {
+            "kind": "service",
+            "snapshot": {
+                "unit": "alpha.service",
+                "role_name": "alpha",
+                "packages": ["shared"],
+                "active_state": "active",
+            },
+        },
+        {
+            "kind": "service",
+            "snapshot": {
+                "unit": "beta.service",
+                "role_name": "beta",
+                "packages": ["shared"],
+                "active_state": "active",
+            },
+        },
+    ]
+
+    by_package = CMModule.active_service_units_by_package(entries)
+
+    assert (
+        CMModule.active_service_units_for_package_snapshot(
+            {"package": "shared", "role_name": "shared"}, by_package
+        )
+        == []
+    )
+    assert CMModule.active_service_units_for_package_snapshot(
+        {"package": "shared", "role_name": "beta"}, by_package
+    ) == ["beta.service"]

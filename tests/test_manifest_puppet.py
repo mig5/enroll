@@ -184,6 +184,9 @@ def test_manifest_puppet_writes_control_repo_style_output(tmp_path: Path):
     assert node_data["foo::files"]["/etc/foo/foo.conf"]["source"] == (
         "puppet:///modules/foo/nodes/test.example/etc/foo.conf"
     )
+    assert node_data["foo::files"]["/etc/foo/foo.conf"]["notify"] == (
+        "Service['foo.service']"
+    )
     assert node_data["foo::services"]["foo.service"] == {
         "ensure": "running",
         "enable": True,
@@ -483,6 +486,7 @@ def test_manifest_puppet_uses_default_node_and_common_package_modules(tmp_path: 
     assert "package { 'foo':" in net_pp
     assert "file { '/etc/foo/foo.conf':" in net_pp
     assert "source => 'puppet:///modules/net/etc/foo.conf'" in net_pp
+    assert "notify => Service['foo.service']" in net_pp
     assert "service { 'foo.service':" in net_pp
     assert (out / "modules" / "net" / "files" / "etc" / "foo.conf").exists()
     assert not (out / "modules" / "curl").exists()

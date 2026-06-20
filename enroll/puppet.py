@@ -134,6 +134,7 @@ class PuppetRole(CMModule):
         artifact_role: str,
         module_files_dir: Path,
         file_prefix: Optional[str] = None,
+        notify_services: Optional[List[str]] = None,
     ) -> None:
         for d in self.managed_dirs_from_snapshot(snap):
             path = str(d.get("path") or "").strip()
@@ -162,14 +163,17 @@ class PuppetRole(CMModule):
                     f"Skipped {path}: harvested artifact {artifact_role}/{src_rel} was not present."
                 )
                 continue
-            self.add_managed_file(
-                path,
-                owner=mf.get("owner") or "root",
-                group=mf.get("group") or "root",
-                mode=mf.get("mode") or "0644",
-                source=_source_uri(self.module_name, module_rel),
-                reason=mf.get("reason") or "managed_file",
-            )
+            attrs: Dict[str, Any] = {
+                "owner": mf.get("owner") or "root",
+                "group": mf.get("group") or "root",
+                "mode": mf.get("mode") or "0644",
+                "source": _source_uri(self.module_name, module_rel),
+                "reason": mf.get("reason") or "managed_file",
+            }
+            if notify_services and not path.startswith("/etc/systemd/system/"):
+                refs = [f"Service[{_pp_quote(unit)}]" for unit in notify_services]
+                attrs["notify"] = refs[0] if len(refs) == 1 else f"[{', '.join(refs)}]"
+            self.add_managed_file(path, **attrs)
 
         for ml in self.managed_links_from_snapshot(snap):
             path = str(ml.get("path") or "").strip()
@@ -561,9 +565,16 @@ def _collect_puppet_roles(
             file_prefix=node_file_prefix,
         )
 
-    for entry in CMModule.package_service_entries(
-        roles, inventory_packages, use_common_roles=use_common_modules
-    ):
+    package_service_entries = list(
+        CMModule.package_service_entries(
+            roles, inventory_packages, use_common_roles=use_common_modules
+        )
+    )
+    service_units_by_package = CMModule.active_service_units_by_package(
+        package_service_entries
+    )
+
+    for entry in package_service_entries:
         snap = entry.get("snapshot") or {}
         kind = str(entry.get("kind") or "package")
         fallback = "service" if kind == "service" else "package"
@@ -576,16 +587,24 @@ def _collect_puppet_roles(
             fallback="package_group" if use_common_modules else fallback,
         )
         prole = ensure_role(role_name)
+        notify_services: List[str] = []
         if kind == "service":
             prole.add_service_snapshot(snap)
+            unit = str(snap.get("unit") or "").strip()
+            if unit and str(snap.get("active_state") or "") == "active":
+                notify_services = [unit]
         else:
             prole.add_package_snapshot(snap)
+            notify_services = CMModule.active_service_units_for_package_snapshot(
+                snap, service_units_by_package
+            )
         prole.add_managed_content(
             snap,
             bundle_dir=bundle_dir,
             artifact_role=str(snap.get("role_name") or original_role_name),
             module_files_dir=modules_dir / prole.module_name / "files",
             file_prefix=node_file_prefix,
+            notify_services=notify_services,
         )
 
     container_images = roles.get("container_images") or {}
@@ -709,6 +728,7 @@ def _render_role_class(prole: PuppetRole) -> str:
                 ("owner", _pp_quote(f.get("owner") or "root")),
                 ("group", _pp_quote(f.get("group") or "root")),
                 ("mode", _pp_quote(f.get("mode") or "0644")),
+                *([("notify", str(f.get("notify")))] if f.get("notify") else []),
             ],
         )
 
@@ -1011,7 +1031,7 @@ def _role_hiera_values(prole: PuppetRole) -> Dict[str, Any]:
             path: _attrs_with_ensure(
                 prole.files[path],
                 "file",
-                allowed={"source", "owner", "group", "mode"},
+                allowed={"source", "owner", "group", "mode", "notify"},
             )
             for path in sorted(prole.files)
         }

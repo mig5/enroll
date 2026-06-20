@@ -164,6 +164,8 @@ def test_manifest_salt_writes_single_site_state_tree(tmp_path: Path):
     assert '- name: "foo"' in net_sls
     assert '"/etc/foo/foo.conf":' in net_sls
     assert 'source: "salt://roles/net/files/etc/foo.conf"' in net_sls
+    assert "watch_in:" in net_sls
+    assert 'service: "enroll_service_net_foo_service_20435514"' in net_sls
     assert "file.symlink:" in net_sls
     assert "service.running:" in net_sls
     assert (out / "states" / "roles" / "net" / "files" / "etc" / "foo.conf").exists()
@@ -531,6 +533,9 @@ def test_manifest_salt_uses_jinjaturtle_templates(monkeypatch, tmp_path: Path):
     pillar = yaml.safe_load(pillar_path.with_suffix(".sls").read_text(encoding="utf-8"))
     file_data = pillar["enroll"]["roles"]["foo"]["files"]["/etc/foo/foo.conf"]
     assert file_data["source"] == "salt://roles/foo/templates/etc/foo.conf.j2"
+    assert file_data["watch_in"] == [
+        {"service": "enroll_service_foo_foo_service_20435514"}
+    ]
     assert file_data["template"] == "jinja"
     assert file_data["context"] == {"foo_setting": True}
 
