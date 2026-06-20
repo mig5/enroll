@@ -29,6 +29,7 @@ PUPPET_NO_JINJATURTLE_DIR="${WORK_DIR}/puppet-no-jinjaturtle"
 SALT_JINJATURTLE_DIR="${WORK_DIR}/salt-jinjaturtle"
 SALT_NO_JINJATURTLE_DIR="${WORK_DIR}/salt-no-jinjaturtle"
 TEST_FQDN="${ENROLL_TEST_FQDN:-enroll-ci.example.test}"
+JINJATURTLE_FIXTURE="${WORK_DIR}/enroll-tests-jinjaturtle.ini"
 
 cleanup() {
   if [[ "${KEEP_WORKDIR}" -eq 0 ]]; then
@@ -149,69 +150,25 @@ prepare_harvest_fixture() {
   section "Common harvest fixture and CLI smoke checks"
   apt_install jq apache2
 
-  cd "${PROJECT_ROOT}"
-  rm -rf "${BUNDLE_DIR}" "${BUNDLE_DIFF_DIR}"
-
-  run poetry run enroll harvest --out "${BUNDLE_DIR}"
-  run poetry run enroll explain "${BUNDLE_DIR}"
-  run bash -c "poetry run enroll explain '${BUNDLE_DIR}' --format json | jq"
-  run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIR}"
-
-  apt_install cowsay
-  run poetry run enroll harvest --out "${BUNDLE_DIFF_DIR}"
-  run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIFF_DIR}"
-  run bash -c "poetry run enroll diff --old '${BUNDLE_DIR}' --new '${BUNDLE_DIFF_DIR}' --format json | jq"
-  apt_remove_purge cowsay
-}
-
-add_jinjaturtle_harvest_fixture() {
-  section "JinjaTurtle manifest fixture"
-
-  local fixture_rel="etc/enroll-tests-jinjaturtle.ini"
-  local fixture_path="${BUNDLE_DIR}/artifacts/etc_custom/${fixture_rel}"
-  mkdir -p "$(dirname "${fixture_path}")"
-  cat >"${fixture_path}" <<'EOF'
+  cat >"${JINJATURTLE_FIXTURE}" <<'EOF'
 [enroll_tests]
 enabled = true
 answer = 42
 EOF
 
-  BUNDLE_DIR="${BUNDLE_DIR}" python3 - <<'PY'
-import json
-import os
-from pathlib import Path
+  cd "${PROJECT_ROOT}"
+  rm -rf "${BUNDLE_DIR}" "${BUNDLE_DIFF_DIR}"
 
-bundle_dir = Path(os.environ["BUNDLE_DIR"])
-state_path = bundle_dir / "state.json"
-state = json.loads(state_path.read_text(encoding="utf-8"))
-roles = state.setdefault("roles", {})
-etc_custom = roles.setdefault("etc_custom", {})
-etc_custom.setdefault("role_name", "etc_custom")
-etc_custom.setdefault("excluded", [])
-etc_custom.setdefault("notes", [])
-managed_files = etc_custom.setdefault("managed_files", [])
-fixture_path = "/etc/enroll-tests-jinjaturtle.ini"
-managed_files[:] = [
-    item
-    for item in managed_files
-    if not isinstance(item, dict) or item.get("path") != fixture_path
-]
-managed_files.append(
-    {
-        "path": fixture_path,
-        "src_rel": "etc/enroll-tests-jinjaturtle.ini",
-        "owner": "root",
-        "group": "root",
-        "mode": "0644",
-        "reason": "tests_jinjaturtle_fixture",
-    }
-)
-state_path.write_text(
-    json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-)
-PY
-
+  run poetry run enroll harvest --out "${BUNDLE_DIR}" --include-path "${JINJATURTLE_FIXTURE}"
+  run poetry run enroll explain "${BUNDLE_DIR}"
+  run bash -c "poetry run enroll explain '${BUNDLE_DIR}' --format json | jq"
   run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIR}"
+
+  apt_install cowsay
+  run poetry run enroll harvest --out "${BUNDLE_DIFF_DIR}" --include-path "${JINJATURTLE_FIXTURE}"
+  run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIFF_DIR}"
+  run bash -c "poetry run enroll diff --old '${BUNDLE_DIR}' --new '${BUNDLE_DIFF_DIR}' --format json | jq"
+  apt_remove_purge cowsay
 }
 
 assert_template_files() {
@@ -360,7 +317,6 @@ main() {
   require_debian_ci
   run_pytests
   prepare_harvest_fixture
-  add_jinjaturtle_harvest_fixture
   run_ansible_noop_tests
   run_puppet_noop_tests
   run_salt_noop_tests
