@@ -4,7 +4,7 @@
   <img src="https://git.mig5.net/mig5/enroll/raw/branch/main/enroll.svg" alt="Enroll logo" width="240" />
 </div>
 
-**enroll** inspects a Linux machine (Debian-like or RedHat-like) and generates configuration-management code: Ansible roles/playbooks by default, or Puppet control-repo style output for what it finds.
+**enroll** inspects a Linux machine (Debian-like or RedHat-like) and generates configuration-management code from it, as Ansible (default), Puppet or Salt.
 
 - Detects packages that have been installed.
 - Detects package ownership of `/etc` files where possible
@@ -14,9 +14,10 @@
 - Captures non-system users and their SSH public keys. In `--dangerous` mode, it also auto-harvests common shell dotfiles such as `.bashrc`, `.profile`, `.bash_logout`, and `.bash_aliases` when appropriate.
 - Captures miscellaneous `/etc` files it can't attribute to a package and installs them in an `etc_custom` role.
 - When running as root/sudo, captures live writable sysctl state into a `sysctl` role that manages `/etc/sysctl.d/99-enroll.conf`.
-- Captures live ipset and iptables runtime state into a fallback `firewall_runtime` role, when active ipsets/iptables rules are present *and* no corresponding persistent ipset/iptables *files* were found.
+- Captures live ipset and iptables runtime state, when active ipsets/iptables rules are present *and* no corresponding persistent ipset/iptables *files* were found.
 - Captures symlinks in common applications that rely on them, e.g apache2/nginx 'sites-enabled'
-- Ditto for /usr/local/bin (for non-binary files) and /usr/local/etc
+- Tries to capture Flatpak, Snap, Docker image presence
+- Captures snowflake-y things found in /usr/local/bin (for non-binary files) and /usr/local/etc
 - Avoids trying to start systemd services that were detected as inactive during harvest.
 
 ---
@@ -26,7 +27,7 @@
 `enroll` works in two phases:
 
 1) **Harvest**: collect host facts + relevant files into a harvest bundle (`state.json` + harvested artifacts)
-2) **Manifest**: turn that harvest into configuration-management code such as Ansible roles/playbooks or Puppet manifests
+2) **Manifest**: turn that harvest into configuration-management code such as Ansible, Puppet or Salt.
 
 Additionally, some other functionalities exist:
 
@@ -307,7 +308,9 @@ For Salt:
 - `file.managed` uses `template: jinja` with per-file `context` values
 - In `--fqdn` mode, template context values are written to pillar with the file metadata
 
-Puppet output does not use JinjaTurtle templates. You can force template generation on with `--jinjaturtle` or disable it with `--no-jinjaturtle`.
+Puppet output does not use `.erb` templates at this time.
+
+You can force template generation on with `--jinjaturtle` or disable it with `--no-jinjaturtle`.
 
 ---
 
