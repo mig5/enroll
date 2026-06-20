@@ -6,6 +6,12 @@ from pathlib import Path
 import yaml
 
 from enroll import manifest
+from enroll.puppet import (
+    PuppetRole,
+    _puppet_name,
+    _render_role_class,
+    _role_hiera_values,
+)
 
 
 def _write_state(bundle: Path, state: dict) -> None:
@@ -832,3 +838,160 @@ def test_manifest_puppet_omits_firewall_runtime_when_no_rules_were_sampled(
     assert "include firewall_runtime" not in site_pp
     assert not (out / "modules" / "enroll_runtime").exists()
     assert not (out / "modules" / "firewall_runtime").exists()
+
+
+def _puppet_flatpak_snap_users_snapshot() -> dict:
+    return {
+        "users": [
+            {
+                "name": "alice",
+                "uid": 1000,
+                "primary_group": "alice",
+                "supplementary_groups": ["docker"],
+                "home": "/home/alice",
+                "shell": "/bin/bash",
+                "gecos": "Alice,,,Other",
+            }
+        ],
+        "user_flatpak_remotes": [
+            {
+                "method": "user",
+                "user": "alice",
+                "name": "flathub",
+                "url": "https://dl.flathub.org/repo/flathub.flatpakrepo",
+            }
+        ],
+        "user_flatpaks": {
+            "alice": [
+                {
+                    "ref": "app/org.foo.App/x86_64/stable",
+                    "remote": "flathub",
+                }
+            ]
+        },
+    }
+
+
+def _puppet_system_flatpak_snapshot() -> dict:
+    return {
+        "remotes": [
+            {
+                "name": "systemrepo",
+                "url": "https://example.invalid/repo.flatpakrepo",
+            }
+        ],
+        "system_flatpaks": [
+            {
+                "name": "org.system.App",
+                "remote": "systemrepo",
+            }
+        ],
+    }
+
+
+def _puppet_snap_snapshot() -> dict:
+    return {
+        "system_snaps": [
+            {
+                "name": "hello-world",
+                "tracking": "latest/stable",
+                "confinement": "classic",
+            },
+            {
+                "name": "danger-snap",
+                "revision": "42",
+                "notes": ["installed with --dangerous"],
+            },
+        ],
+    }
+
+
+def test_puppet_role_renders_flatpaks_snaps_and_user_flatpaks() -> None:
+    role = PuppetRole("apps")
+    role.add_users_snapshot(_puppet_flatpak_snap_users_snapshot())
+    role.add_flatpak_snapshot(_puppet_system_flatpak_snapshot())
+    role.add_snap_snapshot(_puppet_snap_snapshot())
+
+    rendered = _render_role_class(role)
+    assert "group { 'alice':" in rendered
+    assert "user { 'alice':" in rendered
+    assert "flatpak --user remote-add --if-not-exists flathub" in rendered
+    assert "HOME=/home/alice" in rendered
+    assert "require => User['alice']" in rendered
+    assert "flatpak --user install -y flathub app/org.foo.App/x86_64/stable" in rendered
+    assert "flatpak --system install -y systemrepo org.system.App" in rendered
+    assert "snap install hello-world --channel=latest/stable --classic" in rendered
+    assert "snap install danger-snap --revision=42 --dangerous" in rendered
+
+    hiera = _role_hiera_values(role)
+    assert hiera["apps::flatpak_remotes"][0]["environment"] == [
+        "HOME=/home/alice",
+        "XDG_DATA_HOME=/home/alice/.local/share",
+    ]
+    assert hiera["apps::flatpaks"][0]["user"] == "alice"
+    assert hiera["apps::snaps"][0]["classic"] is True
+    assert hiera["apps::snaps"][1]["dangerous"] is True
+
+
+def test_puppet_role_records_container_image_limitations() -> None:
+    role = PuppetRole("container_images")
+    role.add_container_images_snapshot(
+        {
+            "images": [
+                "not-a-dict",
+                {"engine": "containerd", "pull_ref": "example.invalid/app@sha256:abc"},
+                {
+                    "engine": "docker",
+                    "repo_tags": ["example.invalid/app:latest"],
+                    "pull_ref": "",
+                },
+            ],
+            "notes": ["image capture note"],
+        }
+    )
+
+    assert role.container_images == []
+    assert any("has no RepoDigest" in note for note in role.notes)
+    assert role.notes[-1] == "image capture note"
+
+
+def test_puppet_managed_content_notes_missing_artifacts_and_links(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    module_files = tmp_path / "puppet" / "modules" / "demo" / "files"
+    role = PuppetRole("demo")
+    role.add_managed_content(
+        {
+            "managed_dirs": [
+                {
+                    "path": "/etc/demo",
+                    "owner": "root",
+                    "group": "root",
+                    "mode": "0750",
+                }
+            ],
+            "managed_files": [
+                {"path": "", "src_rel": "etc/ignored.conf"},
+                {"path": "/etc/missing.conf", "src_rel": "etc/missing.conf"},
+            ],
+            "managed_links": [
+                {"path": "", "target": "/nowhere"},
+                {"path": "/etc/demo/current", "target": "/opt/demo/current"},
+            ],
+        },
+        bundle_dir=str(bundle),
+        artifact_role="demo",
+        module_files_dir=module_files,
+    )
+
+    assert role.dirs["/etc/demo"]["mode"] == "0750"
+    assert role.links["/etc/demo/current"]["target"] == "/opt/demo/current"
+    assert any("Skipped /etc/missing.conf" in note for note in role.notes)
+
+
+def test_puppet_names_are_sanitised_for_target_reserved_words() -> None:
+    assert _puppet_name("") == "role"
+    assert _puppet_name("123") == "role_123"
+    assert _puppet_name("node") == "role_node"
+    assert _puppet_name("web-app") == "web_app"
