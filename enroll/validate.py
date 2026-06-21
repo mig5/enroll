@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import jsonschema
 
 from .diff import BundleRef, _bundle_from_input
+from .manifest_safety import ArtifactSafetyError, safe_artifact_file
 from .state import load_state
 
 
@@ -171,7 +174,7 @@ def validate_harvest(
             except Exception as e:  # noqa: BLE001
                 errors.append(f"failed to load/validate schema: {e!r}")
 
-        # Artifact existence checks
+        # Artifact existence and safety checks.
         artifacts_dir = bundle.dir / "artifacts"
         referenced: Set[Tuple[str, str]] = set()
         for role_name, mf in _iter_managed_files(state):
@@ -188,15 +191,15 @@ def validate_harvest(
                 continue
 
             referenced.add((role_name, src_rel))
-            p = artifacts_dir / role_name / src_rel
-            if not p.exists():
+            try:
+                safe_artifact_file(bundle.dir, role_name, src_rel)
+            except FileNotFoundError:
                 errors.append(
                     f"missing artifact for role {role_name}: artifacts/{role_name}/{src_rel}"
                 )
-                continue
-            if not p.is_file():
+            except ArtifactSafetyError as e:
                 errors.append(
-                    f"artifact is not a file for role {role_name}: artifacts/{role_name}/{src_rel}"
+                    f"unsafe artifact for role {role_name}: artifacts/{role_name}/{src_rel}: {e}"
                 )
 
         # Runtime firewall snapshots are generated artifacts rather than managed files.
@@ -211,43 +214,83 @@ def validate_harvest(
                         f"firewall_runtime {key} has suspicious src_rel: {src_rel!r}"
                     )
                     continue
-                referenced.add(
-                    (str(fw.get("role_name") or "firewall_runtime"), src_rel)
-                )
-                p = (
-                    artifacts_dir
-                    / str(fw.get("role_name") or "firewall_runtime")
-                    / src_rel
-                )
-                if not p.exists():
+                role_name = str(fw.get("role_name") or "firewall_runtime")
+                referenced.add((role_name, src_rel))
+                try:
+                    safe_artifact_file(bundle.dir, role_name, src_rel)
+                except FileNotFoundError:
                     errors.append(
                         "missing firewall runtime artifact: "
-                        f"artifacts/{fw.get('role_name') or 'firewall_runtime'}/{src_rel}"
+                        f"artifacts/{role_name}/{src_rel}"
                     )
-                elif not p.is_file():
+                except ArtifactSafetyError as e:
                     errors.append(
-                        "firewall runtime artifact is not a file: "
-                        f"artifacts/{fw.get('role_name') or 'firewall_runtime'}/{src_rel}"
+                        "unsafe firewall runtime artifact: "
+                        f"artifacts/{role_name}/{src_rel}: {e}"
                     )
 
-        # Warn if there are extra files in artifacts not referenced.
+        # Validate the whole artifact tree too, so unreferenced symlinks,
+        # hardlinks, special files, and path-shaping tricks do not survive
+        # validation simply because no managed_file currently references them.
         if artifacts_dir.exists() and artifacts_dir.is_dir():
-            for fp in artifacts_dir.rglob("*"):
-                if not fp.is_file():
-                    continue
-                try:
-                    rel = fp.relative_to(artifacts_dir)
-                except ValueError:
-                    continue
-                parts = rel.parts
-                if len(parts) < 2:
-                    continue
-                role_name = parts[0]
-                src_rel = "/".join(parts[1:])
-                if (role_name, src_rel) not in referenced:
-                    warnings.append(
-                        f"unreferenced artifact present: artifacts/{role_name}/{src_rel}"
-                    )
+            for root, dirs, files in os.walk(artifacts_dir, followlinks=False):
+                root_p = Path(root)
+                for name in list(dirs):
+                    fp = root_p / name
+                    try:
+                        st = fp.lstat()
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISLNK(st.st_mode):
+                        errors.append(f"artifact directory is a symlink: {fp}")
+                    elif not stat.S_ISDIR(st.st_mode):
+                        errors.append(f"artifact directory is not a directory: {fp}")
+
+                for name in files:
+                    fp = root_p / name
+                    try:
+                        st = fp.lstat()
+                    except FileNotFoundError:
+                        continue
+                    try:
+                        rel = fp.relative_to(artifacts_dir)
+                    except ValueError:
+                        errors.append(f"artifact escapes artifact root: {fp}")
+                        continue
+                    parts = rel.parts
+                    if len(parts) < 2:
+                        errors.append(f"artifact is not under a role directory: {fp}")
+                        continue
+                    role_name = parts[0]
+                    src_rel = "/".join(parts[1:])
+
+                    if stat.S_ISLNK(st.st_mode):
+                        errors.append(
+                            f"artifact is a symlink: artifacts/{role_name}/{src_rel}"
+                        )
+                        continue
+                    if not stat.S_ISREG(st.st_mode):
+                        errors.append(
+                            f"artifact is not a regular file: artifacts/{role_name}/{src_rel}"
+                        )
+                        continue
+                    if st.st_nlink > 1:
+                        errors.append(
+                            f"artifact is hardlinked: artifacts/{role_name}/{src_rel}"
+                        )
+                        continue
+                    try:
+                        safe_artifact_file(bundle.dir, role_name, src_rel)
+                    except (FileNotFoundError, ArtifactSafetyError) as e:
+                        errors.append(
+                            f"unsafe artifact: artifacts/{role_name}/{src_rel}: {e}"
+                        )
+                        continue
+
+                    if (role_name, src_rel) not in referenced:
+                        warnings.append(
+                            f"unreferenced artifact present: artifacts/{role_name}/{src_rel}"
+                        )
 
         return ValidationResult(errors=errors, warnings=warnings)
     finally:

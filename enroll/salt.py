@@ -17,6 +17,11 @@ from .cm import (
     markdown_list,
 )
 from .jinjaturtle import jinjify_artifact, resolve_jinjaturtle_mode
+from .manifest_safety import (
+    copy_safe_artifact_file,
+    prepare_manifest_output_dir,
+    safe_artifact_file,
+)
 from .state import inventory_packages_from_state, roles_from_state
 from .yamlutil import yaml_dump_mapping, yaml_load_mapping_file
 
@@ -610,13 +615,14 @@ def _copy_artifact(
 ) -> Optional[str]:
     if not role or not src_rel:
         return None
-    src = Path(bundle_dir) / "artifacts" / role / src_rel
-    if not src.is_file():
+    try:
+        src = safe_artifact_file(bundle_dir, role, src_rel)
+    except FileNotFoundError:
         return None
     role_rel = Path(dst_prefix or "") / src_rel
     dst = dst_files_dir / role_rel
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    copy_safe_artifact_file(src, dst)
     return role_rel.as_posix()
 
 
@@ -1687,13 +1693,11 @@ class SaltManifestRenderer:
 
     def render(self) -> None:
         state = SaltRole.load_state(self.bundle_dir)
-        out = Path(self.out_dir)
+        fqdn_mode = bool(self.fqdn)
+        out = prepare_manifest_output_dir(self.out_dir, allow_existing=fqdn_mode)
         states_dir = out / "states"
         pillar_dir = out / "pillar"
-        fqdn_mode = bool(self.fqdn)
 
-        if out.exists() and not fqdn_mode:
-            shutil.rmtree(out)
         states_dir.mkdir(parents=True, exist_ok=True)
         if fqdn_mode:
             pillar_dir.mkdir(parents=True, exist_ok=True)

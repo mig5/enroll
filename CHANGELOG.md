@@ -2,6 +2,7 @@
 
  * BREAKING CHANGE: Group all package and systemd-unit roles into Debian Section/RPM Group roles by default, including managed config files and unit state. This mode is not used if `--fqdn` or `--no-common-roles` is set, in which case, the traditional behaviour of preserving one role per package/unit is used instead.
  * BREAKING CHANGE: Only capture user-specific .bashrc style files when using `--dangerous` mode, in case they contain sensitive env vars.
+ * BREAKING CHANGE: Don't allow reading `.enroll.ini` in the CWD. Use only the ENROLL_CONFIG env var, an explicit `--config` path or else the XDG default location (or `~/.config/enroll/enroll.ini` if `XDG_CONFIG_HOME` is not set).
  * Detect active sysctl parameters and write them to a `/etc/sysctl.d/99-enroll.conf` file
  * Use `no_log` on systemd unit interrogations to suppress potential sensitive output when applying Ansible
  * Support manifesting Puppet code, as well as Ansible!
@@ -10,6 +11,7 @@
  * A lot of under-the-bonnet refactoring to make it easier to extend to cover other config managers (that don't suck) in future.
  * Support for detecting Docker and Podman images and enforcing their presence (by SHA256 hash).
  * Add support for detecting Flatpaks and Snaps.
+ * Stricter validation of harvests to ensure that they meet the schema and don't contain unsafe artifacts (e.g symlinks pointing outside the artifact tree)
 
 # 0.6.0
 

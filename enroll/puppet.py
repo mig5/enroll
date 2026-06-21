@@ -4,7 +4,6 @@ import hashlib
 import json
 import re
 import shlex
-import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -15,6 +14,11 @@ from .cm import (
     resolve_catalog_conflicts,
     role_order_key,
     markdown_list,
+)
+from .manifest_safety import (
+    copy_safe_artifact_file,
+    prepare_manifest_output_dir,
+    safe_artifact_file,
 )
 from .state import inventory_packages_from_state, roles_from_state
 from .jinjaturtle import (
@@ -628,13 +632,14 @@ def _copy_artifact(
 ) -> Optional[str]:
     if not role or not src_rel:
         return None
-    src = Path(bundle_dir) / "artifacts" / role / src_rel
-    if not src.is_file():
+    try:
+        src = safe_artifact_file(bundle_dir, role, src_rel)
+    except FileNotFoundError:
         return None
     module_rel = Path(dst_prefix or "") / src_rel
     dst = dst_files_dir / module_rel
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    copy_safe_artifact_file(src, dst)
     return module_rel.as_posix()
 
 
@@ -1712,10 +1717,8 @@ class PuppetManifestRenderer:
         no_common_roles = self.no_common_roles
 
         state = PuppetRole.load_state(bundle_dir)
-        out = Path(out_dir)
         hiera_mode = bool(fqdn)
-        if out.exists() and not hiera_mode:
-            shutil.rmtree(out)
+        out = prepare_manifest_output_dir(out_dir, allow_existing=hiera_mode)
         manifests_dir = out / "manifests"
         modules_dir = out / "modules"
         manifests_dir.mkdir(parents=True, exist_ok=True)

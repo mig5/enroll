@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -13,6 +12,11 @@ from .cm import CMModule, markdown_list, snapshot_excluded_lines, snapshot_note_
 from .jinjaturtle import (
     jinjify_managed_files as _jinjify_managed_files,
     resolve_jinjaturtle_mode,
+)
+from .manifest_safety import (
+    copy_safe_artifact_file,
+    iter_safe_artifact_files,
+    prepare_manifest_output_dir,
 )
 from .role_names import avoid_reserved_role_name
 from .state import inventory_packages_from_state, roles_from_state
@@ -408,7 +412,8 @@ def _prepare_ansible_context(
     site_mode = fqdn is not None and fqdn != ""
     jt_exe, jt_enabled = resolve_jinjaturtle_mode(jinjaturtle)
 
-    os.makedirs(out_dir, exist_ok=True)
+    out = prepare_manifest_output_dir(out_dir, allow_existing=site_mode)
+    out_dir = str(out)
     roles_root = os.path.join(out_dir, "roles")
     os.makedirs(roles_root, exist_ok=True)
 
@@ -445,7 +450,7 @@ def _copy2_replace(src: str, dst: str) -> None:
     fd, tmp = tempfile.mkstemp(prefix=".enroll-tmp-", dir=dst_dir)
     os.close(fd)
     try:
-        shutil.copy2(src, tmp)
+        copy_safe_artifact_file(src, tmp)
 
         # Ensure the working tree stays mergeable: make the file user-writable.
         st = os.stat(tmp, follow_symlinks=False)
@@ -475,29 +480,23 @@ def _copy_artifacts(
     In --fqdn site mode, this is usually:
       inventory/host_vars/<fqdn>/<role>/.files
     """
-    artifacts_dir = os.path.join(bundle_dir, "artifacts", role)
-    if not os.path.isdir(artifacts_dir):
-        return
-    for root, _, files in os.walk(artifacts_dir):
-        for fn in files:
-            src = os.path.join(root, fn)
-            rel = os.path.relpath(src, artifacts_dir)
-            dst = os.path.join(dst_files_dir, rel)
+    for src, rel in iter_safe_artifact_files(bundle_dir, role):
+        dst = os.path.join(dst_files_dir, rel)
 
-            # If a file was successfully templatised by JinjaTurtle, do NOT
-            # also materialise the raw copy in the destination files dir.
-            if exclude_rels and rel in exclude_rels:
-                try:
-                    if os.path.isfile(dst):
-                        os.remove(dst)
-                except Exception:
-                    pass  # nosec
-                continue
+        # If a file was successfully templatised by JinjaTurtle, do NOT
+        # also materialise the raw copy in the destination files dir.
+        if exclude_rels and rel in exclude_rels:
+            try:
+                if os.path.isfile(dst):
+                    os.remove(dst)
+            except Exception:
+                pass  # nosec
+            continue
 
-            if preserve_existing and os.path.exists(dst):
-                continue
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            _copy2_replace(src, dst)
+        if preserve_existing and os.path.exists(dst):
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        _copy2_replace(str(src), dst)
 
 
 def _write_role_scaffold(role_dir: str) -> None:
