@@ -7,34 +7,99 @@ jobs:
   test:
     runs-on: docker
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            image: docker.io/library/debian:13
+            python: python3
+          - distro: almalinux
+            image: docker.io/library/almalinux:9
+            python: python3.11
+
+    container:
+      image: ${{ matrix.image }}
+
     steps:
+      - name: Install system dependencies
+        env:
+          DISTRO: ${{ matrix.distro }}
+          PYTHON_BIN: ${{ matrix.python }}
+        run: |
+          set -eux
+
+          case "${DISTRO}" in
+            debian)
+              mkdir -m 755 -p /etc/apt/keyrings
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates curl gnupg git tar gzip findutils bash \
+                ansible ansible-lint python3 python3-venv python3-pip pipx systemctl python3-apt jq python3-jsonschema \
+                puppet hiera
+              curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public | gpg --dearmor | tee /etc/apt/keyrings/salt-archive-keyring.pgp > /dev/null
+              curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources | tee /etc/apt/sources.list.d/salt.sources
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                salt-master salt-minion salt-ssh salt-syndic salt-cloud salt-api
+              ;;
+            almalinux)
+              dnf -y upgrade --refresh
+              dnf -y install \
+                ca-certificates curl gnupg2 git tar gzip findutils bash which jq \
+                dnf-plugins-core epel-release
+              dnf -y config-manager --set-enabled crb || true
+              curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.repo > /etc/yum.repos.d/salt.repo
+              dnf -y install https://yum.puppet.com/puppet8-release-el-9.noarch.rpm
+              dnf -y makecache
+              dnf -y install \
+                python3.11 python3.11-devel python3.11-pip gcc make \
+                ansible-core ansible-lint systemd rpm httpd \
+                puppet-agent \
+                salt-master salt-minion salt-ssh salt-syndic salt-cloud salt-api
+              echo "/opt/puppetlabs/bin" >> "$GITHUB_PATH"
+              ;;
+            *)
+              echo "Unsupported CI distro: ${DISTRO}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          mkdir -m 755 -p /etc/apt/keyrings
-          curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public | gpg --dearmor | tee /etc/apt/keyrings/salt-archive-keyring.pgp > /dev/null
-          curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources | tee /etc/apt/sources.list.d/salt.sources
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ansible ansible-lint python3-venv pipx systemctl python3-apt jq python3-jsonschema \
-            puppet hiera \
-            salt-master salt-minion salt-ssh salt-syndic salt-cloud salt-api
-
       - name: Install Poetry
+        env:
+          PYTHON_BIN: ${{ matrix.python }}
         run: |
-          pipx install poetry==1.8.3
+          set -eux
+          if ! command -v pipx >/dev/null 2>&1; then
+            "${PYTHON_BIN}" -m pip install --user pipx
+          fi
+          PIPX_BIN="$(command -v pipx || true)"
+          if [ -z "${PIPX_BIN}" ]; then
+            PIPX_BIN="${HOME}/.local/bin/pipx"
+          fi
+          "${PIPX_BIN}" install --python "${PYTHON_BIN}" poetry==1.8.3
           /root/.local/bin/poetry --version
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install project deps (including test extras)
+        env:
+          PYTHON_BIN: ${{ matrix.python }}
         run: |
+          poetry env use "${PYTHON_BIN}"
           poetry install --with dev
 
       - name: Install sops
         run: |
-          curl -L -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.1/sops-v3.13.1.linux.amd64
+          set -eux
+          case "$(uname -m)" in
+            x86_64) sops_arch=amd64 ;;
+            aarch64|arm64) sops_arch=arm64 ;;
+            *) echo "Unsupported architecture for sops: $(uname -m)" >&2; exit 1 ;;
+          esac
+          curl -L -o /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/v3.13.1/sops-v3.13.1.linux.${sops_arch}"
           chmod +x /usr/local/bin/sops
 
       - name: Run test script

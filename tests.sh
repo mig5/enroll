@@ -2,6 +2,10 @@
 
 set -Eeuo pipefail
 
+if [[ -d /opt/puppetlabs/bin ]]; then
+  export PATH="/opt/puppetlabs/bin:${PATH}"
+fi
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP_PARENT="${TMPDIR:-/tmp}"
 KEEP_WORKDIR=0
@@ -64,50 +68,228 @@ require_root() {
   fi
 }
 
-require_debian_ci() {
+require_supported_ci_os() {
   if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
     . /etc/os-release
-    if [[ "${ID:-}" != "debian" || "${VERSION_ID:-}" != "13" ]]; then
-      printf 'WARNING: tests.sh is maintained for Debian 13 CI; detected %s %s.\n' "${ID:-unknown}" "${VERSION_ID:-unknown}" >&2
+    case "${ID:-}" in
+      debian)
+        if [[ "${VERSION_ID:-}" != "13" ]]; then
+          printf 'WARNING: tests.sh is maintained for Debian 13 CI; detected Debian %s.\n' "${VERSION_ID:-unknown}" >&2
+        fi
+        ;;
+      almalinux|rhel|rocky|centos|fedora)
+        printf 'Detected RPM-family CI host: %s %s.\n' "${ID:-unknown}" "${VERSION_ID:-unknown}" >&2
+        ;;
+      *)
+        printf 'WARNING: tests.sh is maintained for Debian 13 and AlmaLinux/RHEL-family CI; detected %s %s.\n' "${ID:-unknown}" "${VERSION_ID:-unknown}" >&2
+        ;;
+    esac
+  fi
+}
+
+os_id() {
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s' "${ID:-unknown}"
+  else
+    printf 'unknown'
+  fi
+}
+
+os_version_major() {
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s' "${VERSION_ID%%.*}"
+  else
+    printf 'unknown'
+  fi
+}
+
+is_debian() {
+  [[ "$(os_id)" == "debian" ]]
+}
+
+is_rpm_family() {
+  case "$(os_id)" in
+    almalinux|rhel|rocky|centos|fedora) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+pkg_update_once() {
+  if is_debian; then
+    if [[ -z "${APT_UPDATED:-}" ]]; then
+      section "Setup: apt metadata"
+      run apt-get update
+      APT_UPDATED=1
     fi
+  elif is_rpm_family; then
+    if [[ -z "${DNF_UPDATED:-}" ]]; then
+      section "Setup: dnf metadata"
+      run dnf -y makecache
+      DNF_UPDATED=1
+    fi
+  else
+    fail "Unsupported package manager for OS $(os_id)."
   fi
 }
 
-apt_update_once() {
-  if [[ -z "${APT_UPDATED:-}" ]]; then
-    section "Setup: apt metadata"
-    run apt-get update
-    APT_UPDATED=1
+translate_packages() {
+  local translated=()
+  local pkg
+  for pkg in "$@"; do
+    if is_debian; then
+      translated+=("${pkg}")
+      continue
+    fi
+
+    case "${pkg}" in
+      ansible) translated+=(ansible-core) ;;
+      apache2) translated+=(httpd) ;;
+      gnupg) translated+=(gnupg2) ;;
+      lsb-release) translated+=(redhat-lsb-core) ;;
+      puppet) translated+=(puppet-agent) ;;
+      python3-apt) ;;
+      python3-jsonschema) translated+=(python3-jsonschema) ;;
+      python3-venv) ;;
+      systemctl) translated+=(systemd) ;;
+      *) translated+=("${pkg}") ;;
+    esac
+  done
+  printf '%s\n' "${translated[@]}"
+}
+
+pkg_install() {
+  local packages=()
+  local pkg
+
+  while IFS= read -r pkg; do
+    [[ -n "${pkg}" ]] && packages+=("${pkg}")
+  done < <(translate_packages "$@")
+
+  if [[ "${#packages[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  pkg_update_once
+  if is_debian; then
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+  elif is_rpm_family; then
+    ensure_epel_repo
+    run dnf -y install "${packages[@]}"
+  else
+    fail "Unsupported package manager for OS $(os_id)."
   fi
 }
 
-apt_install() {
-  apt_update_once
-  run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+pkg_remove_purge() {
+  if is_debian; then
+    run env DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge "$@"
+  elif is_rpm_family; then
+    run dnf -y remove "$@"
+  else
+    fail "Unsupported package manager for OS $(os_id)."
+  fi
 }
 
-apt_remove_purge() {
-  run env DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge "$@"
+ensure_epel_repo() {
+  if ! is_rpm_family; then
+    return
+  fi
+  if rpm -q epel-release >/dev/null 2>&1; then
+    return
+  fi
+  run dnf -y install dnf-plugins-core epel-release
+  run dnf -y config-manager --set-enabled crb || true
+  DNF_UPDATED=
+}
+
+ensure_salt_repo() {
+  if is_debian; then
+    if [[ -e /etc/apt/sources.list.d/salt.sources ]]; then
+      return
+    fi
+    section "Setup: Salt apt repository"
+    pkg_install ca-certificates curl gnupg
+    run mkdir -m 755 -p /etc/apt/keyrings
+    run bash -c "curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public | gpg --dearmor --yes -o /etc/apt/keyrings/salt-archive-keyring.pgp"
+    run bash -c "curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources > /etc/apt/sources.list.d/salt.sources"
+    APT_UPDATED=
+  elif is_rpm_family; then
+    if [[ -e /etc/yum.repos.d/salt.repo ]]; then
+      return
+    fi
+    section "Setup: Salt dnf repository"
+    pkg_install ca-certificates curl
+    run bash -c "curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.repo > /etc/yum.repos.d/salt.repo"
+    DNF_UPDATED=
+  fi
+}
+
+ensure_puppet_repo() {
+  if ! is_rpm_family; then
+    return
+  fi
+  if rpm -q puppet8-release >/dev/null 2>&1 || [[ -e /etc/yum.repos.d/puppet8-release.repo ]]; then
+    return
+  fi
+  section "Setup: Puppet dnf repository"
+  local major
+  major="$(os_version_major)"
+  run dnf -y install "https://yum.puppet.com/puppet8-release-el-${major}.noarch.rpm"
+  DNF_UPDATED=
+}
+
+ensure_mig5_rpm_repo() {
+  if ! is_rpm_family; then
+    return
+  fi
+  if [[ -e /etc/yum.repos.d/mig5.repo ]]; then
+    return
+  fi
+  section "Setup: mig5 dnf repository"
+  pkg_install ca-certificates curl
+  run rpm --import https://mig5.net/static/mig5.asc
+  cat >/etc/yum.repos.d/mig5.repo <<'EOF'
+[mig5]
+name=mig5 Repository
+baseurl=https://rpm.mig5.net/$releasever/rpm/$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://mig5.net/static/mig5.asc
+EOF
+  run dnf -y upgrade --refresh
+  DNF_UPDATED=1
 }
 
 ensure_jinjaturtle() {
-  section "Setup: JinjaTurtle apt package"
+  section "Setup: JinjaTurtle package"
   if command -v jinjaturtle >/dev/null 2>&1; then
     printf 'jinjaturtle already available at: %s\n' "$(command -v jinjaturtle)"
     return
   fi
 
-  apt_install ca-certificates curl gnupg lsb-release
-  run mkdir -p /usr/share/keyrings
-  run bash -c "curl -fsSL https://mig5.net/static/mig5.asc | gpg --dearmor --yes -o /usr/share/keyrings/mig5.gpg"
+  if is_debian; then
+    pkg_install ca-certificates curl gnupg lsb-release
+    run mkdir -p /usr/share/keyrings
+    run bash -c "curl -fsSL https://mig5.net/static/mig5.asc | gpg --dearmor --yes -o /usr/share/keyrings/mig5.gpg"
 
-  local codename
-  codename="$(lsb_release -cs)"
-  run bash -c "printf '%s\n' 'deb [arch=amd64 signed-by=/usr/share/keyrings/mig5.gpg] https://apt.mig5.net ${codename} main' > /etc/apt/sources.list.d/mig5.list"
-  run apt-get update
-  APT_UPDATED=1
-  run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jinjaturtle
+    local codename
+    codename="$(lsb_release -cs)"
+    run bash -c "printf '%s\n' 'deb [arch=amd64 signed-by=/usr/share/keyrings/mig5.gpg] https://apt.mig5.net ${codename} main' > /etc/apt/sources.list.d/mig5.list"
+    run apt-get update
+    APT_UPDATED=1
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jinjaturtle
+  elif is_rpm_family; then
+    ensure_mig5_rpm_repo
+    pkg_install jinjaturtle
+  else
+    fail "Unsupported OS for JinjaTurtle package install: $(os_id)."
+  fi
 }
 
 require_cmd() {
@@ -119,25 +301,28 @@ require_cmd() {
 }
 
 ensure_ansible() {
+  ensure_epel_repo
   if ! command -v ansible-playbook >/dev/null 2>&1 || ! command -v ansible-lint >/dev/null 2>&1; then
-    apt_install ansible ansible-lint
+    pkg_install ansible ansible-lint
   fi
-  require_cmd ansible-playbook "Install the Debian ansible package."
-  require_cmd ansible-lint "Install the Debian ansible-lint package."
+  require_cmd ansible-playbook "Install the ansible/ansible-core package."
+  require_cmd ansible-lint "Install the ansible-lint package."
 }
 
 ensure_puppet() {
+  ensure_puppet_repo
   if ! command -v puppet >/dev/null 2>&1; then
-    apt_install puppet || apt_install puppet-agent
+    pkg_install puppet || pkg_install puppet-agent
   fi
   require_cmd puppet "Install Puppet before running the Puppet noop integration tests."
 }
 
 ensure_salt() {
+  ensure_salt_repo
   if ! command -v salt-call >/dev/null 2>&1; then
-    apt_install salt-minion || true
+    pkg_install salt-minion || true
   fi
-  require_cmd salt-call "Install Salt's salt-call binary before running the Salt noop integration tests. On Debian 13 this may require configuring the upstream Salt/Broadcom package repository first."
+  require_cmd salt-call "Install Salt's salt-call binary before running the Salt noop integration tests. This may require configuring the upstream Salt/Broadcom package repository first."
 }
 
 run_pytests() {
@@ -148,7 +333,7 @@ run_pytests() {
 
 prepare_harvest_fixture() {
   section "Common harvest fixture and CLI smoke checks"
-  apt_install jq apache2
+  pkg_install jq apache2
 
   cat >"${JINJATURTLE_FIXTURE}" <<'EOF'
 [enroll_tests]
@@ -164,11 +349,11 @@ EOF
   run bash -c "poetry run enroll explain '${BUNDLE_DIR}' --format json | jq"
   run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIR}"
 
-  apt_install cowsay
+  pkg_install cowsay
   run poetry run enroll harvest --out "${BUNDLE_DIFF_DIR}" --include-path "${JINJATURTLE_FIXTURE}"
   run poetry run enroll validate --fail-on-warnings "${BUNDLE_DIFF_DIR}"
   run bash -c "poetry run enroll diff --old '${BUNDLE_DIR}' --new '${BUNDLE_DIFF_DIR}' --format json | jq"
-  apt_remove_purge cowsay
+  pkg_remove_purge cowsay
 }
 
 assert_template_files() {
@@ -318,7 +503,7 @@ run_salt_noop_tests() {
 
 main() {
   require_root
-  require_debian_ci
+  require_supported_ci_os
   run_pytests
   prepare_harvest_fixture
   run_ansible_noop_tests
