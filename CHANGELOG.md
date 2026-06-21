@@ -12,6 +12,7 @@
  * Support for detecting Docker and Podman images and enforcing their presence (by SHA256 hash).
  * Add support for detecting Flatpaks and Snaps.
  * Stricter validation of harvests to ensure that they meet the schema and don't contain unsafe artifacts (e.g symlinks pointing outside the artifact tree)
+ * Perform harvest validation before trying to manifest from it.
 
 # 0.6.0
 

@@ -16,6 +16,7 @@ from .sopsutil import (
     encrypt_file_binary,
     require_sops_cmd,
 )
+from .validate import validate_harvest
 
 
 def _prepare_bundle_dir(
@@ -203,6 +204,14 @@ def manifest(
 
     td_out: Optional[tempfile.TemporaryDirectory] = None
     try:
+        validation = validate_harvest(resolved_bundle_dir)
+        if not validation.ok:
+            raise RuntimeError(
+                "harvest state does not match this Enroll version's schema; "
+                "please re-harvest the host with this version of Enroll.\n"
+                + validation.to_text().strip()
+            )
+
         if not sops_mode:
             if target == "puppet":
                 manifest_puppet_from_bundle_dir(
@@ -235,11 +244,6 @@ def manifest(
 
         td_out = tempfile.TemporaryDirectory(prefix="enroll-manifest-")
         tmp_out = Path(td_out.name) / "out"
-        tmp_out.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(tmp_out, 0o700)
-        except OSError:
-            pass
 
         if target == "puppet":
             manifest_puppet_from_bundle_dir(
