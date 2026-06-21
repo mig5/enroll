@@ -244,6 +244,7 @@ def test_enforce_old_harvest_runs_ansible_with_tags_from_file_drift(
     # Stub manifest generation to only create playbook.yml (fast, no real roles needed).
     def fake_manifest(_harvest_dir: str, out_dir: str, **_kwargs):
         out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=False)
         (out / "playbook.yml").write_text(
             "---\n- hosts: all\n  gather_facts: false\n  roles: []\n",
             encoding="utf-8",
@@ -363,7 +364,10 @@ def test_enforce_old_harvest_runs_puppet_target(monkeypatch, tmp_path: Path):
     argv = calls.get("argv")
     assert argv and argv[:2] == ["/usr/bin/puppet", "apply"]
     assert "--modulepath" in argv
-    assert str(Path(calls["cwd"]) / "manifests" / "site.pp") in argv
+    assert any(
+        str(Path(calls["cwd"]) / "manifest" / "manifests" / "site.pp") == str(a)
+        for a in argv
+    )
 
 
 def test_enforce_old_harvest_runs_salt_target(monkeypatch, tmp_path: Path):
@@ -418,7 +422,7 @@ def test_enforce_old_harvest_runs_salt_target(monkeypatch, tmp_path: Path):
     assert "--local" in argv
     assert "--file-root" in argv
     assert "state.apply" in argv
-    assert str(Path(calls["cwd"]) / "states") in argv
+    assert str(Path(calls["cwd"]) / "manifest" / "states") in argv
 
 
 def test_cli_diff_enforce_forwards_target(monkeypatch):

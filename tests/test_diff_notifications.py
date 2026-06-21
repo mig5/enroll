@@ -81,3 +81,42 @@ def test_send_email_raises_when_no_delivery_method(monkeypatch):
             from_addr="a@example.com",
             to_addrs=["b@example.com"],
         )
+
+
+def test_send_email_refuses_smtp_auth_without_starttls(monkeypatch):
+    from enroll.diff import send_email
+
+    class FakeSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def ehlo(self):
+            pass
+
+        def starttls(self):
+            raise RuntimeError("no starttls")
+
+        def login(self, *_args):
+            raise AssertionError("login should not be called without TLS")
+
+        def send_message(self, *_args):
+            raise AssertionError("message should not be sent without TLS")
+
+    monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+
+    with pytest.raises(RuntimeError, match="STARTTLS failed"):
+        send_email(
+            subject="Subj",
+            body="Body",
+            from_addr="a@example.com",
+            to_addrs=["b@example.com"],
+            smtp="smtp.example.com:587",
+            smtp_user="user",
+            smtp_password="secret",
+        )

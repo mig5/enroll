@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
 from collections import OrderedDict
 from pathlib import Path
 
 import yaml
+
+from tests.state_helpers import write_schema_state
 
 from enroll import manifest
 from enroll.salt import (
@@ -18,8 +19,7 @@ from enroll.salt import (
 
 
 def _write_state(bundle: Path, state: dict) -> None:
-    bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
 
 def _sample_state() -> dict:

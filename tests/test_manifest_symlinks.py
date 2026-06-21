@@ -1,5 +1,6 @@
-import json
 from pathlib import Path
+
+from tests.state_helpers import write_schema_state
 
 import enroll.manifest as manifest
 
@@ -92,7 +93,7 @@ def test_manifest_emits_symlink_tasks_and_vars(tmp_path: Path):
 
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "artifacts").mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 

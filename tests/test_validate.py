@@ -411,3 +411,45 @@ def test_validate_harvest_no_schema_option(tmp_path: Path):
     result = validate_harvest(str(bundle_dir), no_schema=True)
     assert result.ok is False
     assert any("failed to parse" in e for e in result.errors)
+
+
+def test_validate_harvest_rejects_artifact_symlink(tmp_path: Path):
+    bundle_dir = tmp_path / "bundle"
+    artifact = bundle_dir / "artifacts" / "users" / "etc" / "shadow"
+    artifact.parent.mkdir(parents=True)
+    artifact.symlink_to("/etc/shadow")
+    (bundle_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "roles": {
+                    "users": {
+                        "managed_files": [
+                            {"path": "/etc/shadow", "src_rel": "etc/shadow"}
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_harvest(str(bundle_dir), no_schema=True)
+
+    assert result.ok is False
+    assert any("symlink" in e for e in result.errors)
+
+
+def test_validate_harvest_rejects_unreferenced_artifact_symlink(tmp_path: Path):
+    bundle_dir = tmp_path / "bundle"
+    artifact = bundle_dir / "artifacts" / "users" / "etc" / "shadow"
+    artifact.parent.mkdir(parents=True)
+    artifact.symlink_to("/etc/shadow")
+    (bundle_dir / "state.json").write_text(
+        json.dumps({"roles": {"users": {"managed_files": []}}}),
+        encoding="utf-8",
+    )
+
+    result = validate_harvest(str(bundle_dir), no_schema=True)
+
+    assert result.ok is False
+    assert any("symlink" in e for e in result.errors)

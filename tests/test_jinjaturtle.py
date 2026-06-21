@@ -1,5 +1,6 @@
-import json
 from pathlib import Path
+
+from tests.state_helpers import write_schema_state
 
 import enroll.manifest as manifest_mod
 import enroll.jinjaturtle as jinjaturtle_mod
@@ -103,7 +104,7 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
     }
 
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     # Pretend jinjaturtle exists.
     monkeypatch.setattr(

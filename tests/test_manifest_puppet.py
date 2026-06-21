@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from tests.state_helpers import write_schema_state
+
 from enroll import manifest
 from enroll.puppet import (
     PuppetRole,
@@ -15,8 +17,7 @@ from enroll.puppet import (
 
 
 def _write_state(bundle: Path, state: dict) -> None:
-    bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
 
 def test_manifest_puppet_writes_control_repo_style_output(tmp_path: Path):

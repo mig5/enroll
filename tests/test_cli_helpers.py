@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def test_discover_config_path_precedence(tmp_path: Path, monkeypatch):
-    """_discover_config_path: --config > ENROLL_CONFIG > ./enroll.ini > XDG."""
+    """_discover_config_path: --config > ENROLL_CONFIG > XDG."""
     from enroll.cli import _discover_config_path
 
     cfg1 = tmp_path / "one.ini"
@@ -27,14 +27,14 @@ def test_discover_config_path_precedence(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ENROLL_CONFIG", str(cfg2))
     assert _discover_config_path([]) == cfg2
 
-    # Local ./enroll.ini fallback.
+    # Local ./enroll.ini is ignored unless passed explicitly.
     monkeypatch.delenv("ENROLL_CONFIG", raising=False)
     local = tmp_path / "enroll.ini"
     local.write_text("[enroll]\n", encoding="utf-8")
-    assert _discover_config_path([]) == local
+    assert _discover_config_path([]) is None
+    assert _discover_config_path(["--config", str(local)]) == local
 
     # XDG fallback.
-    local.unlink()
     xdg = tmp_path / "xdg"
     cfg3 = xdg / "enroll" / "enroll.ini"
     cfg3.parent.mkdir(parents=True)

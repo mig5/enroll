@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import os
@@ -7,6 +6,7 @@ import tarfile
 import pytest
 
 import enroll.manifest as manifest
+from tests.state_helpers import write_schema_state
 import enroll.jinjaturtle as jinjaturtle_mod
 from enroll import ansible as ansible_layout
 from enroll import ansible as ansible_tasks
@@ -84,8 +84,7 @@ def _minimal_package_state(packages):
 
 
 def _write_state(bundle: Path, state: dict) -> None:
-    bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
 
 def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
@@ -230,7 +229,7 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     }
 
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     # Create artifact for etc_custom file so copy works
     (bundle / "artifacts" / "etc_custom" / "etc" / "default").mkdir(
@@ -936,7 +935,7 @@ def test_manifest_site_mode_creates_host_inventory_and_raw_files(tmp_path: Path)
     }
 
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     # Artifacts for usr_local_custom file so copy works.
     (bundle / "artifacts" / "usr_local_custom" / "usr" / "local" / "etc").mkdir(
@@ -1087,7 +1086,7 @@ def test_manifest_includes_dnf_config_role_when_present(tmp_path: Path):
     }
 
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -1224,7 +1223,7 @@ def test_manifest_orders_cron_and_logrotate_at_playbook_tail(tmp_path: Path):
     )
 
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -1363,9 +1362,7 @@ def test_manifest_applies_jinjaturtle_to_jinjifyable_managed_file(
             },
         },
     }
-    (bundle / "state.json").write_text(
-        __import__("json").dumps(state), encoding="utf-8"
-    )
+    write_schema_state(bundle, state)
 
     monkeypatch.setattr(jinjaturtle_mod, "find_jinjaturtle_cmd", lambda: "jinjaturtle")
 
@@ -1463,7 +1460,7 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
             },
         },
     }
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -1768,7 +1765,7 @@ def test_manifest_renders_flatpak_and_snap_details(tmp_path: Path):
         },
     }
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -1844,7 +1841,7 @@ def test_users_role_without_portable_apps_omits_community_general_tasks(tmp_path
         },
     }
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -1922,7 +1919,7 @@ def test_users_role_only_creates_ssh_dir_when_managed_ssh_files_exist(tmp_path):
         },
     }
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -1972,7 +1969,7 @@ def test_manifest_emits_flatpak_role_even_when_no_flatpaks(tmp_path):
         }
     }
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -2039,7 +2036,7 @@ def test_manifest_avoids_package_role_collision_with_flatpak_singleton(tmp_path)
         }
     }
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out), no_common_roles=True)
 
@@ -2135,7 +2132,7 @@ def test_manifest_writes_sysctl_role(tmp_path: Path):
             },
         },
     }
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -2237,7 +2234,7 @@ def test_manifest_renders_container_image_role_for_ansible(tmp_path: Path):
         }
     }
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out))
 
@@ -2314,7 +2311,7 @@ def test_manifest_writes_container_images_to_hostvars_in_fqdn_mode(tmp_path: Pat
         }
     }
     bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    write_schema_state(bundle, state)
 
     manifest.manifest(str(bundle), str(out), fqdn="host.example.test")
 
@@ -2329,3 +2326,14 @@ def test_manifest_writes_container_images_to_hostvars_in_fqdn_mode(tmp_path: Pat
     assert "container_images: []" in defaults
     assert digest in hostvars
     assert "role: container_images" in playbook
+
+
+def test_manifest_non_fqdn_refuses_existing_output(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    bundle.mkdir(parents=True)
+    out.mkdir()
+    write_schema_state(bundle, _minimal_package_state([]))
+
+    with pytest.raises(RuntimeError, match="already exists"):
+        manifest.manifest(str(bundle), str(out), no_common_roles=True)
