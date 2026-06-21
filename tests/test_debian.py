@@ -280,6 +280,12 @@ def test_build_dpkg_etc_index_skips_non_etc_paths(tmp_path: Path):
     assert "foo" not in topdir_to_pkgs
 
 
+def test_parse_status_conffiles_handles_missing_status(tmp_path: Path):
+    import enroll.debian as d
+
+    assert d.parse_status_conffiles(str(tmp_path / "missing-status")) == {}
+
+
 def test_parse_status_conffiles_handles_empty_status(tmp_path: Path):
     import enroll.debian as d
 

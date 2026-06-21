@@ -186,7 +186,12 @@ def parse_status_conffiles(
         if m:
             out[pkg] = m
 
-    with open(status_path, "r", encoding="utf-8", errors="replace") as f:
+    try:
+        f = open(status_path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+
+    with f:
         for line in f:
             if line.strip() == "":
                 if cur:
