@@ -266,10 +266,15 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     tasks = (out / "roles" / "foo" / "tasks" / "main.yml").read_text(encoding="utf-8")
     assert "- name: Probe whether systemd unit exists and is manageable" in tasks
     assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
-    assert "when: foo_manage_unit | default(false)" in tasks
+    assert "enroll_manage_systemd_runtime | default(true) | bool" in tasks
     assert (
-        "when:\n    - foo_manage_unit | default(false)\n    - _unit_probe is succeeded\n"
-        in tasks
+        "when:\n    - enroll_manage_systemd_runtime | default(true) | bool\n"
+        "    - foo_manage_unit | default(false)\n" in tasks
+    )
+    assert (
+        "when:\n    - enroll_manage_systemd_runtime | default(true) | bool\n"
+        "    - foo_manage_unit | default(false)\n"
+        "    - _unit_probe is succeeded\n" in tasks
     )
 
     # Ensure we didn't emit deprecated/broken '{{ }}' delimiters in when: lines.
@@ -632,6 +637,7 @@ def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
     tasks = (out / "roles" / "net" / "tasks" / "main.yml").read_text(encoding="utf-8")
     assert "Ensure grouped unit enablement matches harvest" in tasks
     assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
+    assert "enroll_manage_systemd_runtime | default(true) | bool" in tasks
     assert "Restart managed services" not in tasks
 
     defaults_text = (out / "roles" / "net" / "defaults" / "main.yml").read_text(
@@ -647,6 +653,7 @@ def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
         encoding="utf-8"
     )
     assert "Run systemd daemon-reload" in handlers
+    assert "when: enroll_manage_systemd_runtime | default(true) | bool" in handlers
     assert "- name: Restart managed service NetworkManager.service" in handlers
     assert "name: NetworkManager.service" in handlers
     assert "state: restarted" in handlers

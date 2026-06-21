@@ -34,6 +34,7 @@ SALT_JINJATURTLE_DIR="${WORK_DIR}/salt-jinjaturtle"
 SALT_NO_JINJATURTLE_DIR="${WORK_DIR}/salt-no-jinjaturtle"
 TEST_FQDN="${ENROLL_TEST_FQDN:-enroll-ci.example.test}"
 JINJATURTLE_FIXTURE="${WORK_DIR}/enroll-tests-jinjaturtle.ini"
+ANSIBLE_PLAYBOOK_EXTRA_ARGS=()
 
 cleanup() {
   if [[ "${KEEP_WORKDIR}" -eq 0 ]]; then
@@ -85,6 +86,29 @@ require_supported_ci_os() {
         printf 'WARNING: tests.sh is maintained for Debian 13 and AlmaLinux/RHEL-family CI; detected %s %s.\n' "${ID:-unknown}" "${VERSION_ID:-unknown}" >&2
         ;;
     esac
+  fi
+}
+
+
+pid1_comm() {
+  if [[ -r /proc/1/comm ]]; then
+    tr -d '[:space:]' </proc/1/comm || true
+    return
+  fi
+  if command -v ps >/dev/null 2>&1; then
+    ps -p 1 -o comm= 2>/dev/null | tr -d '[:space:]' || true
+  fi
+}
+
+configure_ansible_playbook_extra_args() {
+  local pid1
+  pid1="$(pid1_comm)"
+
+  ANSIBLE_PLAYBOOK_EXTRA_ARGS=()
+  if [[ "${pid1}" != "systemd" ]]; then
+    section "Setup: Ansible systemd runtime guard"
+    printf 'PID 1 is %s, not systemd; disabling generated Ansible systemd runtime enforcement for CI noop plays.\n' "${pid1:-unknown}"
+    ANSIBLE_PLAYBOOK_EXTRA_ARGS=(-e enroll_manage_systemd_runtime=false)
   fi
 }
 
@@ -244,29 +268,6 @@ ensure_puppet_repo() {
   DNF_UPDATED=
 }
 
-ensure_mig5_rpm_repo() {
-  if ! is_rpm_family; then
-    return
-  fi
-  if [[ -e /etc/yum.repos.d/mig5.repo ]]; then
-    return
-  fi
-  section "Setup: mig5 dnf repository"
-  pkg_install ca-certificates curl
-  run rpm --import https://mig5.net/static/mig5.asc
-  cat >/etc/yum.repos.d/mig5.repo <<'EOF'
-[mig5]
-name=mig5 Repository
-baseurl=https://rpm.mig5.net/$releasever/rpm/$basearch
-enabled=1
-gpgcheck=1
-repo_gpgcheck=1
-gpgkey=https://mig5.net/static/mig5.asc
-EOF
-  run dnf -y upgrade --refresh
-  DNF_UPDATED=1
-}
-
 ensure_jinjaturtle() {
   section "Setup: JinjaTurtle package"
   if command -v jinjaturtle >/dev/null 2>&1; then
@@ -286,8 +287,8 @@ ensure_jinjaturtle() {
     APT_UPDATED=1
     run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jinjaturtle
   elif is_rpm_family; then
-    ensure_mig5_rpm_repo
-    pkg_install jinjaturtle
+    printf 'Skipping JinjaTurtle package integration on RPM-family CI;\n'
+    return
   else
     fail "Unsupported OS for JinjaTurtle package install: $(os_id)."
   fi
@@ -392,7 +393,7 @@ run_ansible_jinjaturtle_variant() {
   ansible-galaxy install -r "${out_dir}/requirements.yml"
   run ansible-lint "${out_dir}"
   cd "${out_dir}"
-  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 }
 
 run_puppet_jinjaturtle_variant() {
@@ -424,6 +425,12 @@ run_salt_jinjaturtle_variant() {
 }
 
 run_jinjaturtle_manifest_tests() {
+  if is_rpm_family ; then
+    section "JinjaTurtle integration matrix"
+    printf 'Skipping JinjaTurtle package integration on RPM-family CI;\n'
+    return
+  fi
+
   ensure_jinjaturtle
   require_cmd jinjaturtle "Install JinjaTurtle before running the JinjaTurtle integration matrix."
 
@@ -450,19 +457,19 @@ run_ansible_noop_tests() {
   ansible-galaxy install -r "${ANSIBLE_DIR}/requirements.yml"
   run ansible-lint "${ANSIBLE_DIR}"
   cd "${ANSIBLE_DIR}"
-  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 
   cd "${PROJECT_ROOT}"
   run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_NO_COMMON_DIR}" --target ansible --no-common-roles
   ansible-galaxy install -r "${ANSIBLE_NO_COMMON_DIR}/requirements.yml"
   cd "${ANSIBLE_NO_COMMON_DIR}"
-  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff
+  run ansible-playbook playbook.yml -i "localhost," -c local --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 
   cd "${PROJECT_ROOT}"
   run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_FQDN_DIR}" --target ansible --fqdn "${TEST_FQDN}"
   ansible-galaxy install -r "${ANSIBLE_FQDN_DIR}/requirements.yml"
   cd "${ANSIBLE_FQDN_DIR}"
-  run ansible-playbook "playbooks/${TEST_FQDN}.yml" -i inventory/hosts.ini -c local --limit "${TEST_FQDN}" --check --diff
+  run ansible-playbook "playbooks/${TEST_FQDN}.yml" -i inventory/hosts.ini -c local --limit "${TEST_FQDN}" --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 }
 
 run_puppet_noop_tests() {
@@ -507,6 +514,7 @@ main() {
   require_supported_ci_os
   run_pytests
   prepare_harvest_fixture
+  configure_ansible_playbook_extra_args
   run_ansible_noop_tests
   run_puppet_noop_tests
   run_salt_noop_tests

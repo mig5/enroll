@@ -1002,7 +1002,9 @@ def _render_grouped_systemd_tasks(var_prefix: str) -> str:
   register: _enroll_unit_probes
   failed_when: false
   changed_when: false
-  when: item.manage | default(false)
+  when:
+    - enroll_manage_systemd_runtime | default(true) | bool
+    - item.manage | default(false)
 
 - name: Ensure grouped unit enablement matches harvest
   ansible.builtin.systemd:
@@ -1011,6 +1013,7 @@ def _render_grouped_systemd_tasks(var_prefix: str) -> str:
   no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   loop: "{{{{ _enroll_unit_probes.results | default([]) }}}}"
   when:
+    - enroll_manage_systemd_runtime | default(true) | bool
     - item.item.manage | default(false)
     - not (item.failed | default(false))
 
@@ -1021,6 +1024,7 @@ def _render_grouped_systemd_tasks(var_prefix: str) -> str:
   no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   loop: "{{{{ _enroll_unit_probes.results | default([]) }}}}"
   when:
+    - enroll_manage_systemd_runtime | default(true) | bool
     - item.item.manage | default(false)
     - not (item.failed | default(false))
 """
@@ -1083,7 +1087,9 @@ def _render_single_systemd_tasks(var_prefix: str) -> str:
   register: _unit_probe
   failed_when: false
   changed_when: false
-  when: {var_prefix}_manage_unit | default(false)
+  when:
+    - enroll_manage_systemd_runtime | default(true) | bool
+    - {var_prefix}_manage_unit | default(false)
 
 - name: Ensure unit enablement matches harvest
   ansible.builtin.systemd:
@@ -1091,6 +1097,7 @@ def _render_single_systemd_tasks(var_prefix: str) -> str:
     enabled: "{{{{ {var_prefix}_systemd_enabled | bool }}}}"
   no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   when:
+    - enroll_manage_systemd_runtime | default(true) | bool
     - {var_prefix}_manage_unit | default(false)
     - _unit_probe is succeeded
 
@@ -1100,6 +1107,7 @@ def _render_single_systemd_tasks(var_prefix: str) -> str:
     state: "{{{{ {var_prefix}_systemd_state }}}}"
   no_log: "{{{{ enroll_hide_systemd_status | default(true) | bool }}}}"
   when:
+    - enroll_manage_systemd_runtime | default(true) | bool
     - {var_prefix}_manage_unit | default(false)
     - _unit_probe is succeeded
 """
@@ -1142,6 +1150,7 @@ def _single_service_restart_handler_body(var_prefix: str) -> str:
     name: "{{{{ {var_prefix}_unit_name }}}}"
     state: restarted
   when:
+    - enroll_manage_systemd_runtime | default(true) | bool
     - {var_prefix}_manage_unit | default(false)
     - ({var_prefix}_systemd_state | default('stopped')) == 'started'
 """
@@ -1162,6 +1171,7 @@ def _grouped_service_restart_handlers_body(role: AnsibleRole) -> str:
   ansible.builtin.service:
     name: {name}
     state: restarted
+  when: enroll_manage_systemd_runtime | default(true) | bool
 """
         )
     return "\n".join(_task_body(handler) for handler in handlers if _task_body(handler))
@@ -1580,6 +1590,7 @@ _SYSTEMD_DAEMON_RELOAD_HANDLER = """---
   ansible.builtin.systemd:
     daemon_reload: true
   no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"
+  when: enroll_manage_systemd_runtime | default(true) | bool
 """
 
 
