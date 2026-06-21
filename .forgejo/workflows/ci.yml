@@ -46,7 +46,7 @@ jobs:
             almalinux)
               dnf -y upgrade --refresh
               dnf -y install \
-                ca-certificates curl gnupg2 git tar gzip findutils bash which jq \
+                ca-certificates curl-minimal gnupg2 git tar gzip findutils bash which jq \
                 dnf-plugins-core epel-release
               dnf -y config-manager --set-enabled crb || true
               curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.repo > /etc/yum.repos.d/salt.repo

@@ -150,6 +150,7 @@ translate_packages() {
       ansible) translated+=(ansible-core) ;;
       apache2) translated+=(httpd) ;;
       gnupg) translated+=(gnupg2) ;;
+      curl) translated+=(curl-minimal) ;;
       lsb-release) translated+=(redhat-lsb-core) ;;
       puppet) translated+=(puppet-agent) ;;
       python3-apt) ;;
