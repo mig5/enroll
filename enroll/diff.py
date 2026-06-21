@@ -923,14 +923,17 @@ def enforce_old_harvest(
             except OSError:
                 pass
 
-            # 1) Generate a manifest in a temp directory.
-            manifest(str(old_b.dir), str(td_path), target=target)
+            # 1) Generate a manifest in a temp directory.  The renderer now
+            # refuses to write into an existing destination, so use a fresh
+            # child path under the secure temporary directory.
+            manifest_dir = td_path / "manifest"
+            manifest(str(old_b.dir), str(manifest_dir), target=target)
 
             # 2) Apply it locally.
             cmd, env = _enforcement_command(
                 target,
                 tool_exe,
-                td_path,
+                manifest_dir,
                 tags=tags,
             )
 
@@ -1454,8 +1457,14 @@ def send_email(
         try:
             s.starttls()
             s.ehlo()
-        except Exception:
-            # STARTTLS is optional; ignore if unsupported.
+        except Exception as e:
+            if smtp_user or smtp_password:
+                raise RuntimeError(
+                    "email: SMTP STARTTLS failed; refusing to send credentials "
+                    "without TLS"
+                ) from e
+            # Without credentials, keep STARTTLS opportunistic so localhost or
+            # unauthenticated relay setups continue to work.
             pass  # nosec
         if smtp_user:
             s.login(smtp_user, smtp_password or "")
