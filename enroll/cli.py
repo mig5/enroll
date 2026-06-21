@@ -634,8 +634,17 @@ def main() -> None:
         action="store_true",
         help=(
             "If differences are detected, attempt to enforce the old harvest state locally by generating a manifest and "
-            "running ansible-playbook. Requires ansible-playbook on PATH. "
+            "running the selected local apply tool. "
             "Enroll does not attempt to downgrade packages; if the only drift is package version upgrades (or newly installed packages), enforcement is skipped."
+        ),
+    )
+    d.add_argument(
+        "--target",
+        choices=["ansible", "puppet", "salt"],
+        default="ansible",
+        help=(
+            "Configuration-management target to use with --enforce (default: ansible). "
+            "Requires ansible-playbook, puppet, or salt-call on PATH as appropriate."
         ),
     )
     d.add_argument(
@@ -945,7 +954,7 @@ def main() -> None:
             )
 
             # Optional enforcement: if drift is detected, attempt to restore the
-            # system to the *old* (baseline) state using ansible-playbook.
+            # system to the *old* (baseline) state using the selected target.
             if bool(getattr(args, "enforce", False)):
                 if has_changes:
                     if not has_enforceable_drift(report):
@@ -963,6 +972,7 @@ def main() -> None:
                                 args.old,
                                 sops_mode=bool(getattr(args, "sops", False)),
                                 report=report,
+                                target=getattr(args, "target", "ansible"),
                             )
                         except Exception as e:
                             raise SystemExit(

@@ -174,23 +174,24 @@ Compare two harvest bundles and report what changed.
 - `--sops` when comparing SOPS-encrypted harvest bundles
 - `--exclude-path <PATTERN>` (repeatable) to ignore file/dir drift under matching paths (same pattern syntax as harvest)
 - `--ignore-package-versions` to ignore package version-only drift (upgrades/downgrades)
-- `--enforce` to apply the **old** harvest state locally (requires `ansible-playbook` on `PATH`)
+- `--enforce` to apply the **old** harvest state locally (requires the relevant config manager tool on `PATH` - defaults to `ansible-playbook`)
+- `--target` when using `--enforce`, to set the desired config manager tool to manifest to and run)
 
 **Noise suppression**
 - `--exclude-path` is useful for things that change often but you still want in the harvest baseline (e.g. `/var/anacron`).
 - `--ignore-package-versions` keeps routine upgrades from alerting; package add/remove drift is still reported.
 
-**Enforcement (`--enforce`)**
-If a diff exists and `ansible-playbook` is available, Enroll will:
+**Enforcement (`--enforce` (`--target`))**
+If a diff exists and the config manager defined by `--target` (default: ansible) is on the PATH, Enroll will:
 1) generate a manifest from the **old** harvest into a temporary directory
-2) run `ansible-playbook -i localhost, -c local <tmp>/playbook.yml` (often with `--tags role_<...>` to limit runtime)
+2) run the config manager tool against that manifest
 3) record in the diff report that the old harvest was enforced
 
 Enforcement is intentionally “safe”:
 - reinstalls packages that were removed (`state: present`), but does **not** attempt downgrades/pinning
 - restores users, files (contents + permissions/ownership), and service enable/start state
 
-If `ansible-playbook` is not on `PATH`, Enroll returns an error and does not enforce.
+If the config manager tool is not on `PATH`, Enroll returns an error and does not enforce.
 
 
 **Output formats**
@@ -557,7 +558,7 @@ enroll diff --old /path/to/harvestA --new /path/to/harvestB --exclude-path /var/
 enroll diff --old /path/to/harvestA --new /path/to/harvestB --ignore-package-versions
 ```
 
-### Enforce the old harvest state when drift is detected (requires Ansible)
+### Enforce the old harvest state when drift is detected
 ```bash
 enroll diff --old /path/to/harvestA --new /path/to/harvestB --enforce --ignore-package-versions --exclude-path /var/anacron
 ```
@@ -692,12 +693,14 @@ exclude_path = /usr/local/bin/docker-*, /usr/local/bin/some-tool
 # you can set defaults here too, e.g.
 no_jinjaturtle = true
 sops = 54A91143AE0AB4F7743B01FE888ED1B423A3BC99
+# target = ansible (the default), or salt, or puppet
 
 [diff]
 # ignore noisy drift
 exclude_path = /var/anacron
 ignore_package_versions = true
-# enforce = true  # requires ansible-playbook on PATH
+# enforce = true  # requires the target config manager on PATH
+# target = puppet (for example, as per manifest)
 
 [single-shot]
 # if you use single-shot, put its defaults here.

@@ -309,6 +309,162 @@ def test_enforce_old_harvest_runs_ansible_with_tags_from_file_drift(
     assert "role_usr_local_custom" in str(argv[i + 1])
 
 
+def test_enforce_old_harvest_runs_puppet_target(monkeypatch, tmp_path: Path):
+    import enroll.diff as d
+    import enroll.manifest as mf
+
+    monkeypatch.setattr(
+        d.shutil,
+        "which",
+        lambda name: "/usr/bin/puppet" if name == "puppet" else None,
+    )
+
+    calls: dict[str, object] = {}
+
+    def fake_manifest(_harvest_dir: str, out_dir: str, **kwargs):
+        calls["manifest_target"] = kwargs.get("target")
+        out = Path(out_dir)
+        (out / "manifests").mkdir(parents=True)
+        (out / "modules").mkdir(parents=True)
+        (out / "manifests" / "site.pp").write_text(
+            "node default { }\n", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(mf, "manifest", fake_manifest)
+
+    def fake_run(
+        argv, cwd=None, env=None, capture_output=False, text=False, check=False
+    ):
+        calls["argv"] = list(argv)
+        calls["cwd"] = cwd
+        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(d.subprocess, "run", fake_run)
+
+    old = tmp_path / "old"
+    _write_bundle(old, {"inventory": {"packages": {}}, "roles": _minimal_roles()})
+
+    report = {
+        "packages": {"added": [], "removed": ["curl"], "version_changed": []},
+        "services": {"enabled_added": [], "enabled_removed": [], "changed": []},
+        "users": {"added": [], "removed": [], "changed": []},
+        "files": {"added": [], "removed": [], "changed": []},
+    }
+
+    info = d.enforce_old_harvest(str(old), report=report, target="puppet")
+
+    assert info["status"] == "applied"
+    assert info["target"] == "puppet"
+    assert info["tool"] == "puppet apply"
+    assert info["scope"] == "full_manifest"
+    assert info["tags"] == []
+    assert calls["manifest_target"] == "puppet"
+
+    argv = calls.get("argv")
+    assert argv and argv[:2] == ["/usr/bin/puppet", "apply"]
+    assert "--modulepath" in argv
+    assert str(Path(calls["cwd"]) / "manifests" / "site.pp") in argv
+
+
+def test_enforce_old_harvest_runs_salt_target(monkeypatch, tmp_path: Path):
+    import enroll.diff as d
+    import enroll.manifest as mf
+
+    monkeypatch.setattr(
+        d.shutil,
+        "which",
+        lambda name: "/usr/bin/salt-call" if name == "salt-call" else None,
+    )
+
+    calls: dict[str, object] = {}
+
+    def fake_manifest(_harvest_dir: str, out_dir: str, **kwargs):
+        calls["manifest_target"] = kwargs.get("target")
+        out = Path(out_dir)
+        (out / "states").mkdir(parents=True)
+        (out / "states" / "top.sls").write_text("base:\n  '*': []\n", encoding="utf-8")
+
+    monkeypatch.setattr(mf, "manifest", fake_manifest)
+
+    def fake_run(
+        argv, cwd=None, env=None, capture_output=False, text=False, check=False
+    ):
+        calls["argv"] = list(argv)
+        calls["cwd"] = cwd
+        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(d.subprocess, "run", fake_run)
+
+    old = tmp_path / "old"
+    _write_bundle(old, {"inventory": {"packages": {}}, "roles": _minimal_roles()})
+
+    report = {
+        "packages": {"added": [], "removed": ["curl"], "version_changed": []},
+        "services": {"enabled_added": [], "enabled_removed": [], "changed": []},
+        "users": {"added": [], "removed": [], "changed": []},
+        "files": {"added": [], "removed": [], "changed": []},
+    }
+
+    info = d.enforce_old_harvest(str(old), report=report, target="salt")
+
+    assert info["status"] == "applied"
+    assert info["target"] == "salt"
+    assert info["tool"] == "salt-call"
+    assert info["scope"] == "full_manifest"
+    assert calls["manifest_target"] == "salt"
+
+    argv = calls.get("argv")
+    assert argv and argv[0] == "/usr/bin/salt-call"
+    assert "--local" in argv
+    assert "--file-root" in argv
+    assert "state.apply" in argv
+    assert str(Path(calls["cwd"]) / "states") in argv
+
+
+def test_cli_diff_enforce_forwards_target(monkeypatch):
+    import enroll.cli as cli
+
+    report = {
+        "packages": {"added": [], "removed": ["curl"], "version_changed": []},
+        "services": {"enabled_added": [], "enabled_removed": [], "changed": []},
+        "users": {"added": [], "removed": [], "changed": []},
+        "files": {"added": [], "removed": [], "changed": []},
+    }
+
+    monkeypatch.setattr(cli, "compare_harvests", lambda *a, **k: (report, True))
+    monkeypatch.setattr(cli, "has_enforceable_drift", lambda r: True)
+
+    calls: dict[str, object] = {}
+
+    def fake_enforce(old, **kwargs):
+        calls["old"] = old
+        calls.update(kwargs)
+        return {"status": "applied", "target": kwargs.get("target"), "returncode": 0}
+
+    monkeypatch.setattr(cli, "enforce_old_harvest", fake_enforce)
+    monkeypatch.setattr(cli, "format_report", lambda report, fmt="text": "R\n")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "enroll",
+            "diff",
+            "--old",
+            "/tmp/old",
+            "--new",
+            "/tmp/new",
+            "--enforce",
+            "--target",
+            "puppet",
+        ],
+    )
+
+    cli.main()
+    assert calls["old"] == "/tmp/old"
+    assert calls["target"] == "puppet"
+    assert calls["report"] is report
+
+
 def test_cli_diff_forwards_exclude_and_ignore_flags(monkeypatch, capsys):
     import enroll.cli as cli
 
