@@ -39,8 +39,10 @@ def _discover_config_path(argv: list[str]) -> Optional[Path]:
       1) --no-config disables loading.
       2) --config PATH (or -c PATH)
       3) $ENROLL_CONFIG
-      4) ./enroll.ini, ./.enroll.ini
-      5) $XDG_CONFIG_HOME/enroll/enroll.ini (or ~/.config/enroll/enroll.ini)
+      4) $XDG_CONFIG_HOME/enroll/enroll.ini (or ~/.config/enroll/enroll.ini)
+
+    Current-directory config files are deliberately not auto-loaded; use
+    --config ./enroll.ini if that behaviour is desired.
 
     The config file is optional; if no file is found, returns None.
     """
@@ -65,12 +67,6 @@ def _discover_config_path(argv: list[str]) -> Optional[Path]:
     envp = os.environ.get("ENROLL_CONFIG")
     if envp:
         return Path(envp).expanduser()
-
-    cwd = Path.cwd()
-    for name in ("enroll.ini", ".enroll.ini"):
-        cp = cwd / name
-        if cp.exists() and cp.is_file():
-            return cp
 
     xdg = os.environ.get("XDG_CONFIG_HOME")
     if xdg:

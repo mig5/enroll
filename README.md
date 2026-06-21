@@ -656,8 +656,8 @@ Enroll supports reading an ini-style file of all the arguments for each subcomma
 ### Location of the config file
 
 The path the config file can be specified with `-c` or `--config` on the command-line. Otherwise,
-Enroll will look for `./enroll.ini`, `./.enroll.ini` (in the current working directory),
-`~/.config/enroll/enroll.ini` (or `$XDG_CONFIG_HOME/enroll/enroll.ini`).
+Enroll will look for the `ENROLL_CONFIG` environment variable, `$XDG_CONFIG_HOME/enroll/enroll.ini`,
+or `~/.config/enroll/enroll.ini`.
 
 You may also pass `--no-config` if you deliberately want to ignore the config file even if it existed.
 

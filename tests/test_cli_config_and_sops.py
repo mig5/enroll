@@ -23,10 +23,10 @@ def test_discover_config_path_precedence(monkeypatch, tmp_path: Path):
     assert _discover_config_path(["harvest"]) == cfg
 
 
-def test_discover_config_path_finds_local_and_xdg(monkeypatch, tmp_path: Path):
+def test_discover_config_path_ignores_local_and_finds_xdg(monkeypatch, tmp_path: Path):
     from enroll.cli import _discover_config_path
 
-    # local file in cwd
+    # local files in cwd are deliberately ignored unless passed via --config
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     local = cwd / "enroll.ini"
@@ -35,7 +35,8 @@ def test_discover_config_path_finds_local_and_xdg(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(cwd)
     monkeypatch.delenv("ENROLL_CONFIG", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    assert _discover_config_path(["harvest"]) == local
+    assert _discover_config_path(["harvest"]) is None
+    assert _discover_config_path(["--config", str(local), "harvest"]) == local
 
     # xdg config fallback
     monkeypatch.chdir(tmp_path)
