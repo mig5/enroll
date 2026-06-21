@@ -141,3 +141,107 @@ def test_container_images_collector_records_unpullable_tagged_images(
 
     assert result.images[0]["pull_ref"] is None
     assert "exact digest-pinned pull cannot be rendered" in result.images[0]["notes"][0]
+
+
+def test_container_images_collector_notes_list_exceptions(monkeypatch, tmp_path):
+    from enroll.harvest_collectors import container_images as ci
+    from enroll.harvest_collectors.container_images import ContainerImagesCollector
+
+    monkeypatch.setattr(
+        ci.shutil,
+        "which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd == "docker" else None,
+    )
+
+    def boom(_argv, *, timeout=20):
+        raise RuntimeError("socket unavailable")
+
+    monkeypatch.setattr(ci, "_run_command", boom)
+
+    result = ContainerImagesCollector(_context(tmp_path)).collect()
+
+    assert result.images == []
+    assert "Failed to list docker images" in result.notes[0]
+
+
+def test_container_images_collector_notes_list_nonzero_without_detail(
+    monkeypatch, tmp_path
+):
+    import subprocess
+
+    from enroll.harvest_collectors import container_images as ci
+    from enroll.harvest_collectors.container_images import ContainerImagesCollector
+
+    monkeypatch.setattr(
+        ci.shutil,
+        "which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd == "podman" else None,
+    )
+    monkeypatch.setattr(
+        ci,
+        "_run_command",
+        lambda argv, *, timeout=20: subprocess.CompletedProcess(argv, 42, "", ""),
+    )
+
+    result = ContainerImagesCollector(_context(tmp_path)).collect()
+
+    assert result.images == []
+    assert "exit 42" in result.notes[0]
+
+
+def test_container_images_collector_notes_bad_inspect_json(monkeypatch, tmp_path):
+    import subprocess
+
+    from enroll.harvest_collectors import container_images as ci
+    from enroll.harvest_collectors.container_images import ContainerImagesCollector
+
+    image_id = "sha256:" + "d" * 64
+    monkeypatch.setattr(
+        ci.shutil,
+        "which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd == "docker" else None,
+    )
+
+    def fake_run(argv, *, timeout=20):
+        if argv[:4] == ["/usr/bin/docker", "image", "ls", "-q"]:
+            return subprocess.CompletedProcess(argv, 0, image_id + "\n", "")
+        if argv[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, "not json", "")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(ci, "_run_command", fake_run)
+
+    result = ContainerImagesCollector(_context(tmp_path)).collect()
+
+    assert result.images == []
+    assert "Failed to parse docker image inspect JSON" in result.notes[0]
+
+
+def test_container_images_collector_notes_unexpected_inspect_shape(
+    monkeypatch, tmp_path
+):
+    import subprocess
+
+    from enroll.harvest_collectors import container_images as ci
+    from enroll.harvest_collectors.container_images import ContainerImagesCollector
+
+    image_id = "sha256:" + "e" * 64
+    monkeypatch.setattr(
+        ci.shutil,
+        "which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd == "docker" else None,
+    )
+
+    def fake_run(argv, *, timeout=20):
+        if argv[:4] == ["/usr/bin/docker", "image", "ls", "-q"]:
+            return subprocess.CompletedProcess(argv, 0, image_id + "\n", "")
+        if argv[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, '{"not":"a-list"}', "")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(ci, "_run_command", fake_run)
+
+    result = ContainerImagesCollector(_context(tmp_path)).collect()
+
+    assert result.images == []
+    assert "Unexpected docker image inspect JSON shape" in result.notes[0]

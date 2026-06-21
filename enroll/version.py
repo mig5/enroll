@@ -28,5 +28,6 @@ def get_enroll_version() -> str:
     for dist in [*dist_names, "enroll"]:
         try:
             return version(dist)
-        except Exception:
-            return "unknown"
+        except Exception:  # nosec B112
+            continue
+    return "unknown"
