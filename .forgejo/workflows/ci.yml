@@ -34,7 +34,7 @@ jobs:
               mkdir -m 755 -p /etc/apt/keyrings
               apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                ca-certificates curl gnupg git tar gzip findutils bash \
+                ca-certificates curl gnupg git tar gzip findutils bash nodejs \
                 ansible ansible-lint python3 python3-venv python3-pip pipx systemctl python3-apt jq python3-jsonschema \
                 puppet hiera
               curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public | gpg --dearmor | tee /etc/apt/keyrings/salt-archive-keyring.pgp > /dev/null
@@ -46,7 +46,7 @@ jobs:
             almalinux)
               dnf -y upgrade --refresh
               dnf -y install \
-                ca-certificates curl-minimal gnupg2 git tar gzip findutils bash which jq \
+                ca-certificates curl-minimal gnupg2 git tar gzip findutils bash which jq nodejs \
                 dnf-plugins-core epel-release
               dnf -y config-manager --set-enabled crb || true
               curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.repo > /etc/yum.repos.d/salt.repo
