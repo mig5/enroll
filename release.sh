@@ -7,7 +7,6 @@ filedust -y .
 
 # Publish to Pypi
 poetry build
-poetry publish
 
 # Make AppImage
 poetry run pyproject-appimage --output dist/Enroll.AppImage
@@ -85,6 +84,9 @@ for dist in ${DISTS[@]}; do
   echo "==> Signing repomd.xml..."
   qubes-gpg-client --local-user "$KEYID" --detach-sign --armor "$RPM_REPO/repodata/repomd.xml" > "$RPM_REPO/repodata/repomd.xml.asc"
 done
+
+# If we got this far, publish to Poetry too
+poetry publish
 
 echo "==> Syncing repo to server..."
 rsync -aHPvz --exclude=.git --delete "$REPO_ROOT/" "$REMOTE/"

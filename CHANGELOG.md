@@ -6,9 +6,10 @@
  * Use `no_log` on systemd unit interrogations to suppress potential sensitive output when applying Ansible
  * Support manifesting Puppet code, as well as Ansible!
  * Support manifesting Salt code, as well as Ansible and Puppet!
+ * Take advantage of Jinjaturtle 0.5.5 if it's present, to render .erb templates for Puppet (as well as j2 for Ansible and Salt)
  * A lot of under-the-bonnet refactoring to make it easier to extend to cover other config managers (that don't suck) in future.
- * Support for detecting Docker images.
- * Add support for detecting Flatpaks and Snaps (manifests for Ansible code only, not Puppet or Salt at this time)
+ * Support for detecting Docker and Podman images and enforcing their presence (by SHA256 hash).
+ * Add support for detecting Flatpaks and Snaps.
 
 # 0.6.0
 
