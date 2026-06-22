@@ -701,6 +701,54 @@ def test_compare_harvests_with_exclude_paths(tmp_path: Path):
     assert "/etc/passwd" not in [f["path"] for f in report["files"]["changed"]]
 
 
+def test_compare_harvests_rejects_unsafe_artifact_symlink(tmp_path: Path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("do not hash me", encoding="utf-8")
+
+    old_bundle = tmp_path / "old"
+    old_artifacts = old_bundle / "artifacts" / "users"
+    old_artifacts.mkdir(parents=True)
+    (old_artifacts / "passwd").symlink_to(secret)
+    (old_bundle / "state.json").write_text(
+        json.dumps(
+            {
+                "inventory": {"packages": {}},
+                "roles": {
+                    "users": {
+                        "managed_files": [{"path": "/etc/passwd", "src_rel": "passwd"}]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    new_bundle = tmp_path / "new"
+    new_artifacts = new_bundle / "artifacts" / "users"
+    new_artifacts.mkdir(parents=True)
+    (new_artifacts / "passwd").write_text("safe", encoding="utf-8")
+    (new_bundle / "state.json").write_text(
+        json.dumps(
+            {
+                "inventory": {"packages": {}},
+                "roles": {
+                    "users": {
+                        "managed_files": [{"path": "/etc/passwd", "src_rel": "passwd"}]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        compare_harvests(str(old_bundle), str(new_bundle))
+
+    msg = str(exc_info.value)
+    assert "old harvest failed validation" in msg
+    assert "artifact is a symlink" in msg
+
+
 def test_utc_now_iso():
     result = _utc_now_iso()
     assert "T" in result

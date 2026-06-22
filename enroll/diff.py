@@ -31,6 +31,27 @@ from .pathfilter import PathFilter
 from .sopsutil import decrypt_file_binary_to, require_sops_cmd
 
 
+def _validate_diff_bundle(label: str, bundle_dir: Path) -> None:
+    """Validate a resolved harvest bundle before diff reads artifacts.
+
+    `diff` intentionally compares older harvests, so keep schema validation out
+    of this internal safety pass. The important security property here is that
+    the bundle's artifact tree has the same path/symlink/hardlink/special-file
+    checks that `manifest` relies on before copying artifacts.
+    """
+
+    # Import lazily to avoid a module-level cycle: enroll.validate imports
+    # BundleRef/_bundle_from_input from this module.
+    from .validate import validate_harvest
+
+    validation = validate_harvest(str(bundle_dir), no_schema=True)
+    if not validation.ok:
+        raise RuntimeError(
+            f"{label} harvest failed validation; refusing to diff unsafe bundle.\n"
+            + validation.to_text().strip()
+        )
+
+
 def _progress_enabled() -> bool:
     """Return True if we should display interactive progress UI on the CLI.
 
@@ -370,6 +391,9 @@ def compare_harvests(
             stack.callback(old_b.tempdir.cleanup)
         if new_b.tempdir:
             stack.callback(new_b.tempdir.cleanup)
+
+        _validate_diff_bundle("old", old_b.dir)
+        _validate_diff_bundle("new", new_b.dir)
 
         old_state = _load_state(old_b.dir)
         new_state = _load_state(new_b.dir)
