@@ -13,6 +13,8 @@
  * Add support for detecting Flatpaks and Snaps.
  * Stricter validation of harvests to ensure that they meet the schema and don't contain unsafe artifacts (e.g symlinks pointing outside the artifact tree)
  * Perform harvest validation before trying to manifest from it.
+ * Stricter validation on FQDN name in multisite mode.
+ * Strict check of `$PATH` when running harvest as root, in case it could lead to execution of unsafe binaries during harvest. Override with `--assume-safe-path` for non-interactive or CI purposes.
 
 # 0.6.0
 

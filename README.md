@@ -106,6 +106,9 @@ Harvest state about a host and write a harvest bundle.
       * If neither is provided, and Enroll detects an encrypted key in an interactive session, it will still fall back to prompting on-demand.
       * In non-interactive sessions, pass `--ask-key-passphrase` or `--ssh-key-passphrase-env ENV_VAR` when using encrypted private keys.
     * Note: `--ask-key-passphrase` and `--ssh-key-passphrase-env` are mutually exclusive.
+- Root PATH safety:
+  - when run as root, Enroll warns and asks for confirmation if `PATH` contains `.`, an empty/relative entry, or a group/world-writable directory.
+  - use `--assume-safe-path` for trusted non-interactive automation where that `PATH` is intentional.
 
 Examples (encrypted SSH key)
 
@@ -277,6 +280,8 @@ enroll validate ./harvest --fail-on-warnings
 ## Sensitive data
 
 By default, `enroll` does **not** assume how you handle secrets in Ansible. It will attempt to avoid harvesting likely sensitive data (private keys, passwords, tokens, etc.). This can mean it skips some config files you may ultimately want to manage.
+
+Safe-mode content scanning is intentionally conservative. It treats common assignment-style credential keys as sensitive, including names such as `password`, `client_secret`, `secret_key`, `auth_token`, `api_key`, `aws_access_key_id`, `aws_secret_access_key`, `azure_client_secret`, `GOOGLE_APPLICATION_CREDENTIALS`, and service-account key names.
 
 Automatic harvesting of per-user shell dotfiles is also disabled by default, even when those files differ from `/etc/skel`, because `.bashrc`, `.profile`, `.bash_aliases`, and similar files commonly contain exported tokens, credentials, or aliases/functions with embedded secrets. Use `--dangerous` for automatic shell-dotfile capture, or use targeted `--include-path` patterns for narrower safe-mode review.
 
