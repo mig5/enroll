@@ -306,3 +306,55 @@ def test_secret_scan_reads_whole_file_under_size_cap(tmp_path):
     p = tmp_path / "large.conf"
     p.write_bytes(b"A" * 70_000 + b"\nlate_token = abc123\n")
     assert IgnorePolicy().deny_reason(str(p)) == "sensitive_content"
+
+
+def test_normalize_for_match_collapses_noncanonical_paths():
+    from enroll.ignore import normalize_for_match
+
+    assert normalize_for_match("/etc/shadow") == "/etc/shadow"
+    assert normalize_for_match("/etc//shadow") == "/etc/shadow"
+    assert normalize_for_match("/etc/foo/../shadow") == "/etc/shadow"
+    assert normalize_for_match("/etc/./shadow") == "/etc/shadow"
+    assert normalize_for_match("/etc/shadow/") == "/etc/shadow"
+    # A leading "//" is POSIX-significant to normpath but must collapse for
+    # glob matching anchored at "/".
+    assert normalize_for_match("//etc/shadow") == "/etc/shadow"
+    # "///" collapses to "/" via normpath already; ensure we don't mangle it.
+    assert normalize_for_match("///etc/shadow") == "/etc/shadow"
+    # Empty stays empty (no crash).
+    assert normalize_for_match("") == ""
+
+
+def test_deny_reason_denies_noncanonical_sensitive_paths():
+    # Regression: non-canonical spellings of a denied path must still be denied
+    # rather than slipping past the deny glob. Defense-in-depth on top of the
+    # O_NOFOLLOW open in inspect_file(); see normalize_for_match().
+    pol = IgnorePolicy()
+    assert pol._path_deny_reason("/etc//shadow") == "denied_path"
+    assert pol._path_deny_reason("/etc/foo/../shadow") == "denied_path"
+    assert pol._path_deny_reason("/etc/./shadow") == "denied_path"
+    assert pol._path_deny_reason("/etc/ssl/private/../private/key") == "denied_path"
+    assert pol._path_deny_reason("//etc/shadow") == "denied_path"
+    # A normal config path is unaffected.
+    assert pol._path_deny_reason("/etc/nginx/nginx.conf") is None
+
+
+def test_deny_reason_dir_denies_noncanonical_sensitive_paths():
+    pol = IgnorePolicy()
+    # normpath("/etc/ssl/private/../private") -> "/etc/ssl/private" which is the
+    # glob root itself, so use paths that still resolve to a child of it.
+    assert pol.deny_reason_dir("/etc/ssl/private/sub/../child") == "denied_path"
+    assert pol.deny_reason_dir("/etc//ssl/private/sub") == "denied_path"
+
+
+def test_deny_reason_link_denies_noncanonical_sensitive_paths():
+    pol = IgnorePolicy()
+    assert pol.deny_reason_link("/etc/ssh/../ssh/ssh_host_rsa_key") == "denied_path"
+    assert pol.deny_reason_link("/etc//ssh/ssh_host_ed25519_key") == "denied_path"
+
+
+def test_noncanonical_backup_and_log_fastpaths():
+    pol = IgnorePolicy()
+    assert pol._path_deny_reason("/var/log/foo/../bar.log") == "log_file"
+    assert pol._path_deny_reason("/etc/foo/../something~") == "backup_file"
+    assert pol._path_deny_reason("/etc//passwd-") == "backup_file"

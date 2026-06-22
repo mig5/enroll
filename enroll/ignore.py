@@ -97,6 +97,34 @@ BLOCK_START = b"/*"
 BLOCK_END = b"*/"
 
 
+def normalize_for_match(path: str) -> str:
+    """Lexically normalize a path string for deny/allow glob matching.
+
+    This collapses redundant separators ("//"), resolves "." and ".."
+    segments, and strips trailing slashes using ``os.path.normpath`` -- a
+    pure string operation that never touches the filesystem.
+
+    It is deliberately NOT ``os.path.realpath``/``Path.resolve``: resolving
+    symlinks would stat the filesystem and reintroduce a time-of-check /
+    time-of-use window before the later ``O_NOFOLLOW`` open in
+    ``inspect_file``. The goal here is only to stop a non-canonical *string*
+    (e.g. "/etc//shadow" or "/etc/foo/../shadow") from slipping past a deny
+    glob like "/etc/shadow". It is defense-in-depth on top of the no-follow
+    open, not a load-bearing control by itself.
+
+    ``normpath`` preserves a leading "//" because POSIX treats it as
+    implementation-defined; for glob matching we collapse it to a single
+    leading slash so patterns anchored at "/" still match.
+    """
+
+    if not path:
+        return path
+    normalized = os.path.normpath(path)
+    if normalized.startswith("//") and not normalized.startswith("///"):
+        normalized = normalized[1:]
+    return normalized
+
+
 @dataclass(frozen=True)
 class FileInspection:
     """Bytes and metadata captured from one safely-opened source file."""
@@ -145,26 +173,31 @@ class IgnorePolicy:
             yield raw
 
     def _path_deny_reason(self, path: str) -> Optional[str]:
+        # Match against a lexically-normalized path so non-canonical spellings
+        # (e.g. "/etc//shadow", "/etc/foo/../shadow") cannot slip past a deny
+        # glob. The original path is still what gets opened/recorded.
+        match_path = normalize_for_match(path)
         # Always ignore plain *.log files (rarely useful as config, often noisy).
-        if path.endswith(".log"):
+        if match_path.endswith(".log"):
             return "log_file"
         # Ignore editor/backup files that end with a trailing tilde.
-        if path.endswith("~"):
+        if match_path.endswith("~"):
             return "backup_file"
         # Ignore backup shadow files
-        if path.startswith("/etc/") and path.endswith("-"):
+        if match_path.startswith("/etc/") and match_path.endswith("-"):
             return "backup_file"
 
         if not self.dangerous:
             for g in self.deny_globs or []:
-                if fnmatch.fnmatch(path, g):
+                if fnmatch.fnmatch(match_path, g):
                     return "denied_path"
         return None
 
     def _content_deny_reason(self, path: str, data: bytes) -> Optional[str]:
         if b"\x00" in data:
+            match_path = normalize_for_match(path)
             for g in self.allow_binary_globs or []:
-                if fnmatch.fnmatch(path, g):
+                if fnmatch.fnmatch(match_path, g):
                     # Binary is acceptable for explicitly-allowed paths.
                     return None
             return "binary_like"
@@ -251,8 +284,9 @@ class IgnorePolicy:
         No size checks or content scanning are performed for directories.
         """
         if not self.dangerous:
+            match_path = normalize_for_match(path)
             for g in self.deny_globs or []:
-                if fnmatch.fnmatch(path, g):
+                if fnmatch.fnmatch(match_path, g):
                     return "denied_path"
 
         try:
@@ -283,16 +317,17 @@ class IgnorePolicy:
         """
 
         # Keep the same fast-path filename ignores as deny_reason().
-        if path.endswith(".log"):
+        match_path = normalize_for_match(path)
+        if match_path.endswith(".log"):
             return "log_file"
-        if path.endswith("~"):
+        if match_path.endswith("~"):
             return "backup_file"
-        if path.startswith("/etc/") and path.endswith("-"):
+        if match_path.startswith("/etc/") and match_path.endswith("-"):
             return "backup_file"
 
         if not self.dangerous:
             for g in self.deny_globs or []:
-                if fnmatch.fnmatch(path, g):
+                if fnmatch.fnmatch(match_path, g):
                     return "denied_path"
 
         try:
