@@ -1,8 +1,129 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import stat
 from typing import Tuple
+
+
+def open_no_follow_path(path: str, *, write: bool = False, mode: int = 0o600) -> int:
+    """Open ``path`` without following a symlink in *any* path component.
+
+    ``O_NOFOLLOW`` only protects the final component of a path. A regular
+    file reached through a symlinked *parent* directory (for example a user
+    replacing ``~/.ssh`` with a link to a sensitive directory) would still be
+    opened by a plain ``os.open(path, O_NOFOLLOW)``.
+
+    This helper resolves the path one component at a time with ``openat``
+    semantics:
+
+      - each intermediate component is opened relative to its parent's
+        descriptor without following symlinks;
+      - the final component is opened with ``O_NOFOLLOW`` (read, or
+        ``O_WRONLY | O_CREAT | O_EXCL`` when ``write`` is True).
+
+    The important detail is that intermediate components are opened with
+    ``O_PATH | O_NOFOLLOW`` when ``O_PATH`` is available, and then verified
+    with ``fstat()``. On Linux, ``O_RDONLY | O_DIRECTORY | O_NOFOLLOW`` is not
+    sufficient for this job: a symlink whose target is a directory can still be
+    opened as the target directory on some kernels. Opening with ``O_PATH`` and
+    checking the resulting descriptor reliably exposes such a component as a
+    symlink instead.
+
+    A symlink (or a ``..`` component) anywhere in the path raises
+    ``OSError(ELOOP)``. On platforms without ``openat``/``O_DIRECTORY``
+    support, this falls back to a single ``O_NOFOLLOW`` open of the whole path,
+    which is no worse than the historical behaviour.
+    """
+
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    o_directory = getattr(os, "O_DIRECTORY", 0)
+    o_path = getattr(os, "O_PATH", 0)
+
+    if write:
+        final_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | cloexec | nofollow
+    else:
+        final_flags = os.O_RDONLY | cloexec | nofollow
+
+    supports_openat = bool(
+        o_directory and nofollow and os.open in getattr(os, "supports_dir_fd", set())
+    )
+    if not supports_openat:
+        return os.open(path, final_flags, mode)
+
+    absolute = path.startswith("/")
+    parts = [p for p in path.split("/") if p not in ("", ".")]
+    if not parts:
+        return os.open(path, final_flags, mode)
+
+    *parent_parts, leaf = parts
+
+    # Use O_PATH for directory descriptors when available.  O_PATH descriptors
+    # can be used as dir_fd anchors for later openat-style calls, and with
+    # O_NOFOLLOW they let us fstat() a symlink component instead of silently
+    # following it.  If O_PATH is unavailable, use O_RDONLY and an lstat()
+    # pre-check for intermediate components as a best-effort fallback.
+    dir_base_flags = (o_path if o_path else os.O_RDONLY) | cloexec | o_directory
+    component_flags = (
+        (o_path if o_path else os.O_RDONLY) | cloexec | o_directory | nofollow
+    )
+
+    dir_fd = os.open("/" if absolute else ".", dir_base_flags)
+    try:
+        for component in parent_parts:
+            if component == "..":
+                raise OSError(errno.ELOOP, "unsafe '..' path component", path)
+
+            if not o_path:
+                # Best-effort fallback for platforms without O_PATH. This is not
+                # as race-resistant as the descriptor-only path, but it avoids
+                # known symlink parents where we cannot open the component itself
+                # as a non-followed O_PATH descriptor.
+                try:
+                    st = os.lstat(component, dir_fd=dir_fd)
+                except OSError:
+                    raise
+                if stat.S_ISLNK(st.st_mode):
+                    raise OSError(errno.ELOOP, "symlinked path component", path)
+                if not stat.S_ISDIR(st.st_mode):
+                    raise OSError(errno.ENOTDIR, "non-directory path component", path)
+
+            try:
+                next_fd = os.open(component, component_flags, dir_fd=dir_fd)
+            except OSError as e:
+                if e.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    try:
+                        st = os.lstat(component, dir_fd=dir_fd)
+                    except OSError:
+                        raise
+                    if stat.S_ISLNK(st.st_mode):
+                        raise OSError(
+                            errno.ELOOP,
+                            "symlinked path component",
+                            path,
+                        ) from e
+                raise
+
+            try:
+                st = os.fstat(next_fd)
+                if stat.S_ISLNK(st.st_mode):
+                    raise OSError(errno.ELOOP, "symlinked path component", path)
+                if not stat.S_ISDIR(st.st_mode):
+                    raise OSError(errno.ENOTDIR, "non-directory path component", path)
+            except Exception:
+                os.close(next_fd)
+                raise
+
+            os.close(dir_fd)
+            dir_fd = next_fd
+
+        if leaf == "..":
+            raise OSError(errno.ELOOP, "unsafe '..' path component", path)
+        return os.open(leaf, final_flags, mode, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def stat_triplet_from_stat(st: os.stat_result) -> Tuple[str, str, str]:

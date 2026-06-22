@@ -102,7 +102,45 @@ def test_capture_file_rejects_symlink_source_with_ignore_policy(tmp_path: Path):
 
     assert ok is False
     assert managed == []
-    assert excluded and excluded[0].reason == "not_regular_file"
+    # Symlinked sources are now reported with the dedicated symlink_component
+    # reason (covers both symlinked leaves and symlinked parent directories),
+    # which is more precise than the old generic not_regular_file.
+    assert excluded and excluded[0].reason == "symlink_component"
+
+
+def test_capture_file_rejects_symlinked_parent_with_ignore_policy(tmp_path: Path):
+    """O_NOFOLLOW only guards the final component. A regular file reached
+    through a symlinked *parent* directory must still be refused, otherwise a
+    file whose real location is deny-globbed could be captured while its
+    logical (recorded) path looks safe.
+    """
+
+    secret = tmp_path / "secretroot"
+    secret.mkdir()
+    (secret / "config").write_text("listen_port=8080\n", encoding="utf-8")
+    (tmp_path / "allowed").symlink_to(secret, target_is_directory=True)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+
+    managed: list[ManagedFile] = []
+    excluded: list[ExcludedFile] = []
+    ok = capture_file(
+        bundle_dir=str(bundle),
+        role_name="role",
+        abs_path=str(tmp_path / "allowed" / "config"),
+        reason="test",
+        policy=IgnorePolicy(),
+        path_filter=PathFilter(),
+        managed_out=managed,
+        excluded_out=excluded,
+    )
+
+    assert ok is False
+    assert managed == []
+    assert excluded and excluded[0].reason == "symlink_component"
+    # Nothing should have been written into the bundle.
+    artifact = bundle / "artifacts" / "role" / "allowed" / "config"
+    assert not artifact.exists()
 
 
 def test_prepare_new_private_dir_rejects_symlink_parent(tmp_path: Path):

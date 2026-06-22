@@ -189,6 +189,12 @@ _EXCLUDED_REASONS: Dict[str, ReasonInfo] = {
         "Not a regular file",
         "Excluded because it was not a regular file (device, socket, etc.).",
     ),
+    "symlink_component": ReasonInfo(
+        "Unsafe symlinked path",
+        "Excluded because a directory in the path was a symlink, which could "
+        "redirect capture into a sensitive location; Enroll refuses to follow "
+        "symlinked parents when harvesting files.",
+    ),
     "binary_like": ReasonInfo(
         "Binary-like",
         "Excluded because it looked like binary content (not useful for config management).",

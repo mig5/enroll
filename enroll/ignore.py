@@ -8,6 +8,8 @@ import stat
 from dataclasses import dataclass
 from typing import Optional
 
+from .fsutil import open_no_follow_path
+
 
 DEFAULT_DENY_GLOBS = [
     # Common backup copies created by passwd tools (can contain sensitive data)
@@ -213,26 +215,33 @@ class IgnorePolicy:
     def inspect_file(self, path: str) -> tuple[Optional[str], Optional[FileInspection]]:
         """Safely inspect a regular file and return the exact bytes to copy.
 
-        The source is opened with O_NOFOLLOW where available, fstat() is taken
-        from that file descriptor, and the whole file is read only after the
-        size cap passes.  With the default 256 KiB cap this avoids a memory DoS
-        while ensuring secret scanning covers every byte that may be copied.
+        The source is opened with O_NOFOLLOW on every path component (see
+        ``fsutil.open_no_follow_path``), fstat() is taken from that file
+        descriptor, and the whole file is read only after the size cap passes.
+        With the default 256 KiB cap this avoids a memory DoS while ensuring
+        secret scanning covers every byte that may be copied.
+
+        Opening every component without following symlinks means a regular
+        file reached through a symlinked *parent* directory is refused with
+        ``symlink_component`` rather than silently captured -- its logical
+        path would not have matched the deny globs.
         """
 
         deny = self._path_deny_reason(path)
         if deny:
             return deny, None
 
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-
         fd: Optional[int] = None
         try:
             try:
-                fd = os.open(path, flags)
+                fd = open_no_follow_path(path)
             except OSError as e:
-                if e.errno in {errno.ELOOP, errno.ENOTDIR}:
+                if e.errno == errno.ELOOP:
+                    # A symlink (or unsafe '..') somewhere in the path. This is
+                    # distinct from "not a regular file" so operators can see
+                    # why a path under a symlinked parent was skipped.
+                    return "symlink_component", None
+                if e.errno == errno.ENOTDIR:
                     return "not_regular_file", None
                 return "unreadable", None
 

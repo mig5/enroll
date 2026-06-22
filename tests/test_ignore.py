@@ -236,7 +236,10 @@ def test_deny_reason_symlink_file(tmp_path: Path):
     link = tmp_path / "link"
     os.symlink(str(real_file), str(link))
     reason = pol.deny_reason(str(link))
-    assert reason == "not_regular_file"
+    # A symlinked path (final component or parent) is refused with the
+    # dedicated symlink_component reason so operators can tell symlink
+    # redirection apart from genuine non-regular files (sockets, devices).
+    assert reason == "symlink_component"
 
 
 def test_deny_reason_logs(tmp_path: Path):
@@ -358,3 +361,58 @@ def test_noncanonical_backup_and_log_fastpaths():
     assert pol._path_deny_reason("/var/log/foo/../bar.log") == "log_file"
     assert pol._path_deny_reason("/etc/foo/../something~") == "backup_file"
     assert pol._path_deny_reason("/etc//passwd-") == "backup_file"
+
+
+def test_inspect_file_refuses_symlinked_parent_directory(tmp_path: Path):
+    """A regular file reached through a symlinked *parent* directory must be
+    refused, even though O_NOFOLLOW alone would only guard the final
+    component. Otherwise a file whose real location is deny-globbed (or whose
+    content is benign) could be captured while its logical path looks safe.
+    """
+
+    pol = IgnorePolicy()
+    secret = tmp_path / "secretroot"
+    secret.mkdir()
+    (secret / "config").write_text("listen_port=8080\n", encoding="utf-8")
+    (tmp_path / "allowed").symlink_to(secret)
+
+    reason, inspection = pol.inspect_file(str(tmp_path / "allowed" / "config"))
+    assert reason == "symlink_component"
+    assert inspection is None
+
+
+def test_inspect_file_refuses_denyglob_evasion_via_symlinked_parent(tmp_path: Path):
+    """The strongest variant: the real file lives under a deny-globbed dir,
+    but is reached via a symlinked parent so the *logical* path does not match
+    the deny glob. Content is non-secret-looking (DH params), so only the
+    parent-symlink check stands between the operator and disclosure.
+    """
+
+    pol = IgnorePolicy()
+    realdir = tmp_path / "ssl_private"
+    realdir.mkdir()
+    (realdir / "dhparam.pem").write_text(
+        "-----BEGIN DH PARAMETERS-----\nMII...\n-----END DH PARAMETERS-----\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "innocent").symlink_to(realdir)
+
+    reason, inspection = pol.inspect_file(str(tmp_path / "innocent" / "dhparam.pem"))
+    assert reason == "symlink_component"
+    assert inspection is None
+
+
+def test_inspect_file_still_captures_normal_nested_file(tmp_path: Path):
+    """Regression guard: ordinary files in real (non-symlinked) directories
+    must still be inspected and returned.
+    """
+
+    pol = IgnorePolicy()
+    nested = tmp_path / "etc" / "myapp"
+    nested.mkdir(parents=True)
+    (nested / "app.conf").write_text("workers=4\n", encoding="utf-8")
+
+    reason, inspection = pol.inspect_file(str(nested / "app.conf"))
+    assert reason is None
+    assert inspection is not None
+    assert inspection.data == b"workers=4\n"

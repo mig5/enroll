@@ -23,3 +23,54 @@ def test_stat_triplet_reports_mode(tmp_path: Path):
     assert mode == "0600"
     assert owner  # non-empty string
     assert group  # non-empty string
+
+
+def test_open_no_follow_path_reads_regular_file(tmp_path: Path):
+    from enroll.fsutil import open_no_follow_path
+
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+    f = nested / "file.txt"
+    f.write_text("hello\n", encoding="utf-8")
+
+    fd = open_no_follow_path(str(f))
+    try:
+        assert os.read(fd, 100) == b"hello\n"
+    finally:
+        os.close(fd)
+
+
+def test_open_no_follow_path_refuses_symlinked_parent(tmp_path: Path):
+    import errno
+
+    from enroll.fsutil import open_no_follow_path
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "file.txt").write_text("x\n", encoding="utf-8")
+    (tmp_path / "link").symlink_to(real)
+
+    try:
+        fd = open_no_follow_path(str(tmp_path / "link" / "file.txt"))
+        os.close(fd)
+        raise AssertionError("expected OSError for symlinked parent")
+    except OSError as e:
+        assert e.errno == errno.ELOOP
+
+
+def test_open_no_follow_path_refuses_symlinked_leaf(tmp_path: Path):
+    import errno
+
+    from enroll.fsutil import open_no_follow_path
+
+    target = tmp_path / "target.txt"
+    target.write_text("x\n", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+
+    try:
+        fd = open_no_follow_path(str(link))
+        os.close(fd)
+        raise AssertionError("expected OSError for symlinked leaf")
+    except OSError as e:
+        assert e.errno == errno.ELOOP

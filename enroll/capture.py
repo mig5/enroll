@@ -5,7 +5,7 @@ import errno
 import stat
 from typing import List, Optional, Set
 
-from .fsutil import stat_triplet, stat_triplet_from_stat
+from .fsutil import open_no_follow_path, stat_triplet, stat_triplet_from_stat
 from .harvest_types import ExcludedFile, ManagedFile, ManagedLink
 from .ignore import IgnorePolicy
 from .pathfilter import PathFilter
@@ -55,10 +55,7 @@ def files_differ(a: str, b: str, *, max_bytes: int = 2_000_000) -> bool:
 
 
 def _open_no_follow_write(path: str, mode: int = 0o600) -> int:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    return os.open(path, flags, mode)
+    return open_no_follow_path(path, write=True, mode=mode)
 
 
 def write_bytes_into_bundle(
@@ -92,14 +89,10 @@ def copy_into_bundle(
     symlinks at copy time and refuses destination symlink overwrites.
     """
 
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-
     fd = -1
     try:
         try:
-            fd = os.open(abs_path, flags)
+            fd = open_no_follow_path(abs_path)
         except OSError as e:
             if e.errno in {errno.ELOOP, errno.ENOTDIR}:
                 raise OSError("refusing to copy symlink source") from e

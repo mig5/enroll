@@ -146,7 +146,12 @@ def is_human_user(uid: int, shell: str, uid_min: int) -> bool:
 def find_user_ssh_files(home: str) -> List[str]:
     sshdir = os.path.join(home, ".ssh")
     out: List[str] = []
-    if not os.path.isdir(sshdir):
+    # ``os.path.isdir`` follows symlinks, so a user who replaces ``~/.ssh``
+    # with a link to a sensitive directory (e.g. /etc/ssl/private) could
+    # otherwise have a regular file inside it harvested through the symlinked
+    # parent.  Refuse a symlinked .ssh outright; capture_file() applies the
+    # same parent-symlink protection at copy time as defense in depth.
+    if os.path.islink(sshdir) or not os.path.isdir(sshdir):
         return out
 
     ak = os.path.join(sshdir, "authorized_keys")

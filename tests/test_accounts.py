@@ -221,6 +221,25 @@ def test_find_user_ssh_files_ignores_symlink(tmp_path: Path):
     assert result == []
 
 
+def test_find_user_ssh_files_ignores_symlinked_ssh_dir(tmp_path: Path):
+    """A user who replaces ~/.ssh with a symlink to a sensitive directory must
+    not have files inside it harvested through the symlinked parent. os.path.isdir
+    follows symlinks, so the directory itself must be checked with islink().
+    """
+
+    from enroll.accounts import find_user_ssh_files
+
+    sensitive = tmp_path / "sensitive"
+    sensitive.mkdir()
+    (sensitive / "authorized_keys").write_text("ssh-rsa AAAA...\n", encoding="utf-8")
+
+    home = tmp_path / "home" / "mallory"
+    home.mkdir(parents=True)
+    os.symlink(str(sensitive), str(home / ".ssh"))
+
+    assert find_user_ssh_files(str(home)) == []
+
+
 def test_find_user_ssh_files_handles_home_not_starting_with_slash():
     from enroll.accounts import find_user_ssh_files
 
