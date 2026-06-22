@@ -71,6 +71,7 @@ jobs:
       - name: Install Poetry
         env:
           PYTHON_BIN: ${{ matrix.python }}
+          POETRY_VERSION: "2.4.1"
         run: |
           set -eux
           if ! command -v pipx >/dev/null 2>&1; then
@@ -80,9 +81,11 @@ jobs:
           if [ -z "${PIPX_BIN}" ]; then
             PIPX_BIN="${HOME}/.local/bin/pipx"
           fi
-          "${PIPX_BIN}" install --python "${PYTHON_BIN}" poetry==1.8.3
-          /root/.local/bin/poetry --version
+          "${PIPX_BIN}" install --python "${PYTHON_BIN}" "poetry==${POETRY_VERSION}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          poetry --version
+          poetry --version | grep -E "Poetry \(version 2\."
 
       - name: Install project deps (including test extras)
         env:
