@@ -578,11 +578,14 @@ def _remote_harvest(
 
         sftp = ssh.open_sftp()
         rtmp: Optional[str] = None
+        remote_root_tmp: Optional[str] = None
         try:
             rc, out, err = _ssh_run(ssh, "mktemp -d")
             if rc != 0:
                 raise RuntimeError(f"Remote mktemp failed: {err.strip()}")
             rtmp = out.strip()
+            if not rtmp:
+                raise RuntimeError("Remote mktemp returned an empty path")
 
             # Be explicit: restrict the remote staging area to the current user.
             rc, out, err = _ssh_run(ssh, f"chmod 700 -- {shlex.quote(rtmp)}")
@@ -590,9 +593,34 @@ def _remote_harvest(
                 raise RuntimeError(f"Remote chmod failed: {err.strip()}")
 
             rapp = f"{rtmp}/enroll.pyz"
-            rbundle = f"{rtmp}/bundle"
-
             sftp.put(str(pyz), rapp)
+
+            if not no_sudo:
+                # The remote zipapp is staged as the SSH user, but the harvest
+                # itself runs as root.  Root must not write its bundle under the
+                # SSH user's mktemp directory: the root-output safety checks
+                # deliberately reject user-owned parents to avoid symlink/race
+                # issues.  Create a separate sudo-owned tempdir for the bundle.
+                rc, out, err = _ssh_run_sudo(
+                    ssh, "mktemp -d", sudo_password=sudo_password, get_pty=True
+                )
+                if rc != 0:
+                    raise RuntimeError(f"Remote sudo mktemp failed: {err.strip()}")
+                remote_root_tmp = out.strip()
+                if not remote_root_tmp:
+                    raise RuntimeError("Remote sudo mktemp returned an empty path")
+
+                rc, out, err = _ssh_run_sudo(
+                    ssh,
+                    f"chmod 700 -- {shlex.quote(remote_root_tmp)}",
+                    sudo_password=sudo_password,
+                    get_pty=True,
+                )
+                if rc != 0:
+                    raise RuntimeError(f"Remote sudo chmod failed: {err.strip()}")
+                rbundle = f"{remote_root_tmp}/bundle"
+            else:
+                rbundle = f"{rtmp}/bundle"
 
             # Run remote harvest.
             argv: list[str] = [
@@ -635,9 +663,10 @@ def _remote_harvest(
                         "Unable to determine remote username for chown. "
                         "Pass --remote-user explicitly or use --no-sudo."
                     )
+                chown_target = remote_root_tmp or rbundle
                 chown_cmd = (
                     "chown -R -- "
-                    f"{shlex.quote(resolved_user)} {shlex.quote(rbundle)}"
+                    f"{shlex.quote(resolved_user)} {shlex.quote(chown_target)}"
                 )
                 rc, out, err = _ssh_run_sudo(
                     ssh,
@@ -678,7 +707,19 @@ def _remote_harvest(
                 _safe_extract_tar(tf, local_out_dir)
 
         finally:
-            # Cleanup remote tmpdir even on failure.
+            # Cleanup remote tmpdirs even on failure.  The sudo-owned harvest
+            # tempdir may still be root-owned if harvest/chown failed, so remove
+            # it via sudo and avoid masking the original error if cleanup fails.
+            if remote_root_tmp:
+                try:
+                    _ssh_run_sudo(
+                        ssh,
+                        f"rm -rf -- {shlex.quote(remote_root_tmp)}",
+                        sudo_password=sudo_password,
+                        get_pty=True,
+                    )
+                except Exception:
+                    pass  # nosec - best-effort remote cleanup
             if rtmp:
                 _ssh_run(ssh, f"rm -rf -- {shlex.quote(rtmp)}")
             try:

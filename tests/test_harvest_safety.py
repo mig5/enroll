@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,8 @@ from enroll.ignore import FileInspection, IgnorePolicy
 from enroll.manifest_safety import prepare_manifest_output_dir
 from enroll.harvest_safety import OutputSafetyError, prepare_new_private_dir
 from enroll.pathfilter import PathFilter
+
+import enroll.harvest_safety as hs
 
 
 class _RacePolicy(IgnorePolicy):
@@ -192,3 +195,90 @@ def test_safe_output_parent_does_not_descend_into_raced_symlink(
         hs.ensure_safe_output_parent(link / "subdir" / "report.txt", label="report")
 
     assert not (target / "subdir").exists()
+
+
+def _stat_result(mode: int, *, uid: int = 0) -> os.stat_result:
+    return os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+
+
+def test_effective_uid_handles_missing_geteuid(monkeypatch):
+    monkeypatch.setattr(hs, "_OS_GETEUID", None)
+    assert hs._effective_uid() is None
+
+
+def test_effective_uid_handles_geteuid_error(monkeypatch):
+    def boom():
+        raise OSError("no euid")
+
+    monkeypatch.setattr(hs, "_OS_GETEUID", boom)
+    assert hs._effective_uid() is None
+
+
+def test_trusted_root_parent_skips_checks_when_not_root(monkeypatch):
+    monkeypatch.setattr(hs, "_effective_uid", lambda: 1000)
+    hs._assert_trusted_root_parent(
+        Path("not-a-dir"), _stat_result(stat.S_IFREG | 0o644, uid=1234), label="x"
+    )
+
+
+def test_trusted_root_parent_rejects_non_directory(monkeypatch):
+    monkeypatch.setattr(hs, "_effective_uid", lambda: 0)
+    with pytest.raises(OutputSafetyError, match="parent is not a directory"):
+        hs._assert_trusted_root_parent(
+            Path("file"), _stat_result(stat.S_IFREG | 0o644), label="x"
+        )
+
+
+def test_trusted_root_parent_rejects_group_or_world_writable(monkeypatch):
+    monkeypatch.setattr(hs, "_effective_uid", lambda: 0)
+    with pytest.raises(OutputSafetyError, match="writable by group/other"):
+        hs._assert_trusted_root_parent(
+            Path("open-dir"), _stat_result(stat.S_IFDIR | 0o777), label="x"
+        )
+
+
+def test_trusted_root_parent_allows_root_owned_sticky_shared_dir(monkeypatch):
+    monkeypatch.setattr(hs, "_effective_uid", lambda: 0)
+    hs._assert_trusted_root_parent(
+        Path("tmp"), _stat_result(stat.S_IFDIR | stat.S_ISVTX | 0o777), label="x"
+    )
+
+
+def test_assert_no_existing_symlink_components_without_root_trust_still_rejects_symlink(
+    tmp_path: Path,
+):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(OutputSafetyError, match="parent path contains a symlink"):
+        hs._assert_no_existing_symlink_components(
+            link / "leaf", label="x", require_trusted_root_parents=False
+        )
+
+
+def test_ensure_private_empty_dir_rejects_bad_existing_paths(tmp_path: Path):
+    file_path = tmp_path / "file"
+    file_path.write_text("x", encoding="utf-8")
+    with pytest.raises(OutputSafetyError, match="not a directory"):
+        hs.ensure_private_empty_dir(file_path, label="cache")
+
+    nonempty = tmp_path / "nonempty"
+    nonempty.mkdir()
+    (nonempty / "child").write_text("x", encoding="utf-8")
+    with pytest.raises(OutputSafetyError, match="not empty"):
+        hs.ensure_private_empty_dir(nonempty, label="cache")
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    with pytest.raises(OutputSafetyError, match="symlink"):
+        hs.ensure_private_empty_dir(link, label="cache")
+
+
+def test_ensure_private_empty_dir_creates_private_dir(tmp_path: Path):
+    out = hs.ensure_private_empty_dir(tmp_path / "new-cache", label="cache")
+    assert out.is_dir()
+    assert (out.stat().st_mode & 0o777) == 0o700

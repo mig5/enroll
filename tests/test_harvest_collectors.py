@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from enroll.harvest_collectors.context import HarvestContext
+from enroll.harvest_collectors.paths import ExtraPathsCollector, UsrLocalCustomCollector
 from enroll.harvest_collectors.runtime import RuntimeStateCollector
-from enroll.harvest_types import FirewallRuntimeSnapshot, SysctlSnapshot
+from enroll.harvest_types import FirewallRuntimeSnapshot, ManagedFile, SysctlSnapshot
 from enroll.ignore import IgnorePolicy
 from enroll.pathfilter import PathFilter
 
@@ -11,11 +14,11 @@ class _Backend:
     name = "dpkg"
 
 
-def _context(tmp_path):
+def _context(tmp_path: Path, *, include=(), exclude=(), policy=None) -> HarvestContext:
     return HarvestContext(
-        bundle_dir=str(tmp_path),
-        policy=IgnorePolicy(),
-        path_filter=PathFilter(include=(), exclude=()),
+        bundle_dir=str(tmp_path / "bundle"),
+        policy=policy or IgnorePolicy(),
+        path_filter=PathFilter(include=include, exclude=exclude),
         platform={},
         backend=_Backend(),
         installed_pkgs={},
@@ -245,3 +248,149 @@ def test_container_images_collector_notes_unexpected_inspect_shape(
 
     assert result.images == []
     assert "Unexpected docker image inspect JSON shape" in result.notes[0]
+
+
+def test_extra_paths_collector_records_dirs_files_notes_and_excludes(
+    monkeypatch, tmp_path
+):
+    from enroll.harvest_collectors import paths
+
+    root = tmp_path / "include"
+    sub = root / "sub"
+    skip = root / "skip"
+    sub.mkdir(parents=True)
+    skip.mkdir()
+    keep_file = sub / "keep.conf"
+    keep_file.write_text("ok", encoding="utf-8")
+    skip_file = skip / "skip.conf"
+    skip_file.write_text("no", encoding="utf-8")
+
+    class Policy(IgnorePolicy):
+        def deny_reason_dir(self, path: str):
+            return "denied_dir" if path == str(sub) else None
+
+    def fake_stat_triplet(path: str):
+        return ("root", "root", "0755")
+
+    def fake_capture_file(**kwargs):
+        kwargs["managed_out"].append(
+            ManagedFile(
+                path=kwargs["abs_path"],
+                src_rel=kwargs["abs_path"].lstrip("/"),
+                owner="root",
+                group="root",
+                mode="0644",
+                reason=kwargs["reason"],
+            )
+        )
+        return True
+
+    monkeypatch.setattr(paths.h, "stat_triplet", fake_stat_triplet)
+    monkeypatch.setattr(paths, "capture_file", lambda *a, **kw: fake_capture_file(**kw))
+
+    ctx = _context(
+        tmp_path,
+        include=[str(root)],
+        exclude=[str(skip)],
+        policy=Policy(),
+    )
+    result = ExtraPathsCollector(
+        ctx,
+        seen_by_role={},
+        already_all=set(),
+        include_paths=[str(root)],
+        exclude_paths=[str(skip)],
+    ).collect()
+
+    managed_dirs = {d.path for d in result.managed_dirs}
+    assert str(root) in managed_dirs
+    assert str(sub) not in managed_dirs  # denied by policy
+    assert str(skip) not in managed_dirs  # pruned by exclude filter
+    assert [m.path for m in result.managed_files] == [str(keep_file)]
+    assert "User include patterns:" in result.notes
+    assert f"- {root}" in result.notes
+    assert f"- {skip}" in result.notes
+
+
+def test_extra_paths_collector_skips_already_captured_files(monkeypatch, tmp_path):
+    from enroll.harvest_collectors import paths
+
+    root = tmp_path / "include"
+    root.mkdir()
+    file_path = root / "keep.conf"
+    file_path.write_text("ok", encoding="utf-8")
+    calls: list[str] = []
+
+    monkeypatch.setattr(paths.h, "stat_triplet", lambda p: ("root", "root", "0755"))
+    monkeypatch.setattr(
+        paths, "capture_file", lambda *a, **kw: calls.append(kw["abs_path"]) or True
+    )
+
+    ctx = _context(tmp_path, include=[str(root)])
+    result = ExtraPathsCollector(
+        ctx,
+        seen_by_role={},
+        already_all={str(file_path)},
+        include_paths=[str(root)],
+    ).collect()
+
+    assert result.managed_files == []
+    assert calls == []
+
+
+def test_usr_local_custom_collector_scans_executable_bin_and_notes_cap(
+    monkeypatch, tmp_path
+):
+    from enroll.harvest_collectors import paths
+
+    captured: list[str] = []
+
+    def fake_isdir(path: str) -> bool:
+        return path in {"/usr/local/etc", "/usr/local/bin"}
+
+    def fake_walk(root: str):
+        if root == "/usr/local/etc":
+            yield root, [], ["app.conf"]
+        elif root == "/usr/local/bin":
+            yield root, [], ["tool", "not-exec"]
+
+    def fake_isfile(path: str) -> bool:
+        return path in {
+            "/usr/local/etc/app.conf",
+            "/usr/local/bin/tool",
+            "/usr/local/bin/not-exec",
+        }
+
+    def fake_stat_triplet(path: str):
+        mode = "0755" if path == "/usr/local/bin/tool" else "0644"
+        return ("root", "root", mode)
+
+    def fake_capture_file(**kwargs):
+        captured.append(kwargs["abs_path"])
+        kwargs["managed_out"].append(
+            ManagedFile(
+                path=kwargs["abs_path"],
+                src_rel=kwargs["abs_path"].lstrip("/"),
+                owner="root",
+                group="root",
+                mode="0644",
+                reason=kwargs["reason"],
+            )
+        )
+        return True
+
+    monkeypatch.setattr(paths.os.path, "isdir", fake_isdir)
+    monkeypatch.setattr(paths.os, "walk", fake_walk)
+    monkeypatch.setattr(paths.os.path, "isfile", fake_isfile)
+    monkeypatch.setattr(paths.os.path, "islink", lambda p: False)
+    monkeypatch.setattr(paths.h, "stat_triplet", fake_stat_triplet)
+    monkeypatch.setattr(paths, "capture_file", lambda *a, **kw: fake_capture_file(**kw))
+
+    ctx = _context(tmp_path)
+    result = UsrLocalCustomCollector(ctx, seen_by_role={}, already_all=set()).collect()
+
+    assert captured == ["/usr/local/etc/app.conf", "/usr/local/bin/tool"]
+    assert [m.reason for m in result.managed_files] == [
+        "usr_local_etc_custom",
+        "usr_local_bin_script",
+    ]

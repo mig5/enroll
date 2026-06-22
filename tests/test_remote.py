@@ -166,6 +166,13 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
                 return (None, _Stdout(b"alice\n"), _Stderr())
             if cmd == "mktemp -d":
                 return (None, _Stdout(b"/tmp/enroll-remote-123\n"), _Stderr())
+            if cmd.startswith("sudo -n") and " mktemp -d" in cmd:
+                return (None, _Stdout(b"/tmp/enroll-root-123\n"), _Stderr())
+            if (
+                cmd.startswith("sudo -n")
+                and " chmod 700 -- /tmp/enroll-root-123" in cmd
+            ):
+                return (None, _Stdout(b""), _Stderr())
             if cmd.startswith("chmod 700"):
                 return (None, _Stdout(b""), _Stderr())
             if cmd.startswith("sudo -n") and " harvest " in cmd:
@@ -182,6 +189,8 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
                     msg = b"sudo: sorry, you must have a tty to run sudo\n"
                     return (None, _Stdout(b"", rc=1, err=msg), _Stderr(msg))
                 return (None, _Stdout(b"", rc=0), _Stderr(b""))
+            if cmd.startswith("sudo -n") and " rm -rf -- /tmp/enroll-root-123" in cmd:
+                return (None, _Stdout(b""), _Stderr())
             if cmd.startswith("rm -rf"):
                 return (None, _Stdout(b""), _Stderr())
 
@@ -223,6 +232,11 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     assert "--dangerous" in joined
     assert "--include-path" in joined
     assert "--exclude-path" in joined
+    assert "sudo -n -p '' -- mktemp -d" in joined
+    assert "--out /tmp/enroll-root-123/bundle" in joined
+    assert "--out /tmp/enroll-remote-123/bundle" not in joined
+    assert "chown -R -- alice /tmp/enroll-root-123" in joined
+    assert "tar -cz -C /tmp/enroll-root-123/bundle ." in joined
 
     # Ensure we fall back to PTY only when sudo reports it is required.
     assert any(c == "id -un" and pty is False for c, pty in calls)
@@ -508,6 +522,13 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
 
             if cmd == "mktemp -d":
                 return (_Stdin(cmd), _Stdout(b"/tmp/enroll-remote-789\n"), _Stderr())
+            if cmd.startswith("sudo -n") and " mktemp -d" in cmd:
+                return (_Stdin(cmd), _Stdout(b"/tmp/enroll-root-789\n"), _Stderr())
+            if (
+                cmd.startswith("sudo -n")
+                and " chmod 700 -- /tmp/enroll-root-789" in cmd
+            ):
+                return (_Stdin(cmd), _Stdout(b""), _Stderr())
             if cmd.startswith("chmod 700"):
                 return (_Stdin(cmd), _Stdout(b""), _Stderr())
 
@@ -527,6 +548,8 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
             if cmd.startswith("sudo -n") and " chown -R" in cmd:
                 return (_Stdin(cmd), _Stdout(b"", rc=0), _Stderr(b""))
 
+            if cmd.startswith("sudo -n") and " rm -rf -- /tmp/enroll-root-789" in cmd:
+                return (_Stdin(cmd), _Stdout(b"", rc=0), _Stderr(b""))
             if cmd.startswith("rm -rf"):
                 return (_Stdin(cmd), _Stdout(b"", rc=0), _Stderr(b""))
 
@@ -563,6 +586,10 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
     sudo_s = [c for c, _pty in calls if c.startswith("sudo -S") and " harvest " in c]
     assert len(sudo_n) == 1
     assert len(sudo_s) == 1
+    joined = "\n".join([c for c, _pty in calls])
+    assert "sudo -n -p '' -- mktemp -d" in joined
+    assert "--out /tmp/enroll-root-789/bundle" in joined
+    assert "--out /tmp/enroll-remote-789/bundle" not in joined
 
     # Ensure the password was written to stdin for the -S invocation.
     assert stdin_by_cmd.get(sudo_s[0]) == ["s3cr3t\n"]
