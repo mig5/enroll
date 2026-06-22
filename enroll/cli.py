@@ -113,6 +113,15 @@ def _action_lookup(p: argparse.ArgumentParser) -> dict[str, argparse.Action]:
     return m
 
 
+def _warn_dangerous_harvest(*, sops_enabled: bool) -> None:
+    if not sops_enabled:
+        print(
+            "warning: --dangerous is enabled. The harvest may contain sensitive "
+            "files, credentials, private keys, tokens, or application secrets. "
+            "Consider using --sops to encrypt the harvest at rest."
+        )
+
+
 def _choose_flag(a: argparse.Action) -> Optional[str]:
     # Prefer a long flag if available (e.g. --dangerous over -d)
     for s in getattr(a, "option_strings", []) or []:
@@ -953,6 +962,11 @@ def main() -> None:
         },
     )
     args = ap.parse_args(argv)
+
+    if args.cmd in {"harvest", "single-shot"} and bool(
+        getattr(args, "dangerous", False)
+    ):
+        _warn_dangerous_harvest(sops_enabled=bool(getattr(args, "sops", None)))
 
     _confirm_root_path_safety(force=bool(getattr(args, "assume_safe_path", False)))
 
