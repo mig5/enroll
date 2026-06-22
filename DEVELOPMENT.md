@@ -788,6 +788,9 @@ SOPS mode:
 
 The renderers do not know about SOPS.
 
+Note: Manifest deliberately hooks into validate() to make sure the harvest meets the schema and
+doesn't contain dangerous tamperings before turning it into config management code.
+
 ---
 
 ## 12. The renderer-neutral `CMModule` model
@@ -1380,10 +1383,13 @@ This is intended to answer “what did Enroll collect and why?”
 4. every `managed_file.src_rel` points to an artifact file,
 5. firewall runtime generated artifacts exist,
 6. there are no unreferenced artifact files, reported as warnings.
+7. there are no malicious or unsafe bits such as symlinks/hardlinks etc traversing out of the artifact tree
 
 It returns a `ValidationResult` with `errors`, `warnings`, `ok()`, `to_dict()`, and `to_text()`.
 
 The CLI supports local schema override with `--schema`, warning failure with `--fail-on-warnings`, JSON/text output, and `--out`.
+
+Note that manifest() hooks into validate() to make sure the harvest is safe before rendering it into config management code.
 
 ---
 
