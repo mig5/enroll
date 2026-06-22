@@ -426,8 +426,8 @@ def _add_config_args(p: argparse.ArgumentParser) -> None:
         "-c",
         "--config",
         help=(
-            "Path to an INI config file for default options. If omitted, enroll will look for "
-            "./enroll.ini, ./.enroll.ini, or ~/.config/enroll/enroll.ini (or $XDG_CONFIG_HOME/enroll/enroll.ini)."
+            "Path to an INI config file for default options. If omitted, enroll will look for a path defined by the "
+            "ENROLL_CONFIG environment variable , ~/.config/enroll/enroll.ini (or $XDG_CONFIG_HOME/enroll/enroll.ini)."
         ),
     )
     p.add_argument(
