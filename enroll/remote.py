@@ -577,7 +577,7 @@ def _remote_harvest(
             rtmp = out.strip()
 
             # Be explicit: restrict the remote staging area to the current user.
-            rc, out, err = _ssh_run(ssh, f"chmod 700 {rtmp}")
+            rc, out, err = _ssh_run(ssh, f"chmod 700 -- {shlex.quote(rtmp)}")
             if rc != 0:
                 raise RuntimeError(f"Remote chmod failed: {err.strip()}")
 
@@ -627,7 +627,10 @@ def _remote_harvest(
                         "Unable to determine remote username for chown. "
                         "Pass --remote-user explicitly or use --no-sudo."
                     )
-                chown_cmd = f"chown -R {resolved_user} {rbundle}"
+                chown_cmd = (
+                    "chown -R -- "
+                    f"{shlex.quote(resolved_user)} {shlex.quote(rbundle)}"
+                )
                 rc, out, err = _ssh_run_sudo(
                     ssh,
                     chown_cmd,
@@ -644,7 +647,7 @@ def _remote_harvest(
                     )
 
             # Stream a tarball back to the local machine (avoid creating a tar file on the remote).
-            cmd = f"tar -cz -C {rbundle} ."
+            cmd = f"tar -cz -C {shlex.quote(rbundle)} ."
             _stdin, stdout, stderr = ssh.exec_command(cmd)  # nosec
             with open(local_tgz, "wb") as f:
                 while True:
@@ -669,7 +672,7 @@ def _remote_harvest(
         finally:
             # Cleanup remote tmpdir even on failure.
             if rtmp:
-                _ssh_run(ssh, f"rm -rf {rtmp}")
+                _ssh_run(ssh, f"rm -rf -- {shlex.quote(rtmp)}")
             try:
                 sftp.close()
                 ssh.close()
