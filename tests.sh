@@ -330,7 +330,7 @@ ensure_salt() {
 run_pytests() {
   section "Python unit tests"
   cd "${PROJECT_ROOT}"
-  run poetry run pytest -vvvv --cov=enroll --cov-report=term-missing --disable-warnings
+  run poetry run python -m pytest -vvvv --cov=enroll --cov-report=term-missing --disable-warnings
 }
 
 prepare_harvest_fixture() {
