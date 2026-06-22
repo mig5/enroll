@@ -1326,3 +1326,85 @@ def test_manifest_puppet_fqdn_writes_erb_template_values_to_node_hiera(
     )
     assert "Any $main_key = undef," in init_pp
     assert "content => template($attrs['template'])" in init_pp
+
+
+def test_pp_quote_common_case_is_single_quoted_and_stable():
+    """Values without control characters keep the historical single-quoted form."""
+    from enroll.puppet import _pp_quote
+
+    assert _pp_quote("Alice Example") == "'Alice Example'"
+    assert _pp_quote("0644") == "'0644'"
+    assert _pp_quote("/etc/nginx/nginx.conf") == "'/etc/nginx/nginx.conf'"
+    # Single quote and backslash keep their single-quoted escaping.
+    assert _pp_quote("a'b") == "'a\\'b'"
+    assert _pp_quote("back\\slash") == "'back\\\\slash'"
+
+
+def test_pp_quote_neutralises_raw_control_characters():
+    """A tampered harvest cannot splatter raw control characters into a manifest.
+
+    GECOS and similar scalars are newline-delimited on a live host, so control
+    characters only appear via a hand-edited/tampered state.json. When present,
+    _pp_quote switches to a double-quoted Puppet string and escapes them rather
+    than emitting them verbatim.
+    """
+    from enroll.puppet import _pp_quote
+
+    rendered = _pp_quote("a\ntouch /tmp/pwned")
+    assert rendered == '"a\\ntouch /tmp/pwned"'
+    # No raw C0/DEL byte survives into the rendered scalar.
+    for value in ("a\nb", "x\r\ny", "a\tb", "a\x00b", "a\x7fb"):
+        out = _pp_quote(value)
+        assert not any(ch in out for ch in [chr(c) for c in range(0x20)] + ["\x7f"])
+
+
+def test_pp_quote_double_fallback_cannot_introduce_interpolation():
+    """The double-quoted fallback must not enable Puppet interpolation/breakout."""
+    from enroll.puppet import _pp_quote
+
+    # $ would interpolate in a double-quoted Puppet string; it must be escaped.
+    out = _pp_quote("a\n${::osfamily}")
+    assert "\\${::osfamily}" in out
+    assert "${::osfamily}" not in out.replace("\\${::osfamily}", "")
+    # A double quote cannot terminate the string early.
+    out2 = _pp_quote('a\n"; notify{x:} ')
+    assert out2.startswith('"') and out2.endswith('"')
+    assert '\\"' in out2
+
+
+def test_manifest_puppet_user_gecos_with_newline_is_single_line(tmp_path: Path):
+    """End-to-end: a newline in a user's gecos yields a single-line comment."""
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    state = {
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [
+                    {
+                        "name": "eviluser",
+                        "uid": 1001,
+                        "primary_group": "evil",
+                        "supplementary_groups": [],
+                        "home": "/home/eviluser",
+                        "shell": "/bin/bash",
+                        "gecos": "Real Name\ntouch /tmp/pwned",
+                    }
+                ],
+                "managed_files": [],
+                "managed_dirs": [],
+                "excluded": [],
+                "notes": [],
+            }
+        }
+    }
+    _write_state(bundle, state)
+    manifest.manifest(str(bundle), str(out), target="puppet")
+
+    init_pp = (out / "modules" / "users" / "manifests" / "init.pp").read_text(
+        encoding="utf-8"
+    )
+    # The comment attribute must be on one line with the newline escaped.
+    assert 'comment => "Real Name\\ntouch /tmp/pwned"' in init_pp
+    # And there must be no line that is just the injected command.
+    assert "\ntouch /tmp/pwned\n" not in init_pp

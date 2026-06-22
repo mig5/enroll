@@ -291,8 +291,54 @@ def _puppet_name(raw: str, *, fallback: str = "role") -> str:
     return s
 
 
+# Control characters (C0 range plus DEL) that should never appear raw inside a
+# generated Puppet manifest scalar. They cannot occur in values harvested from a
+# live host (e.g. /etc/passwd GECOS is newline-delimited), so their presence
+# indicates a hand-edited or tampered harvest. Emitting them verbatim is valid
+# Puppet but produces multi-line / control-laden manifests; normalise them into
+# explicit escapes instead.
+_PP_CONTROL_CHARS = frozenset(chr(c) for c in range(0x20)) | {"\x7f"}
+
+# Puppet double-quoted recognised single-character escapes.
+_PP_DQ_ESCAPES = {
+    "\n": "\\n",
+    "\t": "\\t",
+    "\r": "\\r",
+    "\\": "\\\\",
+    '"': '\\"',
+    "$": "\\$",
+}
+
+
+def _pp_quote_double(s: str) -> str:
+    """Render a Puppet double-quoted string with control characters escaped.
+
+    Only used as a fallback when a value contains raw control characters, so the
+    common case stays single-quoted and byte-identical to historical output.
+    """
+
+    out = []
+    for ch in s:
+        esc = _PP_DQ_ESCAPES.get(ch)
+        if esc is not None:
+            out.append(esc)
+        elif ch in _PP_CONTROL_CHARS:
+            # Puppet supports \uXXXX style escapes inside double-quoted strings.
+            out.append(f"\\u{{{ord(ch):04x}}}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
 def _pp_quote(value: Any) -> str:
     s = str(value)
+    # Puppet single-quoted strings only honour \\ and \' escapes; everything
+    # else (including a literal newline) is taken verbatim. That is safe but lets
+    # a tampered harvest splatter raw control characters across the manifest.
+    # When any are present, fall back to a double-quoted string where they can be
+    # neutralised into explicit escapes.
+    if any(ch in _PP_CONTROL_CHARS for ch in s):
+        return _pp_quote_double(s)
     s = s.replace("\\", "\\\\").replace("'", "\\'")
     return f"'{s}'"
 
