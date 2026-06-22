@@ -1,9 +1,9 @@
 enroll (0.6.0) unstable; urgency=medium
 
- * Add support for capturing ipset and iptables configuration files
- * Add support for generating ipset and iptables configuration files from runtime, if the former weren't present ('firewall_runtime' role)
+  * Add support for capturing ipset and iptables configuration files
+  * Add support for generating ipset and iptables configuration files from runtime, if the former weren't present ('firewall_runtime' role)
 
- -- Miguel Jacq <mig@mig5.net>  Thu, 14 May 2026 15:00 +1000
+ -- Miguel Jacq <mig@mig5.net>  Thu, 14 May 2026 15:00:00 +1000
 
 enroll (0.5.0) unstable; urgency=medium
 
