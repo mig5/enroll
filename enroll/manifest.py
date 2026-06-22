@@ -10,6 +10,7 @@ from typing import List, Optional
 from .ansible import manifest_from_bundle_dir as manifest_ansible_from_bundle_dir
 from .puppet import manifest_from_bundle_dir as manifest_puppet_from_bundle_dir
 from .salt import manifest_from_bundle_dir as manifest_salt_from_bundle_dir
+from .manifest_safety import validate_site_fqdn
 from .remote import _safe_extract_tar
 from .sopsutil import (
     decrypt_file_binary_to,
@@ -194,6 +195,7 @@ def manifest(
     target = (target or "ansible").strip().lower()
     if target not in {"ansible", "puppet", "salt"}:
         raise ValueError(f"unsupported manifest target: {target!r}")
+    fqdn = validate_site_fqdn(fqdn)
 
     sops_mode = bool(sops_fingerprints)
 

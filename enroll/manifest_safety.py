@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
@@ -13,6 +14,78 @@ class ArtifactSafetyError(RuntimeError):
 
 class ManifestOutputError(RuntimeError):
     """Raised when a manifest output path is unsafe to use."""
+
+
+_SITE_FQDN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,252}$")
+
+
+def validate_site_fqdn(value: str | None) -> str | None:
+    """Validate the optional site-mode host name/FQDN.
+
+    Renderers use this value in inventory data and, for Ansible, in output
+    paths.  Keep it deliberately conservative so it cannot become a path
+    separator, absolute path, YAML/INI newline injection, or shell-ish text in
+    generated documentation/commands.
+    """
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if any(ch in text for ch in ("/", "\\", "\x00", "\n", "\r")):
+        raise ManifestOutputError(
+            "--fqdn contains unsafe path or newline characters; use a simple "
+            "host/inventory name"
+        )
+    if text in {".", ".."} or not _SITE_FQDN_RE.fullmatch(text):
+        raise ManifestOutputError(
+            "--fqdn must start with a letter or digit and contain only "
+            "letters, digits, dot, underscore, or hyphen"
+        )
+    return text
+
+
+def _assert_no_output_symlinks(root: Path) -> None:
+    """Reject pre-existing symlinks in an output tree we are about to merge into.
+
+    Non-site mode refuses existing output directories entirely.  Site/FQDN modes
+    intentionally accumulate multiple nodes into one tree, so reject symlinks in
+    the tree before merging to avoid writes being redirected outside *root*.
+    Version-control metadata can contain implementation-specific entries and is
+    not part of Enroll's generated layout, so it is pruned from this check.
+    """
+
+    skip_dirs = {".git", ".hg", ".svn"}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirpath_p = Path(dirpath)
+
+        for dirname in list(dirnames):
+            if dirname in skip_dirs:
+                dirnames.remove(dirname)
+                continue
+            p = dirpath_p / dirname
+            try:
+                st = p.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                raise ManifestOutputError(
+                    f"manifest output tree contains a symlink; refusing to merge: {p}"
+                )
+
+        for filename in filenames:
+            if filename in skip_dirs:
+                continue
+            p = dirpath_p / filename
+            try:
+                st = p.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                raise ManifestOutputError(
+                    f"manifest output tree contains a symlink; refusing to merge: {p}"
+                )
 
 
 def _safe_relative_path(value: str, *, field: str) -> Path:
@@ -56,6 +129,7 @@ def prepare_manifest_output_dir(
             raise ManifestOutputError(
                 f"manifest output path exists but is not a directory: {out}"
             )
+        _assert_no_output_symlinks(out)
         return out
     out.mkdir(parents=True, exist_ok=False)
     return out
