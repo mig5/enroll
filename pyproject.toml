@@ -24,15 +24,6 @@ Repository = "https://git.mig5.net/mig5/enroll"
 [project.scripts]
 enroll = "enroll.cli:main"
 
-[dependency-groups]
-dev = [
-  "pytest>=8,<9",
-  "pytest-cov>=5,<6",
-]
-appimage = [
-  "pyproject-appimage>=4.2,<5",
-]
-
 [tool.poetry]
 requires-poetry = ">=2.0"
 packages = [{ include = "enroll" }]
@@ -43,8 +34,15 @@ include = [
 [tool.poetry.group.dev]
 optional = true
 
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8,<9"
+pytest-cov = ">=5,<6"
+
 [tool.poetry.group.appimage]
 optional = true
+
+[tool.poetry.group.appimage.dependencies]
+pyproject-appimage = ">=4.2,<5"
 
 [tool.pyproject-appimage]
 script = "enroll"
