@@ -89,3 +89,74 @@ def test_ansible_role_normalises_package_snapshot():
     assert role.files["/etc/curlrc"]["dest"] == "/etc/curlrc"
     assert role.services == {}
     assert role.origin_lines == ["package `curl` from role `curl`"]
+
+
+from pathlib import Path
+
+from state_helpers import write_schema_state
+
+from enroll import manifest, yamlutil as yaml_helpers
+
+
+def _ansible_jinja_payload_state(payload: str) -> dict:
+    return {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [
+                    {
+                        "name": "alice",
+                        "uid": 1000,
+                        "gid": 1000,
+                        "gecos": payload,
+                        "home": "/home/alice",
+                        "shell": "/bin/bash",
+                        "primary_group": "alice",
+                        "supplementary_groups": [],
+                    }
+                ],
+                "managed_dirs": [],
+                "managed_files": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+        },
+    }
+
+
+def test_ansible_static_marks_harvested_jinja_values_unsafe(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "out"
+    payload = "{{ lookup('pipe','touch /tmp/PWNED_BY_ENROLL_ANSIBLE') }}"
+    write_schema_state(bundle, _ansible_jinja_payload_state(payload))
+
+    manifest.manifest(str(bundle), str(out), target="ansible")
+
+    defaults = out / "roles" / "users" / "defaults" / "main.yml"
+    text = defaults.read_text(encoding="utf-8")
+    assert "gecos: !unsafe" in text
+    assert "lookup(''pipe'',''touch /tmp/PWNED_BY_ENROLL_ANSIBLE'')" in text
+    loaded = yaml_helpers.yaml_load_mapping(text)
+    assert loaded["users_users"][0]["gecos"] == payload
+
+
+def test_ansible_fqdn_marks_harvested_jinja_values_unsafe(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "out"
+    payload = "{{ lookup('pipe','touch /tmp/PWNED_BY_ENROLL_ANSIBLE') }}"
+    write_schema_state(bundle, _ansible_jinja_payload_state(payload))
+
+    manifest.manifest(str(bundle), str(out), target="ansible", fqdn="host.example.test")
+
+    hostvars = out / "inventory" / "host_vars" / "host.example.test" / "users.yml"
+    text = hostvars.read_text(encoding="utf-8")
+    assert "gecos: !unsafe" in text
+    assert "lookup(''pipe'',''touch /tmp/PWNED_BY_ENROLL_ANSIBLE'')" in text
+    loaded = yaml_helpers.yaml_load_mapping(text)
+    assert loaded["users_users"][0]["gecos"] == payload

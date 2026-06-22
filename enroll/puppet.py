@@ -20,6 +20,7 @@ from .manifest_safety import (
     prepare_manifest_output_dir,
     safe_artifact_file,
 )
+from .render_safety import puppet_hiera_safe_data
 from .state import inventory_packages_from_state, roles_from_state
 from .jinjaturtle import (
     can_jinjify_path,
@@ -1586,7 +1587,9 @@ def _render_hiera_yaml() -> str:
 def _write_yaml(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        yaml.safe_dump(data, sort_keys=True, explicit_start=True),
+        yaml.safe_dump(
+            puppet_hiera_safe_data(data), sort_keys=True, explicit_start=True
+        ),
         encoding="utf-8",
     )
 

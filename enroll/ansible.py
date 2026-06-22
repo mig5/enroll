@@ -18,6 +18,7 @@ from .manifest_safety import (
     iter_safe_artifact_files,
     prepare_manifest_output_dir,
 )
+from .render_safety import ansible_unsafe_data
 from .role_names import avoid_reserved_role_name
 from .state import inventory_packages_from_state, roles_from_state
 from .yamlutil import yaml_dump_mapping, yaml_load_mapping
@@ -688,7 +689,7 @@ def _write_hostvars(site_root: str, fqdn: str, role: str, data: Dict[str, Any]) 
         except Exception:
             existing_map = {}
 
-    merged = _merge_mappings_overwrite(existing_map, data)
+    merged = _merge_mappings_overwrite(existing_map, ansible_unsafe_data(data))
 
     out = "---\n" + yaml_dump_mapping(merged, sort_keys=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -699,7 +700,7 @@ def _write_role_defaults(role_dir: str, mapping: Dict[str, Any]) -> None:
     """Overwrite role defaults/main.yml with the provided mapping."""
     defaults_path = os.path.join(role_dir, "defaults", "main.yml")
     os.makedirs(os.path.dirname(defaults_path), exist_ok=True)
-    out = "---\n" + yaml_dump_mapping(mapping, sort_keys=True)
+    out = "---\n" + yaml_dump_mapping(ansible_unsafe_data(mapping), sort_keys=True)
     with open(defaults_path, "w", encoding="utf-8") as f:
         f.write(out)
 

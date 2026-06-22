@@ -964,3 +964,82 @@ def test_salt_names_are_sanitised_for_target_reserved_words() -> None:
     assert _salt_name("123") == "role_123"
     assert _salt_name("top") == "role_top"
     assert _salt_name("web-app") == "web_app"
+
+
+def test_manifest_salt_static_escapes_harvested_jinja_delimiters(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    state = _sample_state()
+    payload = "{{ salt['cmd.run']('touch /tmp/PWNED_BY_ENROLL_SALT') }}"
+    state["roles"]["users"]["users"][0]["gecos"] = payload
+    _write_sample_artifacts(bundle)
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="salt")
+
+    users_sls = (out / "states" / "roles" / "users" / "init.sls").read_text(
+        encoding="utf-8"
+    )
+    assert payload not in users_sls
+    assert "\\u007b\\u007b salt['cmd.run']" in users_sls
+
+    calls = []
+
+    class FakeCmd:
+        def run(self, command):
+            calls.append(command)
+            return "EXECUTED"
+
+    from jinja2 import Template
+
+    rendered = Template(users_sls).render(salt={"cmd.run": FakeCmd().run})
+    rendered_data = yaml.safe_load(rendered)
+    assert calls == []
+    user_state = next(
+        state
+        for state in rendered_data.values()
+        if isinstance(state, dict) and "user.present" in state
+    )
+    attrs = user_state["user.present"]
+    fullname = next(item["fullname"] for item in attrs if "fullname" in item)
+    assert fullname == payload
+
+
+def test_manifest_salt_fqdn_escapes_harvested_jinja_delimiters_in_pillar(
+    tmp_path: Path,
+):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "salt"
+    state = _sample_state()
+    payload = "{{ salt['cmd.run']('touch /tmp/PWNED_BY_ENROLL_SALT') }}"
+    state["roles"]["users"]["users"][0]["gecos"] = payload
+    _write_sample_artifacts(bundle)
+    _write_state(bundle, state)
+
+    manifest.manifest(str(bundle), str(out), target="salt", fqdn="node.example")
+
+    pillar_top = yaml.safe_load(
+        (out / "pillar" / "top.sls").read_text(encoding="utf-8")
+    )
+    node_sls = pillar_top["base"]["node.example"][0]
+    pillar_path = out / "pillar" / Path(*node_sls.split("."))
+    text = pillar_path.with_suffix(".sls").read_text(encoding="utf-8")
+    assert payload not in text
+    assert "\\u007b\\u007b salt['cmd.run']" in text
+
+    calls = []
+
+    class FakeCmd:
+        def run(self, command):
+            calls.append(command)
+            return "EXECUTED"
+
+    from jinja2 import Template
+
+    rendered = Template(text).render(salt={"cmd.run": FakeCmd().run})
+    rendered_data = yaml.safe_load(rendered)
+    assert calls == []
+    assert (
+        rendered_data["enroll"]["roles"]["users"]["users"]["alice"]["fullname"]
+        == payload
+    )

@@ -8,7 +8,6 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-import yaml
 
 from .cm import (
     CMModule,
@@ -22,8 +21,9 @@ from .manifest_safety import (
     prepare_manifest_output_dir,
     safe_artifact_file,
 )
+from .render_safety import salt_sls_json_quote, salt_sls_yaml_dump
 from .state import inventory_packages_from_state, roles_from_state
-from .yamlutil import yaml_dump_mapping, yaml_load_mapping_file
+from .yamlutil import yaml_load_mapping_file
 
 
 class SaltRole(CMModule):
@@ -381,7 +381,7 @@ def _active_service_state_ids_by_unit(
 
 
 def _yaml_quote(value: Any) -> str:
-    return json.dumps(str(value), ensure_ascii=False)
+    return salt_sls_json_quote(value)
 
 
 def _yaml_bool(value: Any) -> str:
@@ -870,9 +870,7 @@ def _collect_salt_roles(
 def _append_yaml_value(lines: List[str], key: str, value: Any, *, indent: int) -> None:
     prefix = " " * indent
     if isinstance(value, dict):
-        dumped = yaml.safe_dump(
-            _plain_salt_data(value), sort_keys=True, default_flow_style=False
-        ).rstrip()
+        dumped = salt_sls_yaml_dump(_plain_salt_data(value), sort_keys=True).rstrip()
         if not dumped:
             lines.append(f"{prefix}- {key}: {{}}")
             return
@@ -1501,7 +1499,7 @@ def _render_pillar_role(srole: SaltRole) -> str:
 def _write_yaml(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        yaml_dump_mapping(data, sort_keys=True, explicit_start=True),
+        salt_sls_yaml_dump(data, sort_keys=True, explicit_start=True),
         encoding="utf-8",
     )
 

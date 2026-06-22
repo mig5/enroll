@@ -5,6 +5,21 @@ from typing import Any, Dict, Mapping
 
 import yaml
 
+from .render_safety import AnsibleUnsafeText
+
+
+class IndentedSafeLoader(yaml.SafeLoader):  # type: ignore[misc]
+    """PyYAML loader that understands Ansible's ``!unsafe`` tag."""
+
+
+def _construct_ansible_unsafe(
+    loader: yaml.Loader, node: yaml.Node
+) -> AnsibleUnsafeText:
+    return AnsibleUnsafeText(loader.construct_scalar(node))
+
+
+IndentedSafeLoader.add_constructor("!unsafe", _construct_ansible_unsafe)
+
 
 class IndentedSafeDumper(yaml.SafeDumper):  # type: ignore[misc]
     """PyYAML dumper that indents sequences under mapping keys."""
@@ -17,10 +32,17 @@ class IndentedSafeDumper(yaml.SafeDumper):  # type: ignore[misc]
 
 
 def yaml_load_mapping(text: str) -> Dict[str, Any]:
-    """Load YAML text and return a mapping, or an empty mapping on failure."""
+    """Load YAML text and return a mapping, or an empty mapping on failure.
+
+    Enroll may re-read Ansible host_vars that contain ``!unsafe`` scalars
+    written during the same manifest operation, so the loader accepts that tag
+    while remaining otherwise based on PyYAML's SafeLoader.
+    """
 
     try:
-        obj = yaml.safe_load(text)
+        obj = yaml.load(
+            text, Loader=IndentedSafeLoader
+        )  # nosec B506 - subclasses yaml.SafeLoader; only adds !unsafe scalar support.
     except Exception:
         return {}
     return obj if isinstance(obj, dict) else {}
@@ -32,6 +54,15 @@ def yaml_load_mapping_file(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     return yaml_load_mapping(path.read_text(encoding="utf-8"))
+
+
+def _represent_ansible_unsafe(
+    dumper: yaml.Dumper, data: AnsibleUnsafeText
+) -> yaml.Node:
+    return dumper.represent_scalar("!unsafe", str(data))
+
+
+IndentedSafeDumper.add_representer(AnsibleUnsafeText, _represent_ansible_unsafe)
 
 
 def yaml_dump_mapping(

@@ -2378,3 +2378,15 @@ def test_manifest_non_fqdn_refuses_existing_output(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="already exists"):
         manifest.manifest(str(bundle), str(out), no_common_roles=True)
+
+
+def test_yaml_dump_mapping_emits_ansible_unsafe_tag_for_marked_values():
+    from enroll.render_safety import ansible_unsafe_data
+
+    data = ansible_unsafe_data({"value": "{{ lookup('pipe','id') }}"})
+    dumped = yaml_helpers.yaml_dump_mapping(data)
+
+    assert "value: !unsafe" in dumped
+    assert "{{ lookup(''pipe'',''id'') }}" in dumped
+    loaded = yaml_helpers.yaml_load_mapping(dumped)
+    assert loaded["value"] == "{{ lookup('pipe','id') }}"

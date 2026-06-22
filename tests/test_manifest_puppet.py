@@ -1408,3 +1408,72 @@ def test_manifest_puppet_user_gecos_with_newline_is_single_line(tmp_path: Path):
     assert 'comment => "Real Name\\ntouch /tmp/pwned"' in init_pp
     # And there must be no line that is just the injected command.
     assert "\ntouch /tmp/pwned\n" not in init_pp
+
+
+def _puppet_hiera_payload_state(payload: str) -> dict:
+    return {
+        "schema_version": 3,
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "inventory": {"packages": {}},
+        "roles": {
+            "users": {
+                "role_name": "users",
+                "users": [
+                    {
+                        "name": "alice",
+                        "uid": 1000,
+                        "gid": 1000,
+                        "gecos": payload,
+                        "home": "/home/alice",
+                        "shell": "/bin/bash",
+                        "primary_group": "alice",
+                        "supplementary_groups": [],
+                    }
+                ],
+                "managed_dirs": [],
+                "managed_files": [],
+                "managed_links": [],
+                "excluded": [],
+                "notes": [],
+            },
+            "services": [],
+            "packages": [],
+        },
+    }
+
+
+def test_manifest_puppet_static_quotes_template_like_harvested_values(
+    tmp_path: Path,
+):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    payload = "%{lookup('enroll::classes')}"
+    _write_state(bundle, _puppet_hiera_payload_state(payload))
+
+    manifest.manifest(str(bundle), str(out), target="puppet")
+
+    init_pp = (out / "modules" / "users" / "manifests" / "init.pp").read_text(
+        encoding="utf-8"
+    )
+    assert "comment => '%{lookup(\\'enroll::classes\\')}'" in init_pp
+
+
+def test_manifest_puppet_hiera_escapes_harvested_interpolation_tokens(
+    tmp_path: Path,
+):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "puppet"
+    payload = "%{lookup('enroll::classes')}"
+    _write_state(bundle, _puppet_hiera_payload_state(payload))
+
+    manifest.manifest(str(bundle), str(out), target="puppet", fqdn="node.example")
+
+    node_yaml = out / "data" / "nodes" / "node.example.yaml"
+    text = node_yaml.read_text(encoding="utf-8")
+    assert payload not in text
+    assert "%{literal(''%'')}{lookup(''enroll::classes'')}" in text
+    data = yaml.safe_load(text)
+    assert (
+        data["users::users"]["alice"]["comment"]
+        == "%{literal('%')}{lookup('enroll::classes')}"
+    )
