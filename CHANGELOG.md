@@ -15,6 +15,7 @@
  * Perform harvest validation before trying to manifest from it.
  * Stricter validation on FQDN name in multisite mode.
  * Strict check of `$PATH` when running harvest as root, in case it could lead to execution of unsafe binaries during harvest. Override with `--assume-safe-path` for non-interactive or CI purposes.
+ * Stricter validation of the destination dirs that harvest or manifest write to, to prevent writing to a different user-controlled area. Stricter permissions on the output dirs too.
 
 # 0.6.0
 
