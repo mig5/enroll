@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from tests.state_helpers import write_schema_state
-
+from state_helpers import write_schema_state
 import enroll.manifest as manifest_mod
 import enroll.jinjaturtle as jinjaturtle_mod
 from enroll.jinjaturtle import JinjifyResult

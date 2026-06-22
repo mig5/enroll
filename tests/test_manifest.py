@@ -6,7 +6,7 @@ import tarfile
 import pytest
 
 import enroll.manifest as manifest
-from tests.state_helpers import write_schema_state
+from state_helpers import write_schema_state
 import enroll.jinjaturtle as jinjaturtle_mod
 from enroll import ansible as ansible_layout
 from enroll import ansible as ansible_tasks

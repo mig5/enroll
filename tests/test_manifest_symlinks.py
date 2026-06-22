@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.state_helpers import write_schema_state
+from state_helpers import write_schema_state
 
 import enroll.manifest as manifest
 

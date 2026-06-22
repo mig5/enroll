@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from tests.state_helpers import write_schema_state
+from state_helpers import write_schema_state
 
 from enroll import manifest
 from enroll.salt import (
