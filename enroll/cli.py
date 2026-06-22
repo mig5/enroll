@@ -928,6 +928,7 @@ def main() -> None:
                             no_sudo=bool(args.no_sudo),
                             include_paths=list(getattr(args, "include_path", []) or []),
                             exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                            allow_existing_output=True,
                         )
                         _encrypt_harvest_dir_to_sops(
                             tmp_bundle, out_file, list(sops_fps)
@@ -954,6 +955,7 @@ def main() -> None:
                         no_sudo=bool(args.no_sudo),
                         include_paths=list(getattr(args, "include_path", []) or []),
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                        allow_existing_output=not bool(args.out),
                     )
                     print(str(state))
             else:
@@ -971,6 +973,7 @@ def main() -> None:
                             dangerous=bool(args.dangerous),
                             include_paths=list(getattr(args, "include_path", []) or []),
                             exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                            allow_existing_output=True,
                         )
                         _encrypt_harvest_dir_to_sops(
                             tmp_bundle, out_file, list(sops_fps)
@@ -990,6 +993,7 @@ def main() -> None:
                         dangerous=bool(args.dangerous),
                         include_paths=list(getattr(args, "include_path", []) or []),
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                        allow_existing_output=not bool(args.out),
                     )
                     print(path)
         elif args.cmd == "explain":
@@ -1164,6 +1168,7 @@ def main() -> None:
                             no_sudo=bool(args.no_sudo),
                             include_paths=list(getattr(args, "include_path", []) or []),
                             exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                            allow_existing_output=True,
                         )
                         _encrypt_harvest_dir_to_sops(
                             tmp_bundle, out_file, list(sops_fps)
@@ -1201,6 +1206,7 @@ def main() -> None:
                         no_sudo=bool(args.no_sudo),
                         include_paths=list(getattr(args, "include_path", []) or []),
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                        allow_existing_output=not bool(args.harvest),
                     )
                     manifest(
                         str(harvest_dir),
@@ -1228,6 +1234,7 @@ def main() -> None:
                             dangerous=bool(args.dangerous),
                             include_paths=list(getattr(args, "include_path", []) or []),
                             exclude_paths=list(getattr(args, "exclude_path", []) or []),
+                            allow_existing_output=True,
                         )
                         _encrypt_harvest_dir_to_sops(
                             tmp_bundle, out_file, list(sops_fps)

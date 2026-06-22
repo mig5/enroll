@@ -131,7 +131,11 @@ def prepare_manifest_output_dir(
             )
         _assert_no_output_symlinks(out)
         return out
-    out.mkdir(parents=True, exist_ok=False)
+    out.mkdir(parents=True, exist_ok=False, mode=0o700)
+    try:
+        os.chmod(out, 0o700)
+    except OSError:
+        pass
     return out
 
 

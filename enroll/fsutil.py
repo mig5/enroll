@@ -5,6 +5,25 @@ import os
 from typing import Tuple
 
 
+def stat_triplet_from_stat(st: os.stat_result) -> Tuple[str, str, str]:
+    """Return (owner, group, mode) for an existing stat result."""
+
+    mode = oct(st.st_mode & 0o7777)[2:].zfill(4)
+
+    import grp
+    import pwd
+
+    try:
+        owner = pwd.getpwuid(st.st_uid).pw_name
+    except KeyError:
+        owner = str(st.st_uid)
+    try:
+        group = grp.getgrgid(st.st_gid).gr_name
+    except KeyError:
+        group = str(st.st_gid)
+    return owner, group, mode
+
+
 def file_md5(path: str) -> str:
     """Return hex MD5 of a file.
 
@@ -23,18 +42,4 @@ def stat_triplet(path: str) -> Tuple[str, str, str]:
     owner/group are usernames/group names when resolvable, otherwise numeric ids.
     mode is a zero-padded octal string (e.g. "0644").
     """
-    st = os.stat(path, follow_symlinks=True)
-    mode = oct(st.st_mode & 0o7777)[2:].zfill(4)
-
-    import grp
-    import pwd
-
-    try:
-        owner = pwd.getpwuid(st.st_uid).pw_name
-    except KeyError:
-        owner = str(st.st_uid)
-    try:
-        group = grp.getgrgid(st.st_gid).gr_name
-    except KeyError:
-        group = str(st.st_gid)
-    return owner, group, mode
+    return stat_triplet_from_stat(os.stat(path, follow_symlinks=True))

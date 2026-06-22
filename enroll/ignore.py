@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import fnmatch
+import errno
 import os
 import re
+import stat
 from dataclasses import dataclass
 from typing import Optional
 
@@ -57,7 +59,13 @@ DEFAULT_ALLOW_BINARY_GLOBS = [
 #   aws_secret_access_key = ...
 #   GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 SENSITIVE_CONTENT_PATTERNS = [
-    re.compile(rb"-----BEGIN (RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----"),
+    re.compile(
+        rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----"
+    ),
+    re.compile(rb"(?i)-----BEGIN OPENSSH PRIVATE KEY-----"),
+    re.compile(rb"(?i)AGE-SECRET-KEY-[A-Z0-9]+"),
+    re.compile(rb"(?i)OPENSSH PRIVATE KEY"),
+    re.compile(rb"(?i)PGP PRIVATE KEY BLOCK"),
     re.compile(
         rb"""(?ix)
         (^|[^A-Za-z0-9])
@@ -87,6 +95,14 @@ SENSITIVE_CONTENT_PATTERNS = [
 COMMENT_PREFIXES = (b"#", b";", b"//")
 BLOCK_START = b"/*"
 BLOCK_END = b"*/"
+
+
+@dataclass(frozen=True)
+class FileInspection:
+    """Bytes and metadata captured from one safely-opened source file."""
+
+    data: bytes
+    stat_result: os.stat_result
 
 
 @dataclass
@@ -128,7 +144,7 @@ class IgnorePolicy:
 
             yield raw
 
-    def deny_reason(self, path: str) -> Optional[str]:
+    def _path_deny_reason(self, path: str) -> Optional[str]:
         # Always ignore plain *.log files (rarely useful as config, often noisy).
         if path.endswith(".log"):
             return "log_file"
@@ -143,24 +159,9 @@ class IgnorePolicy:
             for g in self.deny_globs or []:
                 if fnmatch.fnmatch(path, g):
                     return "denied_path"
+        return None
 
-        try:
-            st = os.stat(path, follow_symlinks=True)
-        except OSError:
-            return "unreadable"
-
-        if st.st_size > self.max_file_bytes:
-            return "too_large"
-
-        if not os.path.isfile(path) or os.path.islink(path):
-            return "not_regular_file"
-
-        try:
-            with open(path, "rb") as f:
-                data = f.read(min(self.sample_bytes, st.st_size))
-        except OSError:
-            return "unreadable"
-
+    def _content_deny_reason(self, path: str, data: bytes) -> Optional[str]:
         if b"\x00" in data:
             for g in self.allow_binary_globs or []:
                 if fnmatch.fnmatch(path, g):
@@ -175,6 +176,67 @@ class IgnorePolicy:
                         return "sensitive_content"
 
         return None
+
+    def inspect_file(self, path: str) -> tuple[Optional[str], Optional[FileInspection]]:
+        """Safely inspect a regular file and return the exact bytes to copy.
+
+        The source is opened with O_NOFOLLOW where available, fstat() is taken
+        from that file descriptor, and the whole file is read only after the
+        size cap passes.  With the default 256 KiB cap this avoids a memory DoS
+        while ensuring secret scanning covers every byte that may be copied.
+        """
+
+        deny = self._path_deny_reason(path)
+        if deny:
+            return deny, None
+
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+
+        fd: Optional[int] = None
+        try:
+            try:
+                fd = os.open(path, flags)
+            except OSError as e:
+                if e.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    return "not_regular_file", None
+                return "unreadable", None
+
+            try:
+                st = os.fstat(fd)
+            except OSError:
+                return "unreadable", None
+
+            if not stat.S_ISREG(st.st_mode):
+                return "not_regular_file", None
+            if st.st_size > self.max_file_bytes:
+                return "too_large", None
+
+            chunks: list[bytes] = []
+            remaining = int(st.st_size)
+            while remaining > 0:
+                chunk = os.read(fd, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+
+            deny = self._content_deny_reason(path, data)
+            if deny:
+                return deny, None
+            return None, FileInspection(data=data, stat_result=st)
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    def deny_reason(self, path: str) -> Optional[str]:
+        deny, _inspection = self.inspect_file(path)
+        return deny
 
     def deny_reason_dir(self, path: str) -> Optional[str]:
         """Directory-specific deny logic.

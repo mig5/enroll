@@ -15,6 +15,7 @@ from . import systemd as _systemd
 from .fsutil import stat_triplet
 from .platform import detect_platform, get_backend
 from .ignore import IgnorePolicy
+from .harvest_safety import ensure_private_empty_dir, prepare_new_private_dir
 from .pathfilter import PathFilter
 from .version import get_enroll_version
 from .state import write_state
@@ -527,6 +528,7 @@ def harvest(
     dangerous: bool = False,
     include_paths: Optional[List[str]] = None,
     exclude_paths: Optional[List[str]] = None,
+    allow_existing_output: bool = False,
 ) -> str:
     # If a policy is not supplied, build one. `--dangerous` relaxes secret
     # detection and deny-glob skipping.
@@ -536,7 +538,12 @@ def harvest(
         # If callers explicitly provided a policy but also requested
         # dangerous behaviour, honour the CLI intent.
         policy.dangerous = True
-    os.makedirs(bundle_dir, exist_ok=True)
+    bundle_path = (
+        ensure_private_empty_dir(bundle_dir, label="harvest output")
+        if allow_existing_output
+        else prepare_new_private_dir(bundle_dir, label="harvest output")
+    )
+    bundle_dir = str(bundle_path)
 
     # User-provided includes/excludes. Excludes apply to all harvesting;
     # includes are harvested into an extra role.

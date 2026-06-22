@@ -13,6 +13,8 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Optional, Callable, TextIO
 
+from .harvest_safety import ensure_private_empty_dir, prepare_new_private_dir
+
 
 class RemoteSudoPasswordRequired(RuntimeError):
     """Raised when sudo requires a password but none was provided."""
@@ -139,12 +141,16 @@ def remote_harvest(
         getpass_fn=getpass_fn,
     )
 
+    allow_existing_output = bool(kwargs.pop("allow_existing_output", False))
+    output_prepared = False
+
     while True:
         try:
             return _remote_harvest(
                 sudo_password=sudo_password,
                 no_sudo=no_sudo,
                 ssh_key_passphrase=ssh_key_passphrase,
+                allow_existing_output=allow_existing_output or output_prepared,
                 **kwargs,
             )
         except RemoteSSHKeyPassphraseRequired:
@@ -158,6 +164,7 @@ def remote_harvest(
             # Fallback prompt if interactive.
             if stdin is not None and getattr(stdin, "isatty", lambda: False)():
                 ssh_key_passphrase = getpass_fn(key_prompt)
+                output_prepared = True
                 continue
 
             raise RemoteSSHKeyPassphraseRequired(
@@ -173,6 +180,7 @@ def remote_harvest(
             # Fallback prompt if interactive.
             if stdin is not None and getattr(stdin, "isatty", lambda: False)():
                 sudo_password = getpass_fn(prompt)
+                output_prepared = True
                 continue
 
             raise RemoteSudoPasswordRequired(
@@ -413,6 +421,7 @@ def _remote_harvest(
     ssh_key_passphrase: Optional[str] = None,
     include_paths: Optional[list[str]] = None,
     exclude_paths: Optional[list[str]] = None,
+    allow_existing_output: bool = False,
 ) -> Path:
     """Run enroll harvest on a remote host via SSH and pull the bundle locally.
 
@@ -426,12 +435,11 @@ def _remote_harvest(
             "Install it with: pip install paramiko"
         ) from e
 
-    local_out_dir = Path(local_out_dir)
-    local_out_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(local_out_dir, 0o700)
-    except OSError:
-        pass
+    local_out_dir = (
+        ensure_private_empty_dir(local_out_dir, label="remote harvest output")
+        if allow_existing_output
+        else prepare_new_private_dir(local_out_dir, label="remote harvest output")
+    )
 
     # Build a zipapp locally and upload it to the remote.
     with tempfile.TemporaryDirectory(prefix="enroll-remote-") as td:

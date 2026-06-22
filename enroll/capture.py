@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
-import shutil
+import errno
 import stat
 from typing import List, Optional, Set
 
-from .fsutil import stat_triplet
+from .fsutil import stat_triplet, stat_triplet_from_stat
 from .harvest_types import ExcludedFile, ManagedFile, ManagedLink
 from .ignore import IgnorePolicy
 from .pathfilter import PathFilter
@@ -54,12 +54,69 @@ def files_differ(a: str, b: str, *, max_bytes: int = 2_000_000) -> bool:
         return True
 
 
-def copy_into_bundle(
-    bundle_dir: str, role_name: str, abs_path: str, src_rel: str
+def _open_no_follow_write(path: str, mode: int = 0o600) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return os.open(path, flags, mode)
+
+
+def write_bytes_into_bundle(
+    bundle_dir: str, role_name: str, src_rel: str, data: bytes
 ) -> None:
     dst = os.path.join(bundle_dir, "artifacts", role_name, src_rel)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.copy2(abs_path, dst)
+
+    fd = -1
+    try:
+        fd = _open_no_follow_write(dst, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            fd = -1
+            f.write(data)
+        try:
+            os.chmod(dst, 0o600)
+        except OSError:
+            pass
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def copy_into_bundle(
+    bundle_dir: str, role_name: str, abs_path: str, src_rel: str
+) -> None:
+    """Legacy safe copy helper used by tests and non-IgnorePolicy callers.
+
+    Real harvests using IgnorePolicy copy the exact bytes read from the safely
+    opened source file in capture_file().  This helper still refuses source
+    symlinks at copy time and refuses destination symlink overwrites.
+    """
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    fd = -1
+    try:
+        try:
+            fd = os.open(abs_path, flags)
+        except OSError as e:
+            if e.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise OSError("refusing to copy symlink source") from e
+            raise
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("refusing to copy non-regular source")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        write_bytes_into_bundle(bundle_dir, role_name, src_rel, b"".join(chunks))
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def capture_file(
@@ -99,16 +156,31 @@ def capture_file(
         _mark_seen()
         return False
 
-    deny = policy.deny_reason(abs_path)
+    inspection = None
+    inspect_file = getattr(policy, "inspect_file", None)
+    if callable(inspect_file):
+        inspected = inspect_file(abs_path)
+        if isinstance(inspected, tuple) and len(inspected) == 2:
+            deny, inspection = inspected
+        else:
+            # Some tests and third-party callers use MagicMock/spec policies that
+            # expose inspect_file but have not configured it.  Fall back to the
+            # legacy deny_reason/copy path for those non-real policies.
+            deny = policy.deny_reason(abs_path)
+    else:
+        deny = policy.deny_reason(abs_path)
     if deny:
         excluded_out.append(ExcludedFile(path=abs_path, reason=deny))
         _mark_seen()
         return False
 
     try:
-        owner, group, mode = (
-            metadata if metadata is not None else stat_triplet(abs_path)
-        )
+        if metadata is not None:
+            owner, group, mode = metadata
+        elif inspection is not None:
+            owner, group, mode = stat_triplet_from_stat(inspection.stat_result)
+        else:
+            owner, group, mode = stat_triplet(abs_path)
     except OSError:
         excluded_out.append(ExcludedFile(path=abs_path, reason="unreadable"))
         _mark_seen()
@@ -116,7 +188,10 @@ def capture_file(
 
     src_rel = abs_path.lstrip("/")
     try:
-        copy_into_bundle(bundle_dir, role_name, abs_path, src_rel)
+        if inspection is not None:
+            write_bytes_into_bundle(bundle_dir, role_name, src_rel, inspection.data)
+        else:
+            copy_into_bundle(bundle_dir, role_name, abs_path, src_rel)
     except OSError:
         excluded_out.append(ExcludedFile(path=abs_path, reason="unreadable"))
         _mark_seen()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Union
 
@@ -31,8 +33,34 @@ def write_state(
     """Write state.json to a harvest bundle directory and return its path."""
 
     path = state_path(bundle_dir)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=indent, sort_keys=sort_keys)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd = -1
+    tmp_name = ""
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent), text=True
+        )
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            json.dump(state, f, indent=indent, sort_keys=sort_keys)
+        os.replace(tmp_name, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
     return path
 
 

@@ -282,3 +282,27 @@ def test_deny_reason_shadow_backup():
     pol = IgnorePolicy()
     assert pol.deny_reason("/etc/shadow-") == "backup_file"
     assert pol.deny_reason("/etc/passwd-") == "backup_file"
+
+
+def test_detects_encrypted_private_key_marker(tmp_path):
+    p = tmp_path / "key.pem"
+    p.write_text(
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----\nabc\n-----END ENCRYPTED PRIVATE KEY-----\n",
+        encoding="utf-8",
+    )
+    assert IgnorePolicy().deny_reason(str(p)) == "sensitive_content"
+
+
+def test_detects_pgp_private_key_marker(tmp_path):
+    p = tmp_path / "pgp.asc"
+    p.write_text(
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc\n-----END PGP PRIVATE KEY BLOCK-----\n",
+        encoding="utf-8",
+    )
+    assert IgnorePolicy().deny_reason(str(p)) == "sensitive_content"
+
+
+def test_secret_scan_reads_whole_file_under_size_cap(tmp_path):
+    p = tmp_path / "large.conf"
+    p.write_bytes(b"A" * 70_000 + b"\nlate_token = abc123\n")
+    assert IgnorePolicy().deny_reason(str(p)) == "sensitive_content"

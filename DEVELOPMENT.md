@@ -1507,8 +1507,6 @@ Discovery order:
 1. `--no-config` disables config loading,
 2. `--config PATH` or `-c PATH`,
 3. `$ENROLL_CONFIG`,
-4. `./enroll.ini`,
-5. `./.enroll.ini`,
 6. `$XDG_CONFIG_HOME/enroll/enroll.ini`,
 7. `~/.config/enroll/enroll.ini`.
 
