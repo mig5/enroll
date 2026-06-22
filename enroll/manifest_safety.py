@@ -7,6 +7,12 @@ import stat
 from pathlib import Path
 from typing import Iterator, Tuple
 
+from .harvest_safety import (
+    OutputSafetyError,
+    ensure_safe_output_parent,
+    prepare_new_private_dir,
+)
+
 
 class ArtifactSafetyError(RuntimeError):
     """Raised when a harvest artifact path is unsafe to consume."""
@@ -105,13 +111,13 @@ def _safe_relative_path(value: str, *, field: str) -> Path:
 def prepare_manifest_output_dir(
     out_dir: str | Path, *, allow_existing: bool = False
 ) -> Path:
-    """Create a manifest output directory, refusing to overwrite anything.
+    """Create a manifest output directory, refusing unsafe root output paths.
 
     Rendering a manifest may be run by root and may target configuration-
-    management trees.  Refuse an existing path rather than deleting or merging
+    management trees. Refuse an existing path rather than deleting or merging
     with it by default; callers that intentionally support accumulation, such
-    as --fqdn site mode, may allow an existing directory but never a symlink or
-    non-directory path.
+    as --fqdn site mode, may allow an existing directory but never a symlink,
+    non-directory path, symlinked parent, or root-unsafe parent.
     """
 
     out = Path(out_dir).expanduser()
@@ -120,6 +126,12 @@ def prepare_manifest_output_dir(
             raise ManifestOutputError(
                 "manifest output path already exists; refusing to overwrite: " f"{out}"
             )
+        try:
+            ensure_safe_output_parent(
+                out / ".enroll-manifest-output-check", label="manifest output"
+            )
+        except OutputSafetyError as e:
+            raise ManifestOutputError(str(e)) from e
         st = out.lstat()
         if stat.S_ISLNK(st.st_mode):
             raise ManifestOutputError(
@@ -131,12 +143,10 @@ def prepare_manifest_output_dir(
             )
         _assert_no_output_symlinks(out)
         return out
-    out.mkdir(parents=True, exist_ok=False, mode=0o700)
     try:
-        os.chmod(out, 0o700)
-    except OSError:
-        pass
-    return out
+        return prepare_new_private_dir(out, label="manifest output")
+    except OutputSafetyError as e:
+        raise ManifestOutputError(str(e)) from e
 
 
 def _assert_no_symlink_components(path: Path, *, root: Path) -> None:

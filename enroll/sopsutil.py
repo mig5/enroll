@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from .harvest_safety import ensure_safe_output_parent
+
 
 class SopsError(RuntimeError):
     pass
@@ -46,7 +48,7 @@ def encrypt_file_binary(
     sops = require_sops_cmd()
     src_path = Path(src_path)
     dst_path = Path(dst_path)
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_output_parent(dst_path, label="sops output")
 
     res = subprocess.run(
         [
@@ -98,7 +100,7 @@ def decrypt_file_binary_to(
     sops = require_sops_cmd()
     src_path = Path(src_path)
     dst_path = Path(dst_path)
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_output_parent(dst_path, label="sops output")
 
     res = subprocess.run(
         [

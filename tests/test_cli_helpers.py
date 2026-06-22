@@ -243,3 +243,20 @@ def test_confirm_root_path_safety_force_skips_prompt(monkeypatch):
     )
 
     cli._confirm_root_path_safety(force=True)
+
+
+def test_unsafe_root_path_reasons_flags_non_root_owned_dir(tmp_path: Path, monkeypatch):
+    from enroll import cli
+
+    non_root_owned = tmp_path / "user-bin"
+    non_root_owned.mkdir()
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        try:
+            os.chown(non_root_owned, 65534, -1)
+        except OSError:
+            pass
+
+    monkeypatch.setattr(cli, "_is_effective_root", lambda: True)
+    reasons = cli._unsafe_root_path_reasons(str(non_root_owned))
+
+    assert any("not owned by root" in reason for reason in reasons)

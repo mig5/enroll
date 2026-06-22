@@ -10,6 +10,7 @@ from typing import List, Optional
 from .ansible import manifest_from_bundle_dir as manifest_ansible_from_bundle_dir
 from .puppet import manifest_from_bundle_dir as manifest_puppet_from_bundle_dir
 from .salt import manifest_from_bundle_dir as manifest_salt_from_bundle_dir
+from .harvest_safety import ensure_safe_output_parent
 from .manifest_safety import validate_site_fqdn
 from .remote import _safe_extract_tar
 from .sopsutil import (
@@ -91,7 +92,7 @@ def _tar_dir_to_with_progress(
     """Create a tar.gz of src_dir at tar_path, with a simple per-entry progress display."""
     src_dir = Path(src_dir)
     tar_path = Path(tar_path)
-    tar_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_output_parent(tar_path, label="manifest tar output")
 
     # Collect paths (dirs + files)
     paths: list[Path] = [src_dir]
@@ -144,7 +145,7 @@ def _encrypt_manifest_out_dir_to_sops(
     """Tar+encrypt the generated manifest output directory into a single .sops file."""
     require_sops_cmd()
     out_file = Path(out_file)
-    out_file.parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_output_parent(out_file, label="encrypted manifest output")
 
     fd, tmp_tgz = tempfile.mkstemp(
         prefix=".enroll-manifest-",

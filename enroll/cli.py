@@ -22,6 +22,7 @@ from .diff import (
 )
 from .explain import explain_state
 from .harvest import harvest
+from .harvest_safety import ensure_safe_output_parent, write_text_output_file
 from .manifest import manifest
 from .remote import (
     remote_harvest,
@@ -135,14 +136,75 @@ def _split_list_value(v: str) -> list[str]:
     return [raw] if raw else []
 
 
+def _root_trust_reason(path: Path, *, final: bool) -> Optional[str]:
+    """Return why a PATH directory/ancestor is unsafe for root execution."""
+
+    running_as_root = _is_effective_root()
+    if not final and not running_as_root:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return None
+
+    subject = "directory" if final else "parent directory"
+    if running_as_root and st.st_uid != 0:
+        return f"{subject} is not owned by root"
+
+    writable_by_group = bool(st.st_mode & stat.S_IWGRP)
+    writable_by_other = bool(st.st_mode & stat.S_IWOTH)
+    sticky = bool(st.st_mode & stat.S_ISVTX)
+
+    # A sticky shared ancestor such as /tmp may contain a root-owned PATH
+    # directory safely enough for this check, but the PATH entry itself must
+    # never be writable by group/other because that permits command planting.
+    if final or not sticky:
+        if writable_by_other:
+            return f"{subject} is world-writable"
+        if writable_by_group:
+            return f"{subject} is group-writable"
+    return None
+
+
+def _root_parent_trust_reason(path: Path) -> Optional[str]:
+    """Check original and resolved PATH ancestors for root trust."""
+
+    if not _is_effective_root():
+        return None
+
+    candidates: list[Path] = []
+    candidates.extend(reversed(path.parents))
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        resolved = None
+    if resolved is not None and resolved != path:
+        candidates.extend(reversed(resolved.parents))
+
+    seen: set[str] = set()
+    for parent in candidates:
+        key = str(parent)
+        if key in seen:
+            continue
+        seen.add(key)
+        reason = _root_trust_reason(parent, final=False)
+        if reason:
+            return f"{reason}: {parent}"
+    return None
+
+
 def _path_entry_is_unsafe(entry: str) -> Optional[str]:
     """Return a human-readable reason if a PATH entry is unsafe for root.
 
     Empty PATH entries and relative entries resolve via the current working
     directory, which is equivalent to trusting whatever directory the operator
-    happens to be in.  Existing group/world-writable directories are also risky
+    happens to be in. Existing group/world-writable directories are also risky
     when Enroll is run as root because Enroll deliberately invokes host tools
-    from PATH while harvesting and enforcing state.
+    from PATH while harvesting and enforcing state. When running as root, an
+    existing PATH directory must also be root-owned; a non-root-owned 0755
+    directory is still attacker-controlled by its owner.
     """
 
     if entry == "":
@@ -152,16 +214,21 @@ def _path_entry_is_unsafe(entry: str) -> Optional[str]:
     if not os.path.isabs(entry):
         return "relative PATH entry resolves from the current directory"
 
+    p = Path(entry)
+    parent_reason = _root_parent_trust_reason(p)
+    if parent_reason:
+        return parent_reason
+
     try:
         st = os.stat(entry)
     except OSError:
         return None
     if not stat.S_ISDIR(st.st_mode):
         return None
-    if st.st_mode & stat.S_IWOTH:
-        return "directory is world-writable"
-    if st.st_mode & stat.S_IWGRP:
-        return "directory is group-writable"
+
+    final_reason = _root_trust_reason(p, final=True)
+    if final_reason:
+        return final_reason
     return None
 
 
@@ -353,7 +420,7 @@ def _resolve_sops_out_file(out: Optional[str], *, hint: str) -> Path:
 
 
 def _tar_dir_to(path_dir: Path, tar_path: Path) -> None:
-    tar_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_output_parent(tar_path, label="harvest tar output")
     with tarfile.open(tar_path, mode="w:gz") as tf:
         # Keep a stable on-disk layout when extracted: state.json + artifacts/
         tf.add(str(path_dir), arcname=".")
@@ -363,7 +430,7 @@ def _encrypt_harvest_dir_to_sops(
     bundle_dir: Path, out_file: Path, fps: list[str]
 ) -> Path:
     out_file = Path(out_file)
-    out_file.parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_output_parent(out_file, label="encrypted harvest output")
 
     # Create the tarball alongside the output file (keeps filesystem permissions/locality sane).
     fd, tmp_tgz = tempfile.mkstemp(
@@ -1021,9 +1088,7 @@ def main() -> None:
 
             out_path = getattr(args, "out", None)
             if out_path:
-                p = Path(out_path).expanduser()
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(txt, encoding="utf-8")
+                write_text_output_file(out_path, txt, label="validation report")
             else:
                 sys.stdout.write(txt)
 
@@ -1094,9 +1159,7 @@ def main() -> None:
             txt = format_report(report, fmt=str(getattr(args, "format", "text")))
             out_path = getattr(args, "out", None)
             if out_path:
-                p = Path(out_path).expanduser()
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(txt, encoding="utf-8")
+                write_text_output_file(out_path, txt, label="diff report")
             else:
                 print(txt, end="" if txt.endswith("\n") else "\n")
 

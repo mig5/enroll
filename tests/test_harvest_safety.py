@@ -110,3 +110,85 @@ def test_prepare_new_private_dir_rejects_symlink_parent(tmp_path: Path):
 
     with pytest.raises(OutputSafetyError, match="parent path contains a symlink"):
         prepare_new_private_dir(link / "bundle", label="harvest output")
+
+
+def test_manifest_output_dir_rejects_symlink_parent(tmp_path: Path):
+    from enroll.manifest_safety import ManifestOutputError
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(ManifestOutputError, match="parent path contains a symlink"):
+        prepare_manifest_output_dir(link / "manifest")
+
+
+def test_prepare_new_private_dir_rejects_untrusted_root_parent(
+    tmp_path: Path, monkeypatch
+):
+    import enroll.harvest_safety as hs
+
+    untrusted = tmp_path / "untrusted"
+    untrusted.mkdir()
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        try:
+            os.chown(untrusted, 65534, -1)
+        except OSError:
+            pass
+
+    monkeypatch.setattr(hs, "_effective_uid", lambda: 0)
+    with pytest.raises(OutputSafetyError, match="not owned by root"):
+        prepare_new_private_dir(untrusted / "bundle", label="harvest output")
+
+
+def test_prepare_new_private_dir_uses_real_euid_despite_os_geteuid_monkeypatch(
+    tmp_path: Path, monkeypatch
+):
+    import enroll.harvest_safety as hs
+
+    monkeypatch.setattr(hs.os, "geteuid", lambda: 0)
+    out = prepare_new_private_dir(tmp_path / "bundle", label="harvest output")
+
+    assert out.is_dir()
+    assert (out.stat().st_mode & 0o777) == 0o700
+
+
+def test_write_text_output_file_replaces_final_symlink_not_target(tmp_path: Path):
+    from enroll.harvest_safety import write_text_output_file
+
+    target = tmp_path / "target.txt"
+    target.write_text("old\n", encoding="utf-8")
+    link = tmp_path / "report.txt"
+    link.symlink_to(target)
+
+    write_text_output_file(link, "new\n", label="test report")
+
+    assert not link.is_symlink()
+    assert link.read_text(encoding="utf-8") == "new\n"
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_safe_output_parent_does_not_descend_into_raced_symlink(
+    tmp_path: Path, monkeypatch
+):
+    import enroll.harvest_safety as hs
+
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    real_mkdir = os.mkdir
+
+    def racing_mkdir(path, mode=0o777, *, dir_fd=None):
+        if Path(path) == link and not link.exists():
+            link.symlink_to(target, target_is_directory=True)
+        if dir_fd is not None:
+            return real_mkdir(path, mode, dir_fd=dir_fd)
+        return real_mkdir(path, mode)
+
+    monkeypatch.setattr(hs.os, "mkdir", racing_mkdir)
+
+    with pytest.raises(OutputSafetyError, match="parent path contains a symlink"):
+        hs.ensure_safe_output_parent(link / "subdir" / "report.txt", label="report")
+
+    assert not (target / "subdir").exists()
