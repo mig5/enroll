@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .manifest_safety import ArtifactSafetyError, safe_artifact_file
 from .yamlutil import yaml_dump_mapping, yaml_load_mapping
 
 
@@ -157,8 +158,9 @@ def jinjify_artifact(
     if not (jt_enabled and jt_exe and can_jinjify_path(dest_path)):
         return None
 
-    artifact_path = Path(bundle_dir) / "artifacts" / artifact_role / src_rel
-    if not artifact_path.is_file():
+    try:
+        artifact_path = safe_artifact_file(bundle_dir, artifact_role, src_rel)
+    except (ArtifactSafetyError, FileNotFoundError):
         return None
 
     try:
