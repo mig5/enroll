@@ -376,14 +376,23 @@ Puppet and Salt also run `cm.resolve_catalog_conflicts()` after renderer role co
 capture_file(abs_path, role_name, reason, policy, path_filter, ...)
   -> skip if already seen globally or in this role
   -> skip if --exclude-path matches
-  -> ask IgnorePolicy.deny_reason(abs_path)
-  -> stat owner/group/mode with fsutil.stat_triplet()
-  -> copy to artifacts/<role_name>/<abs_path without leading slash>
+  -> ask IgnorePolicy.inspect_file(abs_path)
+     -> open the source through fsutil.open_no_follow_path()
+     -> reject symlinks in any path component, not only the leaf
+     -> fstat() the opened descriptor
+     -> reject non-regular or over-size files
+     -> read the exact bytes from that descriptor
+     -> scan those bytes for binary/secret content unless dangerous
+  -> use the inspected fstat() for owner/group/mode metadata
+  -> write the inspected bytes to artifacts/<role_name>/<abs_path without leading slash>
+     with no-follow destination creation
   -> append ManagedFile
   -> mark seen in role/global
 ```
 
-`fsutil.stat_triplet()` returns owner, group, and a zero-padded octal mode string. It falls back to numeric uid/gid strings if user/group names cannot be resolved.
+This ordering is intentional. Enroll should not scan one file and later copy a different file after a race. When `IgnorePolicy.inspect_file()` succeeds, `capture_file()` writes the exact bytes that were inspected and uses the same descriptor's stat metadata.
+
+`fsutil.stat_triplet()` and `stat_triplet_from_stat()` return owner, group, and a zero-padded octal mode string. They fall back to numeric uid/gid strings if user/group names cannot be resolved.
 
 ### 7.2 `capture_link()`
 
@@ -449,6 +458,20 @@ regex:^/path/...$  regex
 ```
 
 `expand_includes()` is conservative: it ignores symlinks, respects excludes, caps file counts, and returns notes for unmatched patterns or caps.
+
+### 7.6 Output, artifact, and cache safety helpers
+
+Several safety helpers protect privileged runs from following attacker-controlled paths:
+
+- `fsutil.open_no_follow_path()` opens source and artifact paths component-by-component, rejecting symlinked parent directories as well as symlinked leaf files.
+- `harvest_safety.prepare_new_private_dir()` is used for user-facing plaintext output directories such as `harvest --out` and default manifest output; it refuses existing final paths and creates `0700` directories.
+- `harvest_safety.ensure_safe_output_parent()` is used when writing output files such as reports or encrypted SOPS bundles. It validates parents before staging a temporary file and atomically replacing the final path.
+- `harvest_safety.ensure_private_dir()` is used for persistent internal directories such as Enroll's cache root. Existing directories are allowed, but symlink components and unsafe root-run parents are refused.
+- `cache.new_harvest_cache_dir()` creates unpredictable per-harvest cache directories beneath the hardened cache root with `mkdtemp()` and private permissions.
+- `manifest_safety.safe_artifact_file()` validates referenced harvested artifacts before renderers copy them. It rejects absolute or `..` paths, symlinks, non-regular files, hardlinks, and paths that resolve outside the artifact root.
+- `manifest_safety.prepare_manifest_output_dir()` refuses unsafe manifest output paths. In `--fqdn` site mode, where an existing tree is intentionally reused, it walks the existing output tree and refuses symlinks before merging generated files.
+
+When adding a new code path that writes plaintext host state, prefer these helpers over raw `mkdir(parents=True)`, `open()`, `shutil.copy*()`, or `tar.extract*()`.
 
 ---
 
@@ -788,8 +811,7 @@ SOPS mode:
 
 The renderers do not know about SOPS.
 
-Note: Manifest deliberately hooks into validate() to make sure the harvest meets the schema and
-doesn't contain dangerous tamperings before turning it into config management code.
+Before dispatching to a renderer, `manifest.manifest()` calls `validate.validate_harvest()` with normal schema validation enabled. That means generated configuration-management code is only rendered after Enroll has checked the bundle schema, referenced artifact existence, and artifact safety. If validation fails, manifest generation stops rather than trying to produce best-effort output from a malformed or tampered bundle.
 
 ---
 
@@ -1380,16 +1402,23 @@ This is intended to answer “what did Enroll collect and why?”
 1. `state.json` exists,
 2. it parses as JSON,
 3. it validates against the vendored schema unless `--no-schema` is set,
-4. every `managed_file.src_rel` points to an artifact file,
-5. firewall runtime generated artifacts exist,
-6. there are no unreferenced artifact files, reported as warnings.
-7. there are no malicious or unsafe bits such as symlinks/hardlinks etc traversing out of the artifact tree
+4. every `managed_file.src_rel` is relative and points to a safe artifact file,
+5. firewall runtime generated artifacts exist and are safe,
+6. the top-level `artifacts/` path is a real directory rather than a symlink or file,
+7. the whole artifact tree contains no symlink directories, symlink files, hardlinks, special files, or paths that escape the artifact root,
+8. unreferenced artifact files are reported as warnings.
+
+`validate_harvest()` is used in three important contexts:
+
+- `enroll validate` exposes the checks directly to users.
+- `manifest.manifest()` validates before rendering Ansible/Puppet/Salt output.
+- `diff.compare_harvests()` validates both input bundles before comparing them, using `no_schema=True` so older harvests can still be inspected while artifact safety checks remain active.
+
+`diff --enforce` renders the old harvest through `manifest.manifest()`, so enforcement also passes through manifest-time validation before a local apply tool is invoked.
 
 It returns a `ValidationResult` with `errors`, `warnings`, `ok()`, `to_dict()`, and `to_text()`.
 
 The CLI supports local schema override with `--schema`, warning failure with `--fail-on-warnings`, JSON/text output, and `--out`.
-
-Note that manifest() hooks into validate() to make sure the harvest is safe before rendering it into config management code.
 
 ---
 
@@ -1457,7 +1486,7 @@ Unknown host keys are rejected by default through Paramiko's reject policy. User
 - device nodes,
 - anything resolving outside the destination.
 
-This helper is reused by remote harvest, manifest SOPS extraction, and diff bundle resolution.
+This helper is reused by remote harvest, manifest SOPS extraction, validate/diff bundle resolution, and any code path that needs to unpack a harvest tarball. Do not use raw `tar.extractall()` for user- or remote-provided bundles.
 
 ---
 
