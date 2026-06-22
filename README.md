@@ -196,6 +196,8 @@ Enforcement is intentionally “safe”:
 
 If the config manager tool is not on `PATH`, Enroll returns an error and does not enforce.
 
+**IMPORTANT**: Only enforce harvest bundles that you trust. Validation checks bundle structure and artifact safety; it does not prove that the described system state is safe to apply, e.g. hasn't been tampered with by another user with sufficient permission to do so!
+
 
 **Output formats**
 - `--format json` (default for webhooks)
