@@ -73,6 +73,64 @@ def test_cli_manifest_subcommand_calls_manifest(monkeypatch, tmp_path):
     assert called["target"] == "ansible"
 
 
+def test_cli_force_unsafe_path_before_subcommand_reaches_guard(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_confirm(*, force: bool = False) -> None:
+        seen["force"] = force
+
+    def fake_manifest(_harvest_dir: str, _out_dir: str, **_kwargs):
+        return None
+
+    monkeypatch.setattr(cli, "_confirm_root_path_safety", fake_confirm)
+    monkeypatch.setattr(cli, "manifest", fake_manifest)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "enroll",
+            "--assume-safe-path",
+            "manifest",
+            "--harvest",
+            str(tmp_path / "bundle"),
+            "--out",
+            str(tmp_path / "ansible"),
+        ],
+    )
+
+    cli.main()
+    assert seen["force"] is True
+
+
+def test_cli_force_unsafe_path_after_subcommand_reaches_guard(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_confirm(*, force: bool = False) -> None:
+        seen["force"] = force
+
+    def fake_manifest(_harvest_dir: str, _out_dir: str, **_kwargs):
+        return None
+
+    monkeypatch.setattr(cli, "_confirm_root_path_safety", fake_confirm)
+    monkeypatch.setattr(cli, "manifest", fake_manifest)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "enroll",
+            "manifest",
+            "--assume-safe-path",
+            "--harvest",
+            str(tmp_path / "bundle"),
+            "--out",
+            str(tmp_path / "ansible"),
+        ],
+    )
+
+    cli.main()
+    assert seen["force"] is True
+
+
 def test_cli_manifest_target_puppet_is_forwarded(monkeypatch, tmp_path):
     called = {}
 

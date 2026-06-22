@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import os
 import types
 import textwrap
 from pathlib import Path
@@ -175,3 +176,70 @@ def test_resolve_sops_out_file(tmp_path: Path, monkeypatch):
         cli._resolve_sops_out_file(out=None, hint="bundle.tar.gz")
         == fake_cache.dir / "harvest.tar.gz.sops"
     )
+
+
+def test_unsafe_root_path_reasons_flags_current_and_writable_dirs(tmp_path: Path):
+    from enroll.cli import _unsafe_root_path_reasons
+
+    group_writable = tmp_path / "group-writable"
+    world_writable = tmp_path / "world-writable"
+    safe = tmp_path / "safe"
+    group_writable.mkdir()
+    world_writable.mkdir()
+    safe.mkdir()
+    group_writable.chmod(0o775)
+    world_writable.chmod(0o777)
+    safe.chmod(0o755)
+
+    reasons = _unsafe_root_path_reasons(
+        os.pathsep.join(
+            [
+                "",
+                ".",
+                "relative-bin",
+                str(group_writable),
+                str(world_writable),
+                str(safe),
+            ]
+        )
+    )
+
+    text = "\n".join(reasons)
+    assert "<empty>: empty PATH entry" in text
+    assert "'.' resolves" in text
+    assert "relative-bin: relative PATH entry" in text
+    assert f"{group_writable}: directory is group-writable" in text
+    assert f"{world_writable}: directory is world-writable" in text
+    assert str(safe) not in text
+
+
+def test_confirm_root_path_safety_refuses_noninteractive(monkeypatch):
+    from enroll import cli
+
+    monkeypatch.setattr(cli, "_is_effective_root", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "_unsafe_root_path_reasons",
+        lambda path_value=None: [".: '.' resolves to the current directory"],
+    )
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+
+    try:
+        cli._confirm_root_path_safety(force=False)
+    except SystemExit as e:
+        assert "--assume-safe-path" in str(e)
+    else:  # pragma: no cover - defensive assertion path
+        raise AssertionError("expected SystemExit")
+
+
+def test_confirm_root_path_safety_force_skips_prompt(monkeypatch):
+    from enroll import cli
+
+    monkeypatch.setattr(cli, "_is_effective_root", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "_unsafe_root_path_reasons",
+        lambda path_value=None: [".: '.' resolves to the current directory"],
+    )
+
+    cli._confirm_root_path_safety(force=True)

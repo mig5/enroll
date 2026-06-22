@@ -814,6 +814,47 @@ def test_manifest_fqdn_implies_no_common_roles(tmp_path: Path):
     assert not (out / "roles" / "net").exists()
 
 
+def test_manifest_fqdn_rejects_unsafe_path_like_name(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    escape = tmp_path / "escape"
+    state = _minimal_package_state([])
+    _write_state(bundle, state)
+
+    with pytest.raises(Exception, match="--fqdn"):
+        manifest.manifest(str(bundle), str(out), fqdn=str(escape / "node"))
+
+    assert not (escape / "node.yml").exists()
+    assert not (escape / "node" / "users.yml").exists()
+
+
+def test_manifest_fqdn_rejects_newline_inventory_injection(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    state = _minimal_package_state([])
+    _write_state(bundle, state)
+
+    with pytest.raises(Exception, match="--fqdn"):
+        manifest.manifest(str(bundle), str(out), fqdn="host1\nmalicious: true")
+
+
+def test_manifest_fqdn_existing_output_rejects_symlink_component(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    escape = tmp_path / "escape"
+    state = _minimal_package_state([])
+    _write_state(bundle, state)
+
+    (out / "inventory").mkdir(parents=True)
+    escape.mkdir()
+    (out / "inventory" / "host_vars").symlink_to(escape, target_is_directory=True)
+
+    with pytest.raises(Exception, match="symlink"):
+        manifest.manifest(str(bundle), str(out), fqdn="host1.example.test")
+
+    assert not (escape / "host1.example.test" / "users.yml").exists()
+
+
 def test_manifest_site_mode_creates_host_inventory_and_raw_files(tmp_path: Path):
     """In --fqdn mode, host-specific state goes into inventory/host_vars."""
 

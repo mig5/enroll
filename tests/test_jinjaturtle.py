@@ -231,3 +231,34 @@ def test_jinjify_managed_files_rejects_templates_with_missing_defaults(
     assert templated == set()
     assert vars_text == ""
     assert not (template_root / "etc" / "foo" / "pdk.yaml.j2").exists()
+
+
+def test_jinjify_artifact_rejects_unsafe_src_rel(monkeypatch, tmp_path: Path):
+    from enroll.jinjaturtle import jinjify_artifact
+
+    bundle = tmp_path / "bundle"
+    template_root = tmp_path / "templates"
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("key: value\n", encoding="utf-8")
+
+    called = False
+
+    def fake_run_jinjaturtle(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return JinjifyResult(template_text="key: {{ key }}\n", vars_text="key: value\n")
+
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    result = jinjify_artifact(
+        bundle,
+        "foo",
+        "../outside.yaml",
+        "/etc/foo.yaml",
+        template_root,
+        jt_exe="jinjaturtle",
+        jt_enabled=True,
+    )
+
+    assert result is None
+    assert called is False
