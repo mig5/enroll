@@ -287,12 +287,15 @@ Safe-mode content scanning is intentionally conservative. It treats common assig
 
 Automatic harvesting of per-user shell dotfiles is also disabled by default, even when those files differ from `/etc/skel`, because `.bashrc`, `.profile`, `.bash_aliases`, and similar files commonly contain exported tokens, credentials, or aliases/functions with embedded secrets. Use `--dangerous` for automatic shell-dotfile capture, or use targeted `--include-path` patterns for narrower safe-mode review.
 
-If you opt in to collecting everything:
+If you wish to opt in to collecting everything, use `--dangerous` mode, but be aware of what it means:
 
 ### `--dangerous`
-**WARNING:** disables “likely secret” safety checks. This can copy private keys, TLS key material, API tokens, database passwords, and other credentials into the harvest output **in plaintext**.
 
-If you intend to keep harvests/manifests long-term (especially in git), strongly consider encrypting them at rest.
+**IMPORTANT:** 'dangerous' mode is exactly that: it disables “likely secret” safety checks when harvesting system data.
+
+This means it can copy private keys, TLS key material, API tokens, database passwords, and other credentials into the harvest output **in plaintext**, including paths that would normally be considered very secret.
+
+If you intend to keep harvests/manifests long-term on disk away from the host or its usual protected paths, strongly consider encrypting them at rest!
 
 ### Encrypt bundles at rest with `--sops`
 `--sops` encrypts the harvest and/or manifest outputs into a single `.tar.gz.sops` file (GPG). This is for **storage-at-rest**, not for direct “Ansible SOPS inventory” workflows.
