@@ -46,9 +46,41 @@ DEFAULT_ALLOW_BINARY_GLOBS = [
     "/etc/pki/rpm-gpg/*",
 ]
 
+# Conservative secret patterns for default/safe harvesting.  These are
+# intentionally biased towards false positives: operators can opt in with
+# --dangerous or targeted include/exclude review when a file is genuinely
+# needed.
+#
+# The assignment pattern catches INI/YAML/JSON/TOML-ish keys such as:
+#   password: hunter2
+#   "client_secret": "..."
+#   aws_secret_access_key = ...
+#   GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 SENSITIVE_CONTENT_PATTERNS = [
-    re.compile(rb"-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----"),
-    re.compile(rb"(?i)\bpassword\s*="),
+    re.compile(rb"-----BEGIN (RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----"),
+    re.compile(
+        rb"""(?ix)
+        (^|[^A-Za-z0-9])
+        [\"']?
+        (
+            [A-Za-z0-9_.-]*
+            (
+                password|passwd|passphrase|
+                token|auth[_-]?token|access[_-]?token|refresh[_-]?token|
+                secret|client[_-]?secret|secret[_-]?key|
+                api[_-]?key|access[_-]?key|private[_-]?key|
+                credential|credentials|
+                aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|
+                azure[_-]?client[_-]?secret|azure[_-]?tenant[_-]?id|azure[_-]?client[_-]?id|
+                google[_-]?application[_-]?credentials|gcp[_-]?service[_-]?account|
+                service[_-]?account[_-]?key
+            )
+            [A-Za-z0-9_.-]*
+        )
+        [\"']?
+        \s*[:=]
+        """
+    ),
     re.compile(rb"(?i)\b(pass|passwd|token|secret|api[_-]?key)\b"),
 ]
 

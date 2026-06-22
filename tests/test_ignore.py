@@ -172,6 +172,40 @@ def test_deny_reason_private_key(tmp_path: Path):
     assert reason == "sensitive_content"
 
 
+def test_deny_reason_sensitive_common_assignment_keys(tmp_path: Path):
+    pol = IgnorePolicy()
+    cases = {
+        "password_yaml": "password: hunter2\n",
+        "password_json": '{"password": "hunter2"}\n',
+        "db_password": "db_password: hunter2\n",
+        "client_secret": "client_secret: abc123\n",
+        "secret_key": "secret_key = abc123\n",
+        "auth_token": "auth_token: abc123\n",
+        "passphrase": "passphrase: abc123\n",
+        "credentials": "credentials = abc123\n",
+    }
+    for name, text in cases.items():
+        config = tmp_path / name
+        config.write_text(text, encoding="utf-8")
+        assert pol.deny_reason(str(config)) == "sensitive_content", name
+
+
+def test_deny_reason_sensitive_common_cloud_assignment_keys(tmp_path: Path):
+    pol = IgnorePolicy()
+    cases = {
+        "aws_access_key_id": "aws_access_key_id = AKIAIOSFODNN7EXAMPLE\n",
+        "aws_secret_access_key": "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCY\n",
+        "azure_client_secret": "azure_client_secret: abc123\n",
+        "google_application_credentials": "GOOGLE_APPLICATION_CREDENTIALS=/etc/app/key.json\n",
+        "gcp_service_account": "gcp_service_account: svc@example.iam.gserviceaccount.com\n",
+        "service_account_key": "service_account_key: abc123\n",
+    }
+    for name, text in cases.items():
+        config = tmp_path / name
+        config.write_text(text, encoding="utf-8")
+        assert pol.deny_reason(str(config)) == "sensitive_content", name
+
+
 def test_deny_reason_too_large(tmp_path: Path):
     pol = IgnorePolicy(max_file_bytes=100)
     large = tmp_path / "large.txt"
