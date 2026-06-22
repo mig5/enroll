@@ -285,6 +285,8 @@ By default, `enroll` does **not** assume how you handle secrets in Ansible. It w
 
 Safe-mode content scanning is intentionally conservative. It treats common assignment-style credential keys as sensitive, including names such as `password`, `client_secret`, `secret_key`, `auth_token`, `api_key`, `aws_access_key_id`, `aws_secret_access_key`, `azure_client_secret`, `GOOGLE_APPLICATION_CREDENTIALS`, and service-account key names.
 
+**IMPORTANT**: Enroll ignores comments in files! If you have commented out *real secrets*, there's still a risk that Enroll could capture that data even without `--dangerous`. If you are in doubt, play it safe: use `--sops` and/or encrypt the output at rest in a way that makes sense to you.
+
 Automatic harvesting of per-user shell dotfiles is also disabled by default, even when those files differ from `/etc/skel`, because `.bashrc`, `.profile`, `.bash_aliases`, and similar files commonly contain exported tokens, credentials, or aliases/functions with embedded secrets. Use `--dangerous` for automatic shell-dotfile capture, or use targeted `--include-path` patterns for narrower safe-mode review.
 
 If you wish to opt in to collecting everything, use `--dangerous` mode, but be aware of what it means:

@@ -49,6 +49,7 @@ The following are generally out of scope and should not be reported as Enroll vu
 * A user configuring a webhook, email target, SSH proxy command, SOPS binary, package manager, or configuration-management tool that they do not trust.
 * A compromised system where an attacker already controls root-owned files, root’s shell, root’s configuration, or the privileged tools Enroll invokes.
 * Reports that amount to “if root runs this tool with malicious options, root can make the system do dangerous things.”
+* Enroll harvesting a file that has a *commented out* secret even with `--dangerous` disabled (it ignores comments so as to not be totally useless when it comes to harvesting config files). It is still the responsibility of the user to use `--sops` or appropriate at-rest encryption if in the slightest doubt about what might get harvested.
 
 Enroll is a tool for administrators, not a sandbox for hostile local users. It cannot make unsafe local trust decisions safe if the operator’s own execution environment is already attacker-controlled.
 
