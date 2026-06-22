@@ -394,3 +394,53 @@ def test_usr_local_custom_collector_scans_executable_bin_and_notes_cap(
         "usr_local_etc_custom",
         "usr_local_bin_script",
     ]
+
+
+def test_extra_paths_collector_records_symlinks_without_following(tmp_path):
+    root = tmp_path / "include"
+    root.mkdir()
+    real_file = root / "real.conf"
+    real_file.write_text("ok", encoding="utf-8")
+    (root / "link.conf").symlink_to("real.conf")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "outside.conf").write_text("do-not-follow", encoding="utf-8")
+    (root / "shared").symlink_to(outside, target_is_directory=True)
+
+    ctx = _context(tmp_path, include=[str(root)])
+    result = ExtraPathsCollector(
+        ctx,
+        seen_by_role={},
+        already_all=set(),
+        include_paths=[str(root)],
+    ).collect()
+
+    links = {(link.path, link.target, link.reason) for link in result.managed_links}
+    assert (str(root / "link.conf"), "real.conf", "user_include_link") in links
+    assert (str(root / "shared"), str(outside), "user_include_link") in links
+
+    managed_files = {mf.path for mf in result.managed_files}
+    assert str(real_file) in managed_files
+    assert str(outside / "outside.conf") not in managed_files
+
+
+def test_extra_paths_collector_records_include_path_that_is_symlink(tmp_path):
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    (real_root / "inside.conf").write_text("do-not-follow", encoding="utf-8")
+    link_root = tmp_path / "linked-root"
+    link_root.symlink_to(real_root, target_is_directory=True)
+
+    ctx = _context(tmp_path, include=[str(link_root)])
+    result = ExtraPathsCollector(
+        ctx,
+        seen_by_role={},
+        already_all=set(),
+        include_paths=[str(link_root)],
+    ).collect()
+
+    assert [(link.path, link.target, link.reason) for link in result.managed_links] == [
+        (str(link_root), str(real_root), "user_include_link")
+    ]
+    assert result.managed_files == []
