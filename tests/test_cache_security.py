@@ -95,3 +95,44 @@ def test_enroll_cache_dir_uses_default_when_xdg_not_set(monkeypatch):
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
     result = enroll_cache_dir()
     assert str(result).endswith("/.local/cache/enroll")
+
+
+def test_ensure_dir_secure_refuses_symlink_parent(tmp_path: Path):
+    from enroll.cache import _ensure_dir_secure
+
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        _ensure_dir_secure(link / "enroll" / "harvest")
+
+    assert not (target / "enroll" / "harvest").exists()
+
+
+def test_ensure_dir_secure_rejects_unsafe_root_parent(tmp_path: Path, monkeypatch):
+    from enroll.cache import _ensure_dir_secure
+    import enroll.harvest_safety as hs
+
+    untrusted = tmp_path / "untrusted"
+    untrusted.mkdir()
+    untrusted.chmod(0o777)
+
+    monkeypatch.setattr(hs, "_effective_uid", lambda: 0)
+    with pytest.raises(RuntimeError, match="not owned by root|writable by group/other"):
+        _ensure_dir_secure(untrusted / "cache")
+
+
+def test_ensure_dir_secure_rejects_existing_file_when_not_root(
+    tmp_path: Path, monkeypatch
+):
+    from enroll.cache import _ensure_dir_secure
+    import enroll.harvest_safety as hs
+
+    path = tmp_path / "cache"
+    path.write_text("not a dir", encoding="utf-8")
+
+    monkeypatch.setattr(hs, "_effective_uid", lambda: 1000)
+    with pytest.raises(RuntimeError, match="not a directory"):
+        _ensure_dir_secure(path)

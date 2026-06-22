@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .harvest_safety import OutputSafetyError, ensure_private_dir
+
 
 def _safe_component(s: str) -> str:
     s = s.strip()
@@ -44,16 +46,17 @@ class HarvestCache:
 
 
 def _ensure_dir_secure(path: Path) -> None:
-    """Create a directory with restrictive permissions; refuse symlinks."""
-    # Refuse a symlink at the leaf.
-    if path.exists() and path.is_symlink():
-        raise RuntimeError(f"Refusing to use symlink path: {path}")
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    """Create a private cache directory with output-path safety checks.
+
+    Cache roots are persistent, so existing directories are allowed, but they
+    still need the same symlink-component and root-parent trust checks as
+    plaintext harvest/manifest output paths.
+    """
+
     try:
-        os.chmod(path, 0o700)
-    except OSError:
-        # Best-effort; on some FS types chmod may fail.
-        pass
+        ensure_private_dir(path, label="cache directory")
+    except OutputSafetyError as e:
+        raise RuntimeError(str(e)) from e
 
 
 def new_harvest_cache_dir(*, hint: Optional[str] = None) -> HarvestCache:
