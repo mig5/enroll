@@ -69,6 +69,8 @@ def _assert_existing_output_dir_component(path: Path, *, label: str) -> None:
         raise OutputSafetyError(
             f"{label} parent path contains a symlink; refusing: {path}"
         )
+    if not stat.S_ISDIR(st.st_mode):
+        raise OutputSafetyError(f"{label} parent is not a directory: {path}")
     _assert_trusted_root_parent(path, st, label=label)
 
 
@@ -211,6 +213,24 @@ def write_text_output_file(
             os.unlink(tmp_name)
         except FileNotFoundError:
             pass
+    return out
+
+
+def ensure_private_dir(path: str | Path, *, label: str = "output") -> Path:
+    """Create or validate a private directory without requiring it to be empty.
+
+    This is for persistent internal directories such as Enroll's cache root,
+    where existing contents are expected across runs. It uses the same
+    component-by-component symlink and root-parent trust checks as user-facing
+    plaintext output directories, but permits an existing final directory.
+    """
+
+    out = Path(path).expanduser()
+    sentinel = out / ".enroll-private-dir-check"
+    _assert_no_existing_symlink_components(sentinel, label=label)
+    out = _mkdir_private_dir_tree(out, label=label, final_must_be_new=False)
+    _assert_no_existing_symlink_components(sentinel, label=label)
+    _chmod_private(out)
     return out
 
 

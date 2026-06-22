@@ -453,3 +453,35 @@ def test_validate_harvest_rejects_unreferenced_artifact_symlink(tmp_path: Path):
 
     assert result.ok is False
     assert any("symlink" in e for e in result.errors)
+
+
+def test_validate_harvest_rejects_top_level_artifacts_symlink(tmp_path: Path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    target = tmp_path / "artifact-target"
+    target.mkdir()
+    (bundle_dir / "artifacts").symlink_to(target, target_is_directory=True)
+    (bundle_dir / "state.json").write_text(
+        json.dumps({"roles": {"users": {"managed_files": []}}}),
+        encoding="utf-8",
+    )
+
+    result = validate_harvest(str(bundle_dir), no_schema=True)
+
+    assert result.ok is False
+    assert any("artifacts directory is a symlink" in e for e in result.errors)
+
+
+def test_validate_harvest_rejects_top_level_artifacts_file(tmp_path: Path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "artifacts").write_text("not a directory", encoding="utf-8")
+    (bundle_dir / "state.json").write_text(
+        json.dumps({"roles": {"users": {"managed_files": []}}}),
+        encoding="utf-8",
+    )
+
+    result = validate_harvest(str(bundle_dir), no_schema=True)
+
+    assert result.ok is False
+    assert any("artifacts path is not a directory" in e for e in result.errors)

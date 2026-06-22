@@ -232,65 +232,79 @@ def validate_harvest(
         # Validate the whole artifact tree too, so unreferenced symlinks,
         # hardlinks, special files, and path-shaping tricks do not survive
         # validation simply because no managed_file currently references them.
-        if artifacts_dir.exists() and artifacts_dir.is_dir():
-            for root, dirs, files in os.walk(artifacts_dir, followlinks=False):
-                root_p = Path(root)
-                for name in list(dirs):
-                    fp = root_p / name
-                    try:
-                        st = fp.lstat()
-                    except FileNotFoundError:
-                        continue
-                    if stat.S_ISLNK(st.st_mode):
-                        errors.append(f"artifact directory is a symlink: {fp}")
-                    elif not stat.S_ISDIR(st.st_mode):
-                        errors.append(f"artifact directory is not a directory: {fp}")
+        if artifacts_dir.exists():
+            try:
+                artifacts_st = artifacts_dir.lstat()
+            except OSError as e:
+                errors.append(f"unable to inspect artifacts directory: {e}")
+            else:
+                if stat.S_ISLNK(artifacts_st.st_mode):
+                    errors.append(f"artifacts directory is a symlink: {artifacts_dir}")
+                elif not stat.S_ISDIR(artifacts_st.st_mode):
+                    errors.append(f"artifacts path is not a directory: {artifacts_dir}")
+                else:
+                    for root, dirs, files in os.walk(artifacts_dir, followlinks=False):
+                        root_p = Path(root)
+                        for name in list(dirs):
+                            fp = root_p / name
+                            try:
+                                st = fp.lstat()
+                            except FileNotFoundError:
+                                continue
+                            if stat.S_ISLNK(st.st_mode):
+                                errors.append(f"artifact directory is a symlink: {fp}")
+                            elif not stat.S_ISDIR(st.st_mode):
+                                errors.append(
+                                    f"artifact directory is not a directory: {fp}"
+                                )
 
-                for name in files:
-                    fp = root_p / name
-                    try:
-                        st = fp.lstat()
-                    except FileNotFoundError:
-                        continue
-                    try:
-                        rel = fp.relative_to(artifacts_dir)
-                    except ValueError:
-                        errors.append(f"artifact escapes artifact root: {fp}")
-                        continue
-                    parts = rel.parts
-                    if len(parts) < 2:
-                        errors.append(f"artifact is not under a role directory: {fp}")
-                        continue
-                    role_name = parts[0]
-                    src_rel = "/".join(parts[1:])
+                        for name in files:
+                            fp = root_p / name
+                            try:
+                                st = fp.lstat()
+                            except FileNotFoundError:
+                                continue
+                            try:
+                                rel = fp.relative_to(artifacts_dir)
+                            except ValueError:
+                                errors.append(f"artifact escapes artifact root: {fp}")
+                                continue
+                            parts = rel.parts
+                            if len(parts) < 2:
+                                errors.append(
+                                    f"artifact is not under a role directory: {fp}"
+                                )
+                                continue
+                            role_name = parts[0]
+                            src_rel = "/".join(parts[1:])
 
-                    if stat.S_ISLNK(st.st_mode):
-                        errors.append(
-                            f"artifact is a symlink: artifacts/{role_name}/{src_rel}"
-                        )
-                        continue
-                    if not stat.S_ISREG(st.st_mode):
-                        errors.append(
-                            f"artifact is not a regular file: artifacts/{role_name}/{src_rel}"
-                        )
-                        continue
-                    if st.st_nlink > 1:
-                        errors.append(
-                            f"artifact is hardlinked: artifacts/{role_name}/{src_rel}"
-                        )
-                        continue
-                    try:
-                        safe_artifact_file(bundle.dir, role_name, src_rel)
-                    except (FileNotFoundError, ArtifactSafetyError) as e:
-                        errors.append(
-                            f"unsafe artifact: artifacts/{role_name}/{src_rel}: {e}"
-                        )
-                        continue
+                            if stat.S_ISLNK(st.st_mode):
+                                errors.append(
+                                    f"artifact is a symlink: artifacts/{role_name}/{src_rel}"
+                                )
+                                continue
+                            if not stat.S_ISREG(st.st_mode):
+                                errors.append(
+                                    f"artifact is not a regular file: artifacts/{role_name}/{src_rel}"
+                                )
+                                continue
+                            if st.st_nlink > 1:
+                                errors.append(
+                                    f"artifact is hardlinked: artifacts/{role_name}/{src_rel}"
+                                )
+                                continue
+                            try:
+                                safe_artifact_file(bundle.dir, role_name, src_rel)
+                            except (FileNotFoundError, ArtifactSafetyError) as e:
+                                errors.append(
+                                    f"unsafe artifact: artifacts/{role_name}/{src_rel}: {e}"
+                                )
+                                continue
 
-                    if (role_name, src_rel) not in referenced:
-                        warnings.append(
-                            f"unreferenced artifact present: artifacts/{role_name}/{src_rel}"
-                        )
+                            if (role_name, src_rel) not in referenced:
+                                warnings.append(
+                                    f"unreferenced artifact present: artifacts/{role_name}/{src_rel}"
+                                )
 
         return ValidationResult(errors=errors, warnings=warnings)
     finally:
