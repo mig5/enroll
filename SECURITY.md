@@ -14,7 +14,7 @@ In particular:
 * If an `enroll.ini` configuration file is loaded, its location and contents are assumed to be owned, selected, and understood by the operator.
 * The operator is expected to understand the implications of options such as `--dangerous`, `--assume-safe-path`, `--sops`, `--enforce`, `--remote-host`, and `--remote-ssh-config`.
 * Harvest bundles used for `manifest`, `diff`, or `diff --enforce` are assumed to come from a trusted source unless the operator is deliberately inspecting untrusted input without applying it.
-* Configuration-management tools invoked by Enroll, such as Ansible, Puppet, Salt, SOPS, SSH, `sudo`, Docker, Podman, Flatpak, Snap, package managers, and system utilities, are assumed to be the trusted tools the operator intended to use.
+* Configuration-management tools invoked by Enroll, such as Ansible, SOPS, SSH, `sudo`, Docker, Podman, Flatpak, Snap, package managers, and system utilities, are assumed to be the trusted tools the operator intended to use.
 
 ## What is in scope
 
@@ -31,7 +31,7 @@ In-scope security concerns include:
 * Writing plaintext harvest outputs into private directories by default.
 * Hardening root-run output path handling so Enroll does not accidentally write through attacker-prepared symlinks or unsafe parent directories.
 * Refusing to continue non-interactively when run as root with an unsafe `PATH`, unless the operator explicitly confirms with `--assume-safe-path`.
-* Avoiding shell injection in generated manifests where harvested values are embedded into Ansible, Puppet, or Salt output.
+* Avoiding shell injection in generated manifests where harvested values are embedded into Ansible output.
 * Rejecting unknown SSH host keys by default during remote harvests.
 
 These measures are defense-in-depth. They are intended to reduce the chance of accidental exposure, unsafe filesystem writes, path traversal, command injection, or dangerous behavior when Enroll is used normally by an administrator.
@@ -45,7 +45,7 @@ The following are generally out of scope and should not be reported as Enroll vu
 * A root user passing `--dangerous` and then observing that Enroll may collect sensitive information.
 * A root user passing `--assume-safe-path` and then observing that Enroll does not prompt about `PATH` safety.
 * A root user enforcing a malicious or manually edited harvest bundle with `diff --enforce`.
-* A user applying generated Ansible, Puppet, or Salt manifests from an untrusted harvest.
+* A user applying generated Ansible manifests from an untrusted harvest.
 * A user configuring a webhook, email target, SSH proxy command, SOPS binary, package manager, or configuration-management tool that they do not trust.
 * A compromised system where an attacker already controls root-owned files, root’s shell, root’s configuration, or the privileged tools Enroll invokes.
 * Reports that amount to “if root runs this tool with malicious options, root can make the system do dangerous things.”
@@ -79,7 +79,7 @@ Useful vulnerability reports include issues where Enroll behaves unsafely despit
 * Enroll follows a symlink or hardlink in a way that causes privileged file disclosure or overwrite.
 * Enroll extracts a tar member outside the intended harvest directory.
 * Enroll accepts a malicious harvest artifact that escapes the artifact root.
-* Enroll generates an Ansible, Puppet, or Salt manifest where ordinary harvested data can cause command injection.
+* Enroll generates an Ansible manifest where ordinary harvested data can cause command injection.
 * Enroll writes root-run output into an unsafe attacker-controlled path despite its safety checks.
 * Enroll silently ignores a failed safety check and proceeds anyway.
 * Enroll accepts an unknown SSH host key unexpectedly.

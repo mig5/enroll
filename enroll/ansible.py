@@ -724,7 +724,7 @@ def _write_ansible_role_vars(
     *,
     site_defaults: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Write role variables using the same mode split as Puppet Hiera/Salt Pillar."""
+    """Write role variables using the single-site/site-mode split."""
 
     if ctx.site_mode:
         _write_role_defaults(role_dir, site_defaults or {})

@@ -682,40 +682,7 @@ def _role_tag(role: str) -> str:
     return f"role_{safe}"
 
 
-def _normalise_enforcement_target(target: str) -> str:
-    t = str(target or "ansible").strip().lower()
-    if t not in {"ansible", "puppet", "salt"}:
-        raise ValueError(f"unsupported enforcement target: {target!r}")
-    return t
-
-
-def _enforcement_tool(target: str) -> Tuple[str, str]:
-    """Return (binary-name, human-label) for a local enforcement target."""
-    if target == "puppet":
-        return "puppet", "puppet apply"
-    if target == "salt":
-        return "salt-call", "salt-call"
-    return "ansible-playbook", "ansible-playbook"
-
-
-def _require_enforcement_tool(target: str) -> Tuple[str, str]:
-    binary, label = _enforcement_tool(target)
-    exe = shutil.which(binary)
-    if not exe:
-        install_hint = {
-            "ansible": "Ansible",
-            "puppet": "Puppet",
-            "salt": "Salt",
-        }.get(target, target)
-        raise RuntimeError(
-            f"{binary} not found on PATH "
-            f"(cannot enforce with target {target}; install {install_hint})"
-        )
-    return exe, label
-
-
 def _enforcement_command(
-    target: str,
     exe: str,
     manifest_dir: Path,
     *,
@@ -724,69 +691,27 @@ def _enforcement_command(
     """Return the local apply command and environment for a rendered manifest."""
     env = dict(os.environ)
 
-    if target == "ansible":
-        playbook = manifest_dir / "playbook.yml"
-        if not playbook.exists():
-            raise RuntimeError(
-                f"manifest did not produce expected playbook.yml at {playbook}"
-            )
+    playbook = manifest_dir / "playbook.yml"
+    if not playbook.exists():
+        raise RuntimeError(
+            f"manifest did not produce expected playbook.yml at {playbook}"
+        )
 
-        cfg = manifest_dir / "ansible.cfg"
-        if cfg.exists():
-            env["ANSIBLE_CONFIG"] = str(cfg)
+    cfg = manifest_dir / "ansible.cfg"
+    if cfg.exists():
+        env["ANSIBLE_CONFIG"] = str(cfg)
 
-        cmd = [
-            exe,
-            "-i",
-            "localhost,",
-            "-c",
-            "local",
-            str(playbook),
-        ]
-        if tags:
-            cmd.extend(["--tags", ",".join(tags)])
-        return cmd, env
-
-    if target == "puppet":
-        site_pp = manifest_dir / "manifests" / "site.pp"
-        if not site_pp.exists():
-            raise RuntimeError(
-                f"manifest did not produce expected Puppet site.pp at {site_pp}"
-            )
-
-        cmd = [
-            exe,
-            "apply",
-            "--modulepath",
-            str(manifest_dir / "modules"),
-        ]
-        hiera_config = manifest_dir / "hiera.yaml"
-        if hiera_config.exists():
-            cmd.extend(["--hiera_config", str(hiera_config)])
-        cmd.append(str(site_pp))
-        return cmd, env
-
-    if target == "salt":
-        states_dir = manifest_dir / "states"
-        top_sls = states_dir / "top.sls"
-        if not top_sls.exists():
-            raise RuntimeError(
-                f"manifest did not produce expected Salt top.sls at {top_sls}"
-            )
-
-        cmd = [
-            exe,
-            "--local",
-            "--file-root",
-            str(states_dir),
-        ]
-        pillar_dir = manifest_dir / "pillar"
-        if pillar_dir.exists():
-            cmd.extend(["--pillar-root", str(pillar_dir)])
-        cmd.extend(["state.apply"])
-        return cmd, env
-
-    raise ValueError(f"unsupported enforcement target: {target!r}")
+    cmd = [
+        exe,
+        "-i",
+        "localhost,",
+        "-c",
+        "local",
+        str(playbook),
+    ]
+    if tags:
+        cmd.extend(["--tags", ",".join(tags)])
+    return cmd, env
 
 
 def _enforcement_plan(
@@ -898,22 +823,18 @@ def enforce_old_harvest(
     *,
     sops_mode: bool = False,
     report: Optional[Dict[str, Any]] = None,
-    target: str = "ansible",
 ) -> Dict[str, Any]:
     """Enforce the *old* (baseline) harvest state on the current machine.
 
-    This renders a temporary manifest from the old harvest using the requested
-    target, then runs the target's local apply command:
-      - ansible: ansible-playbook -i localhost, -c local playbook.yml
-      - puppet: puppet apply --modulepath ./modules manifests/site.pp
-      - salt: salt-call --local --file-root ./states state.apply
+    This renders a temporary Ansible manifest from the old harvest, then runs
+    the local apply command:
+      - ansible-playbook -i localhost, -c local playbook.yml
 
     Returns a dict suitable for attaching to the diff report under
     report['enforcement'].
     """
 
-    target = _normalise_enforcement_target(target)
-    tool_exe, tool_label = _require_enforcement_tool(target)
+    tool_exe = "ansible-playbook"
 
     # Import lazily to avoid heavy import cost and potential CLI cycles.
     from .manifest import manifest
@@ -933,12 +854,10 @@ def enforce_old_harvest(
         if report is not None:
             plan = _enforcement_plan(report, old_state, old_b.dir)
             roles = list(plan.get("roles") or [])
-            # Only Ansible has generated per-role tags that can safely narrow
-            # the apply scope. Puppet and Salt enforcement deliberately run the
-            # full generated local manifest/catalog for now.
-            if target == "ansible":
-                t = list(plan.get("tags") or [])
-                tags = t if t else None
+            # Ansible has generated per-role tags that can safely narrow the
+            # apply scope.
+            t = list(plan.get("tags") or [])
+            tags = t if t else None
 
         with tempfile.TemporaryDirectory(prefix="enroll-enforce-") as td:
             td_path = Path(td)
@@ -951,11 +870,10 @@ def enforce_old_harvest(
             # refuses to write into an existing destination, so use a fresh
             # child path under the secure temporary directory.
             manifest_dir = td_path / "manifest"
-            manifest(str(old_b.dir), str(manifest_dir), target=target)
+            manifest(str(old_b.dir), str(manifest_dir))
 
             # 2) Apply it locally.
             cmd, env = _enforcement_command(
-                target,
                 tool_exe,
                 manifest_dir,
                 tags=tags,
@@ -967,12 +885,12 @@ def enforce_old_harvest(
             if _progress_enabled():
                 if tags:
                     sys.stderr.write(
-                        f"Enforce: running {tool_label} (tags: {','.join(tags)})\n",
+                        f"Enforce: running {tool_exe} tags: {','.join(tags)})\n",
                     )
                 else:
-                    sys.stderr.write(f"Enforce: running {tool_label}\n")
+                    sys.stderr.write(f"Enforce: running {tool_exe}\n")
                 sys.stderr.flush()
-                spinner = _Spinner(f"  {tool_label}")
+                spinner = _Spinner(f"   {tool_exe}")
                 spinner.start()
 
             try:
@@ -990,7 +908,7 @@ def enforce_old_harvest(
                     rc = p.returncode if p is not None else None
                     spinner.stop(
                         final_line=(
-                            f"Enforce: {tool_label} finished in {elapsed:0.1f}s"
+                            f"Enforce: {tool_exe} finished in {elapsed:0.1f}s"
                             + (f" (rc={rc})" if rc is not None else "")
                         ),
                     )
@@ -999,22 +917,15 @@ def enforce_old_harvest(
 
             info: Dict[str, Any] = {
                 "status": "applied" if p.returncode == 0 else "failed",
-                "target": target,
-                "tool": tool_label,
                 "executable": tool_exe,
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "command": cmd,
                 "returncode": int(p.returncode),
             }
-            # Keep the original Ansible-specific field for compatibility with
-            # existing consumers of the JSON report.
-            if target == "ansible":
-                info["ansible_playbook"] = tool_exe
-            elif target == "puppet":
-                info["puppet"] = tool_exe
-            elif target == "salt":
-                info["salt_call"] = tool_exe
+            # Keep the Ansible-specific field for compatibility with existing
+            # consumers of the JSON report.
+            info["ansible_playbook"] = tool_exe
 
             info["roles"] = roles
             info["tags"] = list(tags or [])
@@ -1024,7 +935,7 @@ def enforce_old_harvest(
             if p.returncode != 0:
                 err = (p.stderr or p.stdout or "").strip()
                 raise RuntimeError(
-                    f"{tool_label} failed"
+                    f"{tool_exe} failed"
                     + (f" (rc={p.returncode})" if p.returncode is not None else "")
                     + (f": {err}" if err else "")
                 )
@@ -1069,9 +980,6 @@ def _report_text(report: Dict[str, Any]) -> str:
     if enf:
         lines.append("\nEnforcement")
         status = str(enf.get("status") or "").strip().lower()
-        tool = str(enf.get("tool") or "ansible-playbook")
-        target = str(enf.get("target") or "ansible")
-        via = f"{tool} ({target})" if target and target not in tool else tool
         if status == "applied":
             extra = ""
             tags = enf.get("tags") or []
@@ -1081,7 +989,7 @@ def _report_text(report: Dict[str, Any]) -> str:
             elif scope:
                 extra = f" ({scope})"
             lines.append(
-                f"  applied old harvest via {via} (rc={enf.get('returncode')})"
+                f"  applied old harvest (rc={enf.get('returncode')})"
                 + extra
                 + (
                     f" (finished {enf.get('finished_at')})"
@@ -1091,7 +999,7 @@ def _report_text(report: Dict[str, Any]) -> str:
             )
         elif status == "failed":
             lines.append(
-                f"  attempted enforcement but {via} failed (rc={enf.get('returncode')})"
+                f"  attempted enforcement but failed (rc={enf.get('returncode')})"
             )
         elif status == "skipped":
             r = enf.get("reason")
@@ -1231,9 +1139,6 @@ def _report_markdown(report: Dict[str, Any]) -> str:
     if enf:
         out.append("\n## Enforcement\n")
         status = str(enf.get("status") or "").strip().lower()
-        tool = str(enf.get("tool") or "ansible-playbook")
-        target = str(enf.get("target") or "ansible")
-        via = f"{tool} ({target})" if target and target not in tool else tool
         if status == "applied":
             extra = ""
             tags = enf.get("tags") or []
@@ -1243,7 +1148,7 @@ def _report_markdown(report: Dict[str, Any]) -> str:
             elif scope:
                 extra = f" ({scope})"
             out.append(
-                f"- ✅ Applied old harvest via {via}"
+                "- ✅ Applied old harvest"
                 + extra
                 + (
                     f" (rc={enf.get('returncode')})"
@@ -1259,7 +1164,7 @@ def _report_markdown(report: Dict[str, Any]) -> str:
             )
         elif status == "failed":
             out.append(
-                f"- ⚠️ Attempted enforcement but {via} failed"
+                "- ⚠️ Attempted enforcement but failed"
                 + (
                     f" (rc={enf.get('returncode')})"
                     if enf.get("returncode") is not None

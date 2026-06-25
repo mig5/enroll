@@ -4,7 +4,7 @@
   <img src="https://git.mig5.net/mig5/enroll/raw/branch/main/enroll.svg" alt="Enroll logo" width="240" />
 </div>
 
-**enroll** inspects a Linux machine (Debian-like or RedHat-like) and generates configuration-management code from it, as Ansible (default), Puppet or Salt.
+**enroll** inspects a Linux machine (Debian-like or RedHat-like) and generates Ansible configuration-management code from it.
 
 - Detects packages that have been installed.
 - Detects package ownership of `/etc` files where possible
@@ -27,7 +27,7 @@
 `enroll` works in two phases:
 
 1) **Harvest**: collect host facts + relevant files into a harvest bundle (`state.json` + harvested artifacts)
-2) **Manifest**: turn that harvest into configuration-management code such as Ansible, Puppet or Salt.
+2) **Manifest**: turn that harvest into Ansible configuration-management code.
 
 Additionally, some other functionalities exist:
 
@@ -37,8 +37,6 @@ Additionally, some other functionalities exist:
 ---
 
 ## Output modes: single-site vs multi-site (`--fqdn`)
-
-`enroll manifest` (and `enroll single-shot`) support multiple output targets. Ansible is the default target and supports two distinct output styles.
 
 ### Single-site mode (default: *no* `--fqdn`)
 Use when enrolling **one server** (or generating a “golden” role set you intend to reuse).
@@ -124,7 +122,7 @@ enroll single-shot --remote-host myhost.example.com --remote-user myuser --ssh-k
 ---
 
 ### `enroll manifest`
-Generate configuration-management output from an existing harvest bundle. Ansible remains the default; use `--target puppet` for Puppet output or `--target salt` for Salt output.
+Generate Ansible output from an existing harvest bundle.
 
 **Inputs**
 - `--harvest /path/to/harvest` (directory)
@@ -132,13 +130,10 @@ Generate configuration-management output from an existing harvest bundle. Ansibl
 
 **Output**
 - In plaintext Ansible mode: an Ansible repo-like directory structure (roles/playbooks, and inventory in multi-site mode).
-- In plaintext Puppet mode: a Puppet control-repo style layout with `manifests/site.pp` and generated modules under `modules/`. By default, package and service resources are grouped by Debian Section/RPM Group where possible; `--fqdn` or `--no-common-roles` preserves one generated module per Enroll role/snapshot.
-- In plaintext Salt mode: a Salt state tree under `states/`, plus `pillar/` data in `--fqdn` mode. By default, package and service resources are grouped by Debian Section/RPM Group where possible; `--fqdn` or `--no-common-roles` preserves one generated SLS role per Enroll role/snapshot.
 - In `--sops` mode: a single encrypted file `manifest.tar.gz.sops` containing the generated output.
 
 **Common flags**
-- `--target ansible|puppet|salt`: choose the manifest target (`ansible` is the default).
-- `--fqdn <host>`: enables **multi-site** output style for Ansible, emits Puppet Hiera/node output, or emits Salt top/pillar output targeted at that minion ID. Without `--fqdn`, Puppet emits `node default { ... }` and Salt targets `*` in `states/top.sls`.
+- `--fqdn <host>`: enables **multi-site** output style for Ansible (host-specific state lives in inventory `host_vars`).
 - `--no-common-roles`: disables the default grouping of package and systemd-unit roles into Debian Section/RPM Group roles, preserving one generated role per package/unit. `--fqdn` implies this behaviour.
 
 **Role tags**
@@ -159,7 +154,7 @@ Convenience wrapper that runs **harvest → manifest** in one command.
 
 Use this when you want “get me something workable ASAP”.
 
-Supports the same general flags as harvest/manifest, including `--target`, `--fqdn`, `--no-common-roles`, remote harvest flags, and `--sops`.
+Supports the same general flags as harvest/manifest, including `--fqdn`, `--no-common-roles`, remote harvest flags, and `--sops`.
 
 ---
 
@@ -178,14 +173,14 @@ Compare two harvest bundles and report what changed.
 - `--exclude-path <PATTERN>` (repeatable) to ignore file/dir drift under matching paths (same pattern syntax as harvest)
 - `--ignore-package-versions` to ignore package version-only drift (upgrades/downgrades)
 - `--enforce` to apply the **old** harvest state locally (requires the relevant config manager tool on `PATH` - defaults to `ansible-playbook`)
-- `--target` when using `--enforce`, to set the desired config manager tool to manifest to and run)
+- `--enforce` runs `ansible-playbook` against the regenerated manifest)
 
 **Noise suppression**
 - `--exclude-path` is useful for things that change often but you still want in the harvest baseline (e.g. `/var/anacron`).
 - `--ignore-package-versions` keeps routine upgrades from alerting; package add/remove drift is still reported.
 
-**Enforcement (`--enforce` (`--target`))**
-If a diff exists and the config manager defined by `--target` (default: ansible) is on the PATH, Enroll will:
+**Enforcement (`--enforce`)**
+If a diff exists and `ansible-playbook` is on the PATH, Enroll will:
 1) generate a manifest from the **old** harvest into a temporary directory
 2) run the config manager tool against that manifest
 3) record in the diff report that the old harvest was enforced
@@ -315,16 +310,6 @@ For Ansible:
 - Variables live in:
   - single-site: `roles/<role>/defaults/main.yml`
   - multi-site: `inventory/host_vars/<fqdn>/<role>.yml`
-
-For Salt:
-- Templates live in `states/roles/<role>/templates/...`
-- `file.managed` uses `template: jinja` with per-file `context` values
-- In `--fqdn` mode, template context values are written to pillar with the file metadata
-
-For Puppet:
-- JinjaTurtle will use its 'erb' mode if you are running a recent-enough version.
-- Templates will be stored in `modules/<module>/templates/<file>.erb`
-- In `--fqdn` mode, template context values are written to Hiera data.
 
 You can force template generation on with `--jinjaturtle` or disable it with `--no-jinjaturtle`.
 
@@ -472,53 +457,6 @@ enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn "
 If Docker or Podman is available during harvest, Enroll records local image-cache metadata from `image ls` and `image inspect`. Images that expose registry `RepoDigest` values are reproducible by digest, for example `registry.example.net/app@sha256:...`; those are the references rendered into manifests. Local image IDs and tag-only images are preserved as evidence and notes, but are not treated as exact registry pull references.
 
 For Ansible, digest-pinned Docker images are pulled with `community.docker.docker_image_pull` and digest-pinned Podman images are pulled with `containers.podman.podman_image`; harvested tag aliases are re-applied where possible. The generated `requirements.yml` includes `community.docker` and `containers.podman` alongside any other required collections. In `--fqdn` mode the image list is host-specific inventory data.
-
-### Puppet target
-```bash
-enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-puppet --target puppet
-```
-
-The Puppet target renders native packages, users/groups, managed directories/files/symlinks, basic service state, and the generated sysctl file/apply exec when present. Without `--fqdn`, `site.pp` uses `node default { ... }`; with `--fqdn`, it uses `node '<host>' { ... }`. Run from the generated output directory with the generated modules on Puppet's module path, for example:
-
-```bash
-cd /tmp/enroll-puppet
-sudo puppet apply --modulepath ./modules manifests/site.pp --noop
-```
-
-Or with absolute paths:
-
-```bash
-sudo puppet apply --modulepath /tmp/enroll-puppet/modules /tmp/enroll-puppet/manifests/site.pp --noop
-```
-
-Docker images with registry digests are currently managed with `exec` statements. I know that's nasty, but the `puppetlabs-docker` module is even nastier and creates non-idempotent bash scripts for executing on every run. Worse, if you then reharvest that host that has Puppet installed, you'll get a File resource collision with that very shell script. Believe me, for the simple use case of 'make sure this Docker image is installed', this simple solution is better.
-
-### Salt target
-```bash
-enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-salt --target salt
-```
-
-The Salt target renders native packages, users/groups, managed directories/files/symlinks, basic service state, and the generated sysctl file/apply command when present. Without `--fqdn`, it writes a self-contained state tree under `states/` and targets all minions in `states/top.sls`:
-
-```bash
-cd /tmp/enroll-salt
-sudo salt-call --local --file-root ./states state.apply test=True
-```
-
-With `--fqdn`, it uses Salt's state/pillar split: `states/top.sls` targets the minion ID to reusable generated role SLS files, while `pillar/top.sls` targets the same minion ID to node-specific data under `pillar/nodes/`. Host-specific file artifacts are stored under `states/roles/<role>/files/nodes/<fqdn>/...` and referenced through `salt://` URLs:
-
-```bash
-enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-salt --target salt --fqdn host.example.com
-cd /tmp/enroll-salt
-sudo salt-call --local --file-root ./states --pillar-root ./pillar --id host.example.com state.apply test=True
-```
-
-Re-running Salt `--fqdn` output into the same directory adds or replaces that minion's top/pillar data without deleting other generated minions.
-
-Docker and Podman images with registry digests are rendered as guarded `cmd.run` states that use the local `docker`/`podman` CLI directly (`pull`, `image inspect`, and `tag`).
-
-This is because Salt Stack, in 3008, does not have proper Docker extensions that actually work. Wow. It's a bit like Puppet. Seriously, you should probably just be using Ansible.
-
 
 ### Manifest with `--sops`
 ```bash
@@ -705,14 +643,12 @@ exclude_path = /usr/local/bin/docker-*, /usr/local/bin/some-tool
 # you can set defaults here too, e.g.
 no_jinjaturtle = true
 sops = 54A91143AE0AB4F7743B01FE888ED1B423A3BC99
-# target = ansible (the default), or salt, or puppet
 
 [diff]
 # ignore noisy drift
 exclude_path = /var/anacron
 ignore_package_versions = true
-# enforce = true  # requires the target config manager on PATH
-# target = puppet (for example, as per manifest)
+# enforce = true  # requires ansible-playbook on PATH
 
 [single-shot]
 # if you use single-shot, put its defaults here.

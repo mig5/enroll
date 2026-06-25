@@ -228,6 +228,10 @@ def read_pkg_md5sums(pkg: str) -> Dict[str, str]:
             line = line.strip()
             if not line:
                 continue
-            md5, rel = line.split(None, 1)
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                # Skip malformed/truncated lines instead of aborting the harvest.
+                continue
+            md5, rel = parts
             m[rel.strip()] = md5.strip()
     return m

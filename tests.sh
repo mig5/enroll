@@ -2,10 +2,6 @@
 
 set -Eeuo pipefail
 
-if [[ -d /opt/puppetlabs/bin ]]; then
-  export PATH="/opt/puppetlabs/bin:${PATH}"
-fi
-
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP_PARENT="${TMPDIR:-/tmp}"
 KEEP_WORKDIR=0
@@ -22,16 +18,8 @@ BUNDLE_DIFF_DIR="${WORK_DIR}/bundle-diff"
 ANSIBLE_DIR="${WORK_DIR}/ansible"
 ANSIBLE_NO_COMMON_DIR="${WORK_DIR}/ansible-no-common"
 ANSIBLE_FQDN_DIR="${WORK_DIR}/ansible-fqdn"
-PUPPET_DIR="${WORK_DIR}/puppet"
-PUPPET_FQDN_DIR="${WORK_DIR}/puppet-fqdn"
-SALT_DIR="${WORK_DIR}/salt"
-SALT_FQDN_DIR="${WORK_DIR}/salt-fqdn"
 ANSIBLE_JINJATURTLE_DIR="${WORK_DIR}/ansible-jinjaturtle"
 ANSIBLE_NO_JINJATURTLE_DIR="${WORK_DIR}/ansible-no-jinjaturtle"
-PUPPET_JINJATURTLE_DIR="${WORK_DIR}/puppet-jinjaturtle"
-PUPPET_NO_JINJATURTLE_DIR="${WORK_DIR}/puppet-no-jinjaturtle"
-SALT_JINJATURTLE_DIR="${WORK_DIR}/salt-jinjaturtle"
-SALT_NO_JINJATURTLE_DIR="${WORK_DIR}/salt-no-jinjaturtle"
 TEST_FQDN="${ENROLL_TEST_FQDN:-enroll-ci.example.test}"
 JINJATURTLE_FIXTURE="${WORK_DIR}/enroll-tests-jinjaturtle.ini"
 ANSIBLE_PLAYBOOK_EXTRA_ARGS=()
@@ -176,7 +164,6 @@ translate_packages() {
       gnupg) translated+=(gnupg2) ;;
       curl) translated+=(curl-minimal) ;;
       lsb-release) translated+=(redhat-lsb-core) ;;
-      puppet) translated+=(puppet-agent) ;;
       python3-apt) ;;
       python3-jsonschema) translated+=(python3-jsonschema) ;;
       python3-venv) ;;
@@ -232,42 +219,6 @@ ensure_epel_repo() {
   DNF_UPDATED=
 }
 
-ensure_salt_repo() {
-  if is_debian; then
-    if [[ -e /etc/apt/sources.list.d/salt.sources ]]; then
-      return
-    fi
-    section "Setup: Salt apt repository"
-    pkg_install ca-certificates curl gnupg
-    run mkdir -m 755 -p /etc/apt/keyrings
-    run bash -c "curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public | gpg --dearmor --yes -o /etc/apt/keyrings/salt-archive-keyring.pgp"
-    run bash -c "curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources > /etc/apt/sources.list.d/salt.sources"
-    APT_UPDATED=
-  elif is_rpm_family; then
-    if [[ -e /etc/yum.repos.d/salt.repo ]]; then
-      return
-    fi
-    section "Setup: Salt dnf repository"
-    pkg_install ca-certificates curl
-    run bash -c "curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.repo > /etc/yum.repos.d/salt.repo"
-    DNF_UPDATED=
-  fi
-}
-
-ensure_puppet_repo() {
-  if ! is_rpm_family; then
-    return
-  fi
-  if rpm -q puppet8-release >/dev/null 2>&1 || [[ -e /etc/yum.repos.d/puppet8-release.repo ]]; then
-    return
-  fi
-  section "Setup: Puppet dnf repository"
-  local major
-  major="$(os_version_major)"
-  run dnf -y install "https://yum.puppet.com/puppet8-release-el-${major}.noarch.rpm"
-  DNF_UPDATED=
-}
-
 ensure_jinjaturtle() {
   section "Setup: JinjaTurtle package"
   if command -v jinjaturtle >/dev/null 2>&1; then
@@ -309,22 +260,6 @@ ensure_ansible() {
   fi
   require_cmd ansible-playbook "Install the ansible/ansible-core package."
   require_cmd ansible-lint "Install the ansible-lint package."
-}
-
-ensure_puppet() {
-  ensure_puppet_repo
-  if ! command -v puppet >/dev/null 2>&1; then
-    pkg_install puppet || pkg_install puppet-agent
-  fi
-  require_cmd puppet "Install Puppet before running the Puppet noop integration tests."
-}
-
-ensure_salt() {
-  ensure_salt_repo
-  if ! command -v salt-call >/dev/null 2>&1; then
-    pkg_install salt-minion || true
-  fi
-  require_cmd salt-call "Install Salt's salt-call binary before running the Salt noop integration tests. This may require configuring the upstream Salt/Broadcom package repository first."
 }
 
 run_pytests() {
@@ -396,34 +331,6 @@ run_ansible_jinjaturtle_variant() {
   run ansible-playbook playbook.yml -i "localhost," -c local --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 }
 
-run_puppet_jinjaturtle_variant() {
-  local out_dir="$1"
-  local expected="$2"
-  local label="$3"
-  shift 3
-
-  ensure_puppet
-  cd "${PROJECT_ROOT}"
-  rm -rf "${out_dir}"
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${out_dir}" --target puppet "$@"
-  assert_template_files "${out_dir}" "erb" "${expected}" "${label}"
-  run puppet apply --modulepath "${out_dir}/modules" "${out_dir}/manifests/site.pp" --noop
-}
-
-run_salt_jinjaturtle_variant() {
-  local out_dir="$1"
-  local expected="$2"
-  local label="$3"
-  shift 3
-
-  ensure_salt
-  cd "${PROJECT_ROOT}"
-  rm -rf "${out_dir}"
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${out_dir}" --target salt "$@"
-  assert_template_files "${out_dir}" "j2" "${expected}" "${label}"
-  run salt-call --local --retcode-passthrough --file-root "${out_dir}/states" state.apply test=True
-}
-
 run_jinjaturtle_manifest_tests() {
   if is_rpm_family ; then
     section "JinjaTurtle integration matrix"
@@ -437,14 +344,6 @@ run_jinjaturtle_manifest_tests() {
   section "Ansible JinjaTurtle manifest noop tests"
   run_ansible_jinjaturtle_variant "${ANSIBLE_JINJATURTLE_DIR}" present "Ansible with JinjaTurtle on PATH"
   run_ansible_jinjaturtle_variant "${ANSIBLE_NO_JINJATURTLE_DIR}" absent "Ansible with --no-jinjaturtle" --no-jinjaturtle
-
-  section "Puppet JinjaTurtle manifest noop tests"
-  run_puppet_jinjaturtle_variant "${PUPPET_JINJATURTLE_DIR}" present "Puppet with JinjaTurtle on PATH"
-  run_puppet_jinjaturtle_variant "${PUPPET_NO_JINJATURTLE_DIR}" absent "Puppet with --no-jinjaturtle" --no-jinjaturtle
-
-  section "Salt JinjaTurtle manifest noop tests"
-  run_salt_jinjaturtle_variant "${SALT_JINJATURTLE_DIR}" present "Salt with JinjaTurtle on PATH"
-  run_salt_jinjaturtle_variant "${SALT_NO_JINJATURTLE_DIR}" absent "Salt with --no-jinjaturtle" --no-jinjaturtle
 }
 
 run_ansible_noop_tests() {
@@ -472,43 +371,6 @@ run_ansible_noop_tests() {
   run ansible-playbook "playbooks/${TEST_FQDN}.yml" -i inventory/hosts.ini -c local --limit "${TEST_FQDN}" --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 }
 
-run_puppet_noop_tests() {
-  section "Puppet manifest noop tests"
-  ensure_puppet
-  cd "${PROJECT_ROOT}"
-  rm -rf "${PUPPET_DIR}" "${PUPPET_FQDN_DIR}"
-
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${PUPPET_DIR}" --target puppet
-  run puppet apply --modulepath "${PUPPET_DIR}/modules" "${PUPPET_DIR}/manifests/site.pp" --noop
-
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${PUPPET_FQDN_DIR}" --target puppet --fqdn "${TEST_FQDN}"
-  run puppet apply \
-    --modulepath "${PUPPET_FQDN_DIR}/modules" \
-    --hiera_config "${PUPPET_FQDN_DIR}/hiera.yaml" \
-    --certname "${TEST_FQDN}" \
-    "${PUPPET_FQDN_DIR}/manifests/site.pp" \
-    --noop
-}
-
-run_salt_noop_tests() {
-  section "Salt manifest noop tests"
-  ensure_salt
-  cd "${PROJECT_ROOT}"
-  rm -rf "${SALT_DIR}" "${SALT_FQDN_DIR}"
-
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${SALT_DIR}" --target salt
-  run salt-call --local --retcode-passthrough --file-root "${SALT_DIR}/states" state.apply test=True
-
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${SALT_FQDN_DIR}" --target salt --fqdn "${TEST_FQDN}"
-  run salt-call \
-    --local \
-    --retcode-passthrough \
-    --id "${TEST_FQDN}" \
-    --file-root "${SALT_FQDN_DIR}/states" \
-    --pillar-root "${SALT_FQDN_DIR}/pillar" \
-    state.apply test=True
-}
-
 main() {
   require_root
   require_supported_ci_os
@@ -516,8 +378,6 @@ main() {
   prepare_harvest_fixture
   configure_ansible_playbook_extra_args
   run_ansible_noop_tests
-  run_puppet_noop_tests
-  run_salt_noop_tests
   run_jinjaturtle_manifest_tests
 }
 

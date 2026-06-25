@@ -22,9 +22,9 @@ from .state import load_state, state_path, write_state
 class CMModule:
     """Renderer-neutral configuration-management resource group.
 
-    A CMModule is intentionally small: it captures the resources that a target
-    renderer can turn into Ansible tasks, Puppet resources, Salt states, etc.
-    The renderer may still decide how to name/include/order the group.
+    A CMModule is intentionally small: it captures the resources that the
+    renderer turns into Ansible tasks. The renderer may still decide how to
+    name/include/order the group.
     """
 
     role_name: str
@@ -806,12 +806,11 @@ def _drop_duplicate_mapping_items(
 
 
 def resolve_catalog_conflicts(modules: Iterable[CMModule]) -> None:
-    """Resolve global catalog conflicts before renderer output.
+    """Resolve global catalog conflicts in the shared model.
 
-    Puppet and Salt compile a single resource catalog. Ansible can tolerate the
-    same package, service, or parent directory appearing in more than one role;
-    catalog targets cannot. Resolve those conflicts in the shared model rather
-    than deleting renderer output after the fact.
+    Deduplicates the same package, service, or parent directory appearing in
+    more than one role. The Ansible renderer tolerates such duplicates, but this
+    helper remains available for any catalog-style consumer of the shared model.
     """
 
     ordered = list(modules)

@@ -27,6 +27,9 @@ DEFAULT_DENY_GLOBS = [
     "/etc/gshadow",
     "/etc/*shadow",
     "/etc/letsencrypt/*",
+    "/etc/ppp/chap-secrets",
+    "/etc/ppp/pap-secrets",
+    "/etc/ppp/*-secrets",
     "/usr/local/etc/ssl/private/*",
     "/usr/local/etc/ssh/ssh_host_*",
     "/usr/local/etc/*shadow",
@@ -91,7 +94,20 @@ SENSITIVE_CONTENT_PATTERNS = [
         \s*[:=]
         """
     ),
-    re.compile(rb"(?i)\b(pass|passwd|token|secret|api[_-]?key)\b"),
+    re.compile(
+        rb"(?i)\b(pass|passwd|password|passphrase|token|secret|"
+        rb"credentials?|api[_-]?key)\b"
+    ),
+    # Credentials embedded in connection-string URIs, e.g.
+    #   postgres://user:pass@host, redis://:pass@host, amqp://u:p@host
+    # The keyword regex above keys on assignment-style names and misses these.
+    re.compile(rb"(?i)[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s@]+@[^/\s]"),
+    # HTTP(S) Authorization / Proxy-Authorization header values carrying a
+    # bearer/basic/digest credential.
+    re.compile(
+        rb"(?im)^\s*(?:proxy-)?authorization\s*:\s*"
+        rb"(?:bearer|basic|token|digest)\s+\S"
+    ),
 ]
 
 COMMENT_PREFIXES = (b"#", b";", b"//")

@@ -459,14 +459,8 @@ def _encrypt_harvest_dir_to_sops(
 
 def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
-        "--target",
-        choices=["ansible", "puppet", "salt"],
-        default="ansible",
-        help="Manifest target to generate (default: ansible).",
-    )
-    p.add_argument(
         "--fqdn",
-        help="Host FQDN/name for site-mode output (creates target-specific host inventory/data such as Ansible host_vars, Puppet Hiera, or Salt pillar).",
+        help="Host FQDN/name for site-mode output (creates Ansible host_vars for that host).",
     )
     p.add_argument(
         "--no-common-roles",
@@ -809,15 +803,6 @@ def main() -> None:
         ),
     )
     d.add_argument(
-        "--target",
-        choices=["ansible", "puppet", "salt"],
-        default="ansible",
-        help=(
-            "Configuration-management target to use with --enforce (default: ansible). "
-            "Requires ansible-playbook, puppet, or salt-call on PATH as appropriate."
-        ),
-    )
-    d.add_argument(
         "--out",
         help="Write the report to this file instead of stdout.",
     )
@@ -1119,7 +1104,6 @@ def main() -> None:
                 jinjaturtle=_jt_mode(args),
                 sops_fingerprints=getattr(args, "sops", None),
                 no_common_roles=bool(getattr(args, "no_common_roles", False)),
-                target=getattr(args, "target", "ansible"),
             )
             if getattr(args, "sops", None) and out_enc:
                 print(str(out_enc))
@@ -1135,7 +1119,7 @@ def main() -> None:
             )
 
             # Optional enforcement: if drift is detected, attempt to restore the
-            # system to the *old* (baseline) state using the selected target.
+            # system to the *old* (baseline) state using ansible.
             if bool(getattr(args, "enforce", False)):
                 if has_changes:
                     if not has_enforceable_drift(report):
@@ -1153,7 +1137,6 @@ def main() -> None:
                                 args.old,
                                 sops_mode=bool(getattr(args, "sops", False)),
                                 report=report,
-                                target=getattr(args, "target", "ansible"),
                             )
                         except Exception as e:
                             raise SystemExit(
@@ -1258,7 +1241,6 @@ def main() -> None:
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
-                        target=getattr(args, "target", "ansible"),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1291,7 +1273,6 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
-                        target=getattr(args, "target", "ansible"),
                     )
                     # For usability (when --harvest wasn't provided), print the harvest path.
                     if not args.harvest:
@@ -1324,7 +1305,6 @@ def main() -> None:
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
-                        target=getattr(args, "target", "ansible"),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1345,7 +1325,6 @@ def main() -> None:
                         fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
-                        target=getattr(args, "target", "ansible"),
                     )
     except RemoteSudoPasswordRequired:
         raise SystemExit(

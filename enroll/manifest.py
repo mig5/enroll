@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import List, Optional
 
 from .ansible import manifest_from_bundle_dir as manifest_ansible_from_bundle_dir
-from .puppet import manifest_from_bundle_dir as manifest_puppet_from_bundle_dir
-from .salt import manifest_from_bundle_dir as manifest_salt_from_bundle_dir
 from .harvest_safety import ensure_safe_output_parent
 from .manifest_safety import validate_site_fqdn
 from .remote import _safe_extract_tar
@@ -175,7 +173,6 @@ def manifest(
     jinjaturtle: str = "auto",  # auto|on|off
     sops_fingerprints: Optional[List[str]] = None,
     no_common_roles: bool = False,
-    target: str = "ansible",
 ) -> Optional[str]:
     """Render a configuration-management manifest from a harvest.
 
@@ -193,9 +190,6 @@ def manifest(
       - In SOPS mode: the path to the encrypted manifest bundle (.sops)
       - In plain mode: None
     """
-    target = (target or "ansible").strip().lower()
-    if target not in {"ansible", "puppet", "salt"}:
-        raise ValueError(f"unsupported manifest target: {target!r}")
     fqdn = validate_site_fqdn(fqdn)
 
     sops_mode = bool(sops_fingerprints)
@@ -216,30 +210,13 @@ def manifest(
             )
 
         if not sops_mode:
-            if target == "puppet":
-                manifest_puppet_from_bundle_dir(
-                    resolved_bundle_dir,
-                    out,
-                    fqdn=fqdn,
-                    no_common_roles=no_common_roles,
-                    jinjaturtle=jinjaturtle,
-                )
-            elif target == "salt":
-                manifest_salt_from_bundle_dir(
-                    resolved_bundle_dir,
-                    out,
-                    fqdn=fqdn,
-                    no_common_roles=no_common_roles,
-                    jinjaturtle=jinjaturtle,
-                )
-            else:
-                manifest_ansible_from_bundle_dir(
-                    resolved_bundle_dir,
-                    out,
-                    fqdn=fqdn,
-                    jinjaturtle=jinjaturtle,
-                    no_common_roles=no_common_roles,
-                )
+            manifest_ansible_from_bundle_dir(
+                resolved_bundle_dir,
+                out,
+                fqdn=fqdn,
+                jinjaturtle=jinjaturtle,
+                no_common_roles=no_common_roles,
+            )
             return None
 
         # SOPS mode: generate into a secure temp dir, then tar+encrypt into a single file.
@@ -248,30 +225,13 @@ def manifest(
         td_out = tempfile.TemporaryDirectory(prefix="enroll-manifest-")
         tmp_out = Path(td_out.name) / "out"
 
-        if target == "puppet":
-            manifest_puppet_from_bundle_dir(
-                resolved_bundle_dir,
-                str(tmp_out),
-                fqdn=fqdn,
-                no_common_roles=no_common_roles,
-                jinjaturtle=jinjaturtle,
-            )
-        elif target == "salt":
-            manifest_salt_from_bundle_dir(
-                resolved_bundle_dir,
-                str(tmp_out),
-                fqdn=fqdn,
-                no_common_roles=no_common_roles,
-                jinjaturtle=jinjaturtle,
-            )
-        else:
-            manifest_ansible_from_bundle_dir(
-                resolved_bundle_dir,
-                str(tmp_out),
-                fqdn=fqdn,
-                jinjaturtle=jinjaturtle,
-                no_common_roles=no_common_roles,
-            )
+        manifest_ansible_from_bundle_dir(
+            resolved_bundle_dir,
+            str(tmp_out),
+            fqdn=fqdn,
+            jinjaturtle=jinjaturtle,
+            no_common_roles=no_common_roles,
+        )
 
         enc = _encrypt_manifest_out_dir_to_sops(
             tmp_out, out_file, list(sops_fingerprints or [])

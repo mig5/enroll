@@ -136,7 +136,7 @@ def test_ansible_static_marks_harvested_jinja_values_unsafe(tmp_path: Path):
     payload = "{{ lookup('pipe','touch /tmp/PWNED_BY_ENROLL_ANSIBLE') }}"
     write_schema_state(bundle, _ansible_jinja_payload_state(payload))
 
-    manifest.manifest(str(bundle), str(out), target="ansible")
+    manifest.manifest(str(bundle), str(out))
 
     defaults = out / "roles" / "users" / "defaults" / "main.yml"
     text = defaults.read_text(encoding="utf-8")
@@ -152,7 +152,7 @@ def test_ansible_fqdn_marks_harvested_jinja_values_unsafe(tmp_path: Path):
     payload = "{{ lookup('pipe','touch /tmp/PWNED_BY_ENROLL_ANSIBLE') }}"
     write_schema_state(bundle, _ansible_jinja_payload_state(payload))
 
-    manifest.manifest(str(bundle), str(out), target="ansible", fqdn="host.example.test")
+    manifest.manifest(str(bundle), str(out), fqdn="host.example.test")
 
     hostvars = out / "inventory" / "host_vars" / "host.example.test" / "users.yml"
     text = hostvars.read_text(encoding="utf-8")

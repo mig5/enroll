@@ -1025,7 +1025,7 @@ def test_report_markdown_with_enforcement_failed():
         },
     }
     result = _report_markdown(report)
-    assert "ansible-playbook failed" in result
+    assert "but failed" in result
 
 
 def test_report_markdown_with_enforcement_skipped():
@@ -1378,7 +1378,7 @@ def test_report_text_with_enforcement_applied():
     }
     result = d._report_text(report)
     assert "Enforcement" in result
-    assert "applied old harvest via ansible-playbook" in result
+    assert "applied old harvest" in result
     assert "tags=test" in result
 
 
@@ -1398,7 +1398,7 @@ def test_report_text_with_enforcement_failed():
     }
     result = d._report_text(report)
     assert "Enforcement" in result
-    assert "ansible-playbook failed" in result
+    assert "failed" in result
 
 
 def test_report_text_with_enforcement_skipped():

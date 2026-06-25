@@ -21,25 +21,21 @@ Harvest bundle
   state.json
   artifacts/<role>/<path-relative-to-root>
   |
-  | enroll manifest --target ansible|puppet|salt
+  | enroll manifest
   v
 Generated configuration-management output
   Ansible roles/playbook
-  Puppet modules/site.pp/Hiera data
-  Salt states/pillar data
 ```
 
-The harvest bundle is deliberately target-neutral. Ansible, Puppet, and Salt renderers all consume the same `state.json` shape and the same harvested artifacts. Renderer code should translate harvest state into the target's idioms; it should not invent source facts that belong in the harvest.
+The harvest bundle is deliberately target-neutral. Ansible renderer consumes the same `state.json` shape and the same harvested artifacts. Renderer code should translate harvest state into the target's idioms; it should not invent source facts that belong in the harvest.
 
 `enroll diff` is also built around harvest bundles. It compares two harvests and, when `--enforce` is requested, can generate a temporary manifest from the old harvest and apply it locally with the selected target:
 
 ```bash
-enroll diff --old ./baseline --new ./current --enforce --target ansible
-enroll diff --old ./baseline --new ./current --enforce --target puppet
-enroll diff --old ./baseline --new ./current --enforce --target salt
+enroll diff --old ./baseline --new ./current --enforce
 ```
 
-For enforcement, the user is responsible for having the chosen local apply tool on `PATH`: `ansible-playbook`, `puppet`, or `salt-call`.
+For enforcement, the user is responsible for having the chosen local apply tool on `PATH`: `ansible-playbook`.
 
 ---
 
@@ -67,8 +63,6 @@ enroll/
 
   manifest.py                 target router and SOPS manifest wrapper
   ansible.py                  Ansible renderer
-  puppet.py                   Puppet renderer
-  salt.py                     Salt renderer
   cm.py                       renderer-neutral CMModule model and grouping helpers
   role_names.py               reserved singleton role-name protection
 
@@ -131,7 +125,7 @@ The supported subcommands are:
 
 ```text
 harvest       collect a harvest bundle from a local or remote host
-manifest      generate Ansible/Puppet/Salt output from a harvest bundle
+manifest      generate Ansible output from a harvest bundle
 single-shot   run harvest and manifest in one command
 diff          compare two harvest bundles and optionally enforce old state
 explain       produce a human/JSON explanation of a harvest
@@ -156,8 +150,8 @@ flowchart TD
   F --> G[diff.format_report]
   F --> H{--enforce?}
   H -->|yes| I[diff.enforce_old_harvest]
-  I --> J[manifest.manifest target=ansible|puppet|salt]
-  J --> K[ansible-playbook or puppet apply or salt-call]
+  I --> J[manifest.manifest]
+  J --> K[ansible-playbook]
   B -->|explain| L[explain.explain_state]
   B -->|validate| M[validate.validate_harvest]
 ```
@@ -172,10 +166,10 @@ harvest.py
   depends on harvest_collectors, platform backends, capture policy, system scanners
 
 manifest.py
-  depends on ansible.py, puppet.py, salt.py
+  depends on ansible.py
 
-ansible.py / puppet.py / salt.py
-  depend on state.py, cm.py, harvested artifacts, and target-specific helpers
+ansible.py
+  depends on state.py, cm.py, harvested artifacts, and helpers
 ```
 
 ---
@@ -361,8 +355,6 @@ The harvester tries to avoid two generated roles owning the same destination pat
 This is one of the most important invariants in the project:
 
 > A destination path should normally appear in only one generated role.
-
-Puppet and Salt also run `cm.resolve_catalog_conflicts()` after renderer role collection because they compile a single global catalog and duplicate resources are hard failures.
 
 ---
 
@@ -595,7 +587,7 @@ artifacts/firewall_runtime/firewall/iptables.v4
 artifacts/firewall_runtime/firewall/iptables.v6
 ```
 
-Renderers should only create a firewall runtime role when at least one runtime artifact exists. When firewall runtime is rendered, Ansible/Puppet/Salt also create an `enroll_runtime` role/module/state to own `/etc/enroll` before `/etc/enroll/firewall`.
+Renderers should only create a firewall runtime role when at least one runtime artifact exists. When firewall runtime is rendered, Ansible also creates an `enroll_runtime` role/module/state to own `/etc/enroll` before `/etc/enroll/firewall`.
 
 ### 9.2 `CronLogrotateCollector`
 
@@ -795,9 +787,7 @@ manifest(
 Plain mode dispatches to:
 
 ```text
-target=ansible -> ansible.manifest_from_bundle_dir(..., jinjaturtle=..., no_common_roles=...)
-target=puppet  -> puppet.manifest_from_bundle_dir(..., jinjaturtle=..., no_common_roles=...)
-target=salt    -> salt.manifest_from_bundle_dir(..., jinjaturtle=..., no_common_roles=...)
+ansible.manifest_from_bundle_dir(..., jinjaturtle=..., no_common_roles=...)
 ```
 
 SOPS mode:
@@ -819,7 +809,7 @@ Before dispatching to a renderer, `manifest.manifest()` calls `validate.validate
 
 File: `cm.py`
 
-`CMModule` is the shared resource model used heavily by Puppet and Salt and partially by Ansible.
+`CMModule` is the shared resource model used by Ansible and perhaps other renderers in the future.
 
 ```python
 @dataclass
@@ -865,22 +855,6 @@ normal manifest, no --no-common-roles: group package/service roles
 ```
 
 `--fqdn` implies no common roles because host-specific output should preserve per-host state rather than merging unrelated resources into shared roles.
-
-### 12.2 Catalog conflict resolution
-
-`resolve_catalog_conflicts()` runs for Puppet and Salt.
-
-It removes duplicates across generated modules/states for:
-
-- packages,
-- groups,
-- users,
-- directories,
-- files,
-- symlinks,
-- services.
-
-It also removes directory resources that conflict with a file or link at the same path. This matters because Puppet and Salt compile a single catalog; duplicates that Ansible might tolerate can fail hard there.
 
 ---
 
@@ -981,8 +955,6 @@ Ansible playbook roles are ordered intentionally:
 
 Generated playbooks tag roles with `role_<safe_role_name>`. `diff --enforce --target ansible` uses these tags to narrow enforcement to roles relevant to the drift report when it can.
 
-Puppet and Salt enforcement do not currently narrow to per-role tags; they run the full generated local manifest/state tree.
-
 ### 13.5 Ansible and JinjaTurtle
 
 Ansible uses `jinjaturtle.jinjify_managed_files()`.
@@ -996,236 +968,7 @@ If JinjaTurtle is unavailable in `auto` mode, fails, emits missing variables, or
 
 ---
 
-## 14. Puppet renderer
-
-File: `puppet.py`
-
-Entry point:
-
-```python
-puppet.manifest_from_bundle_dir(
-    bundle_dir,
-    out_dir,
-    fqdn=None,
-    no_common_roles=False,
-    jinjaturtle="auto",
-)
-```
-
-It instantiates `PuppetManifestRenderer(...).render()`.
-
-### 14.1 Puppet render flow
-
-```mermaid
-flowchart TD
-  A[PuppetManifestRenderer.render] --> B[PuppetRole.load_state]
-  B --> C[resolve_jinjaturtle_mode]
-  C --> D[_collect_puppet_roles]
-  D --> E[resolve_catalog_conflicts]
-  E --> F[_sync_service_notifications]
-  F --> G[write modules/<module>/manifests/init.pp]
-  G --> H[write metadata.json]
-  H --> I{fqdn?}
-  I -->|no| J[write manifests/site.pp with node default]
-  I -->|yes| K[write hiera.yaml]
-  K --> L[write data/nodes/<fqdn>.yaml]
-  L --> M[write Hiera-driven site.pp]
-  J --> N[README.md]
-  M --> N
-```
-
-### 14.2 `PuppetRole`
-
-`PuppetRole` extends `CMModule` and converts snapshots into Puppet-friendly resources. It handles:
-
-- packages,
-- users and groups,
-- managed dirs/files/symlinks,
-- services,
-- sysctl apply execs,
-- Flatpak remotes/apps via guarded `exec`,
-- Snap installs via guarded `exec`,
-- Docker/Podman images by digest via guarded `exec`,
-- firewall runtime files and refresh-only restore execs,
-- JinjaTurtle ERB templates and class/Hiera parameter values.
-
-`_puppet_name()` sanitises module names and avoids Puppet reserved words such as `default`, `class`, `node`, `site`, and `init`.
-
-### 14.3 Output layout
-
-Default mode:
-
-```text
-<out>/
-  manifests/site.pp
-  README.md
-  modules/
-    <module>/
-      metadata.json
-      manifests/init.pp
-      files/...
-      templates/...
-```
-
-Default `site.pp` includes generated classes in manifest order under a `node default` or named node block.
-
-### 14.4 Puppet `--fqdn` / Hiera mode
-
-When `--fqdn` is supplied, Puppet output switches to Hiera-style node data:
-
-```text
-<out>/
-  hiera.yaml
-  manifests/site.pp
-  data/
-    common.yaml
-    nodes/<fqdn>.yaml
-  modules/
-    <module>/
-      metadata.json
-      manifests/init.pp
-      files/nodes/<fqdn>/...
-      templates/...
-```
-
-In this mode:
-
-- `site.pp` includes classes from Hiera key `enroll::classes`,
-- `data/nodes/<fqdn>.yaml` contains class list and parameter data,
-- module classes are data-driven via Automatic Parameter Lookup,
-- node-specific raw file artifacts live under `modules/<module>/files/nodes/<fqdn>/...`,
-- JinjaTurtle ERB template values are written into node Hiera data.
-
-Re-running Enroll with another `--fqdn` into the same output directory is intended to add or replace that node's YAML without deleting existing node data.
-
-### 14.5 Puppet and JinjaTurtle
-
-Puppet now participates in the shared JinjaTurtle integration.
-
-When enabled, Puppet calls `jinjaturtle` with ERB-specific options:
-
-```text
---template-engine erb
---puppet-class <module_name>
-```
-
-The resulting template is written under:
-
-```text
-modules/<module>/templates/<src_rel>.erb
-```
-
-Static single-node mode renders class parameters with defaults and uses:
-
-```puppet
-content => template('<module>/<src_rel>.erb')
-```
-
-Hiera mode writes template parameter values into `data/nodes/<fqdn>.yaml` and renders data-driven file resources.
-
-`jinjaturtle.missing_erb_template_vars()` checks that ERB instance variables such as `@main_key` have matching context/Hiera data. If variables are missing, Enroll falls back to raw file copying rather than emitting a broken Puppet template.
-
----
-
-## 15. Salt renderer
-
-File: `salt.py`
-
-Entry point:
-
-```python
-salt.manifest_from_bundle_dir(
-    bundle_dir,
-    out_dir,
-    fqdn=None,
-    no_common_roles=False,
-    jinjaturtle="auto",
-)
-```
-
-It instantiates `SaltManifestRenderer(...).render()`.
-
-### 15.1 Salt render flow
-
-```mermaid
-flowchart TD
-  A[SaltManifestRenderer.render] --> B[SaltRole.load_state]
-  B --> C[resolve_jinjaturtle_mode]
-  C --> D[_collect_salt_roles]
-  D --> E[resolve_catalog_conflicts]
-  E --> F[write states/roles/<role>/init.sls]
-  F --> G{fqdn?}
-  G -->|no| H[write states/top.sls target '*']
-  G -->|yes| I[write pillar node data]
-  I --> J[write states/top.sls and pillar/top.sls]
-  H --> K[write config/master.d/enroll.conf]
-  J --> K
-  K --> L[README.md]
-```
-
-### 15.2 `SaltRole`
-
-`SaltRole` extends `CMModule` and changes `managed_owner_attr` to `user`, because Salt `file.managed` uses `user` rather than `owner`.
-
-It prepares:
-
-- packages as `pkg.installed`,
-- groups as `group.present`,
-- users as `user.present`,
-- dirs/files/symlinks as Salt `file.*` states,
-- services as `service.running` or `service.dead`,
-- Flatpaks/Snaps via guarded `cmd.run`,
-- Docker/Podman images via guarded `cmd.run`,
-- firewall runtime restore commands,
-- optional Jinja templates for managed files.
-
-### 15.3 Output layout
-
-Default mode:
-
-```text
-<out>/
-  README.md
-  config/master.d/enroll.conf
-  states/
-    top.sls
-    roles/<role>/
-      init.sls
-      files/...
-      templates/...
-```
-
-`--fqdn` mode:
-
-```text
-<out>/
-  states/
-    top.sls
-    roles/<role>/init.sls
-  pillar/
-    top.sls
-    nodes/<sanitised-fqdn>_<digest>.sls
-```
-
-The Salt renderer can accumulate node data in `--fqdn` mode and preserves existing top data where appropriate.
-
-### 15.4 Salt and JinjaTurtle
-
-Salt uses `jinjaturtle.jinjify_artifact()` directly. When successful, a managed file becomes a Salt `file.managed` with:
-
-```yaml
-source: salt://roles/<role>/templates/<src_rel>.j2
-template: jinja
-context: {...}
-```
-
-Salt has one additional compatibility step: `_saltify_jinjaturtle_template()` rewrites Ansible-oriented `to_json(...)` filters emitted by JinjaTurtle into Salt-safe context variables or `tojson` filters.
-
-If templating fails or is unsupported, the renderer falls back to a literal file copy under `files/`.
-
----
-
-## 16. Shared JinjaTurtle integration
+## 14. JinjaTurtle integration
 
 File: `jinjaturtle.py`
 
@@ -1270,27 +1013,24 @@ jinjify_artifact(
     template_root,
     jt_exe=...,
     jt_enabled=...,
-    template_engine="jinja2" | "erb",
-    puppet_class=...,      # Puppet only
 )
 ```
 
-Ansible uses `jinjify_managed_files()` because it merges variables into role defaults or host vars. Salt uses `jinjify_artifact()` directly because context lives with each `file.managed`. Puppet uses `jinjify_artifact(..., template_engine="erb", puppet_class=<module>)` so variables line up with Puppet class/Hiera names.
+Ansible uses `jinjify_managed_files()` because it merges variables into role defaults or host vars.
 
 Safety checks:
 
 - `missing_jinja_template_vars()` rejects Jinja2 templates that reference absent variables.
-- `missing_erb_template_vars()` rejects ERB templates that reference absent Puppet/Hiera variables.
 
 When checks fail, Enroll deletes obsolete generated templates when appropriate and falls back to raw file copying.
 
 ---
 
-## 17. Diff, notifications, and enforcement
+## 15. Diff, notifications, and enforcement
 
 File: `diff.py`
 
-### 17.1 Inputs
+### 15.1 Inputs
 
 `compare_harvests()` accepts:
 
@@ -1301,7 +1041,7 @@ File: `diff.py`
 
 Bundle resolution is handled by `_bundle_from_input()`, which reuses `remote._safe_extract_tar()` for tarball extraction.
 
-### 17.2 What diff compares
+### 15.2 What diff compares
 
 `compare_harvests()` compares:
 
@@ -1322,7 +1062,7 @@ Reports are formatted by:
 format_report(report, fmt="text" | "markdown" | "json")
 ```
 
-### 17.3 Enforcement decision
+### 15.3 Enforcement decision
 
 `has_enforceable_drift()` is intentionally conservative.
 
@@ -1343,29 +1083,7 @@ Not enforceable:
 
 This keeps `--enforce` focused on restoring baseline state rather than deleting unknown current state or downgrading packages.
 
-### 17.4 Target-selected enforcement
-
-`enforce_old_harvest()` now accepts `target="ansible" | "puppet" | "salt"`.
-
-It performs:
-
-1. resolve the old/baseline harvest,
-2. build a best-effort enforcement plan from the diff report,
-3. generate a temporary manifest from the old harvest using the selected target,
-4. run the matching local apply tool,
-5. attach enforcement metadata to the diff report.
-
-Target commands:
-
-```text
-ansible -> ansible-playbook -i localhost, -c local playbook.yml
-puppet  -> puppet apply --modulepath ./modules [--hiera_config ./hiera.yaml] manifests/site.pp
-salt    -> salt-call --local --file-root ./states [--pillar-root ./pillar] state.apply
-```
-
-Only Ansible uses generated per-role tags to narrow the apply scope. Puppet and Salt enforcement deliberately run the full generated local manifest/state tree for now. The JSON report keeps target-specific compatibility fields such as `ansible_playbook`, `puppet`, or `salt_call`.
-
-### 17.5 Notifications
+### 15.4 Notifications
 
 `diff.py` also supports webhooks and email notifications:
 
@@ -1376,9 +1094,9 @@ CLI notification options are only sent when differences exist unless `--notify-a
 
 ---
 
-## 18. Explanation and validation
+## 16. Explanation and validation
 
-### 18.1 `explain.py`
+### 16.1 `explain.py`
 
 `explain_state()` reads a harvest and produces text or JSON explaining:
 
@@ -1395,7 +1113,7 @@ CLI notification options are only sent when differences exist unless `--notify-a
 
 This is intended to answer “what did Enroll collect and why?”
 
-### 18.2 `validate.py`
+### 16.2 `validate.py`
 
 `validate_harvest()` checks:
 
@@ -1411,7 +1129,7 @@ This is intended to answer “what did Enroll collect and why?”
 `validate_harvest()` is used in three important contexts:
 
 - `enroll validate` exposes the checks directly to users.
-- `manifest.manifest()` validates before rendering Ansible/Puppet/Salt output.
+- `manifest.manifest()` validates before rendering Ansible output.
 - `diff.compare_harvests()` validates both input bundles before comparing them, using `no_schema=True` so older harvests can still be inspected while artifact safety checks remain active.
 
 `diff --enforce` renders the old harvest through `manifest.manifest()`, so enforcement also passes through manifest-time validation before a local apply tool is invoked.
@@ -1422,7 +1140,7 @@ The CLI supports local schema override with `--schema`, warning failure with `--
 
 ---
 
-## 19. Remote harvesting
+## 17. Remote harvesting
 
 File: `remote.py`
 
@@ -1441,7 +1159,7 @@ It wraps `_remote_harvest()` and handles:
 - retrying when remote sudo requires a password,
 - retrying when an encrypted SSH private key needs a passphrase.
 
-### 19.1 Remote harvest flow
+### 17.1 Remote harvest flow
 
 ```mermaid
 flowchart TD
@@ -1460,7 +1178,7 @@ flowchart TD
 
 `_build_enroll_pyz()` packages the local `enroll` Python package into a zipapp and uses `enroll.cli:main` as its entry point.
 
-### 19.2 SSH config support
+### 17.2 SSH config support
 
 `--remote-ssh-config` enables Paramiko `SSHConfig` support for settings such as:
 
@@ -1475,7 +1193,7 @@ flowchart TD
 
 Unknown host keys are rejected by default through Paramiko's reject policy. Users should have valid host keys in known hosts.
 
-### 19.3 Safe tar extraction
+### 17.3 Safe tar extraction
 
 `_safe_extract_tar()` validates tar members before extraction and rejects:
 
@@ -1490,13 +1208,13 @@ This helper is reused by remote harvest, manifest SOPS extraction, validate/diff
 
 ---
 
-## 20. SOPS support
+## 18. SOPS support
 
 File: `sopsutil.py`
 
 SOPS support is binary tarball encryption, not field-level YAML encryption.
 
-### 20.1 Harvest SOPS mode
+### 18.1 Harvest SOPS mode
 
 `enroll harvest --sops <fingerprint...>`:
 
@@ -1505,7 +1223,7 @@ SOPS support is binary tarball encryption, not field-level YAML encryption.
 3. encrypts it with SOPS binary mode,
 4. writes `harvest.tar.gz.sops` or the requested output file.
 
-### 20.2 Manifest SOPS mode
+### 18.2 Manifest SOPS mode
 
 `enroll manifest --sops <fingerprint...>`:
 
@@ -1514,7 +1232,7 @@ SOPS support is binary tarball encryption, not field-level YAML encryption.
 3. tars the generated output,
 4. encrypts it as a single SOPS file.
 
-### 20.3 Helpers
+### 18.3 Helpers
 
 `sopsutil.py` provides:
 
@@ -1527,7 +1245,7 @@ Encryption/decryption helpers write via temp files and default to mode `0600`.
 
 ---
 
-## 21. Configuration file support
+## 19. Configuration file support
 
 `cli.py` supports optional INI config files.
 
@@ -1551,33 +1269,21 @@ The translation is argparse-driven, so new flags often gain config-file support 
 
 ---
 
-## 22. CLI flags that affect multiple layers
+## 20. CLI flags that affect multiple layers
 
-### 22.1 `--target`
-
-`--target ansible|puppet|salt` exists for:
-
-- `enroll manifest`,
-- `enroll single-shot`,
-- `enroll diff --enforce`.
-
-For `manifest` and `single-shot`, it chooses the output renderer. For `diff --enforce`, it chooses both the temporary manifest target and the local apply tool.
-
-### 22.2 `--fqdn`
+### 20.1 `--fqdn`
 
 `--fqdn` changes output semantics, not just filenames:
 
 - Ansible: uses inventory/host_vars and host-specific artifacts.
-- Puppet: uses Hiera node data and Hiera-driven classes.
-- Salt: uses pillar node data and minion-targeted top files.
 
 `--fqdn` implies no common role grouping.
 
-### 22.3 `--no-common-roles`
+### 20.2 `--no-common-roles`
 
 Disables the default grouping of package/service snapshots by Debian Section or RPM Group. This preserves one generated role/module/state per package or unit snapshot.
 
-### 22.4 `--jinjaturtle` / `--no-jinjaturtle`
+### 20.3 `--jinjaturtle` / `--no-jinjaturtle`
 
 The CLI maps these to renderer mode strings:
 
@@ -1587,11 +1293,9 @@ no flag           -> auto
 --no-jinjaturtle  -> off
 ```
 
-All three manifest targets receive this mode. Puppet uses ERB when JinjaTurtle is enabled; Ansible and Salt use Jinja2.
-
 ---
 
-## 23. Tests and how to navigate them
+## 21. Tests and how to navigate them
 
 Run tests with:
 
@@ -1606,402 +1310,8 @@ or the repository helper when appropriate:
 ./tests.sh
 ```
 
-Important test files:
-
-| Test file | What it covers |
-|---|---|
-| `test_cli.py` | argparse dispatch, remote flags, manifest target forwarding, single-shot flow. |
-| `test_cli_config_and_sops.py`, `test_cli_helpers.py` | config-file injection and SOPS output helpers. |
-| `test_harvest.py`, `test_harvest_helpers.py` | harvest orchestration, sysctl/firewall helpers, role naming. |
-| `test_harvest_collectors.py` | runtime and container image collectors. |
-| `test_harvest_cron_logrotate.py` | cron/logrotate unification. |
-| `test_harvest_symlinks.py` | nginx/apache enabled symlink capture. |
-| `test_accounts.py` | users, Flatpak, Snap parsing/discovery. |
-| `test_ignore.py`, `test_ignore_dir.py` | secret/noise policy. |
-| `test_pathfilter.py` | include/exclude matching and expansion. |
-| `test_platform.py`, `test_platform_backends.py` | platform detection and backend behaviour. |
-| `test_debian.py`, `test_rpm.py`, `test_rpm_run.py` | package manager helpers. |
-| `test_manifest.py`, `test_manifest_ansible.py` | Ansible rendering and role behaviour. |
-| `test_manifest_puppet.py` | Puppet rendering, Hiera mode, reserved names, firewall/container/Flatpak/Snap/JinjaTurtle support. |
-| `test_manifest_salt.py` | Salt rendering, pillar mode, JinjaTurtle, firewall/container/Flatpak/Snap support. |
-| `test_manifest_symlinks.py` | symlink manifest output. |
-| `test_jinjaturtle.py` | shared template generation and fallback safety. |
-| `test_diff_bundle.py`, `test_diff_ignore_versions_exclude_enforce.py`, `test_diff_notifications.py` | diff, bundle resolution, target-selected enforcement, notifications. |
-| `test_remote.py` | remote harvest, SSH/sudo prompts, safe tar extraction. |
-| `test_explain.py` | harvest explanation output. |
-| `test_validate.py` | schema/artifact validation. |
-| `test_cm.py` | `CMModule` conflict resolution and service-package helpers. |
-| `test_fsutil.py`, `test_fsutil_extra.py` | file hashing and stat metadata helpers. |
-
-When changing behaviour, extend the closest specific tests rather than relying only on broad integration tests.
-
----
-
-## 24. Common maintenance tasks
-
-### 24.1 Add a new thing to harvest
-
-1. Add or extend a dataclass in `harvest_types.py` if existing snapshots cannot represent it.
-2. Add a collector under `harvest_collectors/` if it is a distinct feature.
-3. Add the collector to the sequence in `harvest.harvest()`.
-4. Add the snapshot to the `state = {...}` object in `harvest.harvest()`.
-5. Update `schema/state.schema.json`.
-6. Update renderers that should emit the new resource.
-7. Update `explain.py` and `validate.py` if users need visibility or artifact checks.
-8. Add tests for harvest and each renderer.
-
-### 24.2 Add a new renderer target
-
-1. Create `<target>.py` with `manifest_from_bundle_dir()`.
-2. Load state via `CMModule.load_state()` or `state.load_state()`.
-3. Consume `roles_from_state()` and `inventory_packages_from_state()`.
-4. Convert snapshots into renderer-specific role/module/state objects.
-5. Reuse `CMModule.package_service_entries()` for package/service grouping.
-6. Run conflict resolution if the target compiles a global catalog.
-7. Write target output and README.
-8. Add the target to `manifest.manifest()` validation and dispatch.
-9. Add CLI choices in `_add_common_manifest_args()` and diff enforcement if applicable.
-10. Add tests.
-
-### 24.3 Add a new CLI flag
-
-For harvest-affecting flags:
-
-1. add the flag to `cli.py` for `harvest` and possibly `single-shot`,
-2. forward it to `harvest.harvest()` or `remote.remote_harvest()`,
-3. forward it through remote command construction if remote mode needs it,
-4. check whether config-file injection handles it,
-5. add tests in `test_cli.py` and feature-specific tests.
-
-For manifest-affecting flags:
-
-1. add it to `_add_common_manifest_args()` if all manifest-like commands need it,
-2. forward it through `manifest.manifest()`,
-3. forward it to target renderers,
-4. add tests for forwarding and output.
-
-For diff enforcement flags:
-
-1. add argparse support under the `diff` subparser,
-2. pass values to `compare_harvests()` or `enforce_old_harvest()`,
-3. update report formatting if new fields appear,
-4. add tests in `test_diff_ignore_versions_exclude_enforce.py` or `test_diff_notifications.py`.
-
-### 24.4 Change file safety rules
-
-Modify `ignore.py` and add tests in `test_ignore.py` / `test_ignore_dir.py`.
-
-Be careful:
-
-- relaxing safety affects secret exposure risk,
-- tightening safety can make expected config disappear,
-- binary allowance matters for APT/RPM keyrings,
-- `--dangerous` must remain explicit for risky harvesting.
-
-### 24.5 Change service/package attribution
-
-Most logic is in:
-
-- `harvest_collectors/services.py`,
-- `package_hints.py`,
-- `system_paths.py`,
-- package backend `modified_paths()` implementations.
-
-Preserve these invariants:
-
-- cron/logrotate should stay unified when installed,
-- shared directories should not be attributed too broadly,
-- package-manager config belongs in `apt_config`/`dnf_config`,
-- `captured_global` should prevent duplicates,
-- stopped services should not receive broad restart notifications.
-
-### 24.6 Change manifest role grouping
-
-Common grouping uses:
-
-- `CMModule.package_service_entries()`,
-- `package_section_label()`,
-- `section_label_for_packages()`.
-
-Remember:
-
-- default non-`--fqdn` output groups package/service roles unless `--no-common-roles` is set,
-- `--fqdn` implies per-role output,
-- Ansible, Puppet, and Salt grouping should stay conceptually aligned,
-- Puppet/Salt need `resolve_catalog_conflicts()` after grouping.
-
-### 24.7 Change JinjaTurtle support
-
-Shared path support and safety checks belong in `jinjaturtle.py`.
-
-Renderer-specific behaviour belongs in the renderer:
-
-- Ansible: variables in defaults or host vars, templates under role `templates/`.
-- Puppet: ERB templates, class params or Hiera values.
-- Salt: `file.managed` context and Salt-safe Jinja rewrites.
-
-Fallback-to-raw-copy is part of the product contract unless JinjaTurtle was explicitly required and missing.
-
-### 24.8 Change diff enforcement
-
-`diff --enforce` now has a target dimension.
-
-When changing it, keep these distinctions clear:
-
-- `has_enforceable_drift()` decides whether enforcement should run.
-- `_enforcement_plan()` finds relevant baseline roles.
-- Ansible uses role tags from the plan.
-- Puppet and Salt currently run a full manifest/state apply.
-- `_enforcement_command()` is the source of truth for local apply commands.
-- `cli.py` attaches enforcement metadata to the report and formats it.
-
-Do not make enforcement delete newly added packages/users/files/services unless the safety model is explicitly redesigned.
-
----
-
-## 25. Important maintenance hazards
-
-### 25.1 Renderer output is downstream of harvest state
-
-If a renderer needs information, first ask whether that information belongs in `state.json`. Avoid papering over missing harvest facts inside a renderer.
-
-### 25.2 `--fqdn` mode is not cosmetic
-
-`--fqdn` changes where variables and artifacts live and how target inclusion works.
-
-A change that works in default mode can still break:
-
-- Ansible host vars,
-- Puppet Hiera node data,
-- Salt pillar node data.
-
-### 25.3 Puppet and Salt are stricter about duplicates
-
-Ansible often tolerates repeated packages or tasks. Puppet and Salt compile catalogs where duplicate resources can fail. Keep `resolve_catalog_conflicts()` in mind whenever adding resources.
-
-### 25.4 Secret avoidance is part of the product contract
-
-Default harvest should avoid likely secrets. `--dangerous` exists because useful files may contain secrets. Do not silently make risky harvesting the default.
-
-### 25.5 Runtime state should not override persistent config
-
-Firewall runtime capture is skipped when persistent firewall config exists. Preserve this principle for future runtime snapshots.
-
-### 25.6 JinjaTurtle is best-effort except when explicitly required
-
-`auto` mode should not make manifest generation fail merely because templating failed. `on` should require the executable; unsupported or unsafe individual files should still fall back to raw copy unless code explicitly changes that contract.
-
-### 25.7 Role names must be sanitised
-
-Raw package/service names can be invalid or reserved in Ansible roles, Puppet classes, or Salt SLS names. Use role-name helpers and singleton collision protection.
-
-### 25.8 Tests encode edge cases
-
-Many behaviours exist because of previously found edge cases:
-
-- non-root/no-sudo harvests,
-- Puppet reserved words,
-- Salt Docker module availability limitations,
-- symlink capture,
-- JinjaTurtle missing variables,
-- Salt JSON filter compatibility,
-- file caps,
-- SOPS secure temp files,
-- tar path traversal,
-- target-selected diff enforcement.
-
-Before simplifying logic, search the tests.
-
----
-
-## 26. Troubleshooting guide
-
-### 26.1 Generated manifest references a missing artifact
-
-Likely causes:
-
-- `managed_files[*].src_rel` was added without copying into `artifacts/`,
-- a renderer used the generated role/module name instead of the artifact role,
-- a role was renamed after harvest but before artifact lookup,
-- `--fqdn` file prefixes are wrong.
-
-Start with:
+or (just pytests, no root required)
 
 ```bash
-enroll validate /path/to/harvest
+./pytests.sh
 ```
-
-Then inspect:
-
-```text
-state.json roles.*.managed_files[*]
-artifacts/<role>/<src_rel>
-```
-
-### 26.2 Puppet fails with duplicate resources
-
-Check:
-
-- `_collect_puppet_roles()`,
-- `resolve_catalog_conflicts()`,
-- `role_order_key()`,
-- whether a new resource type needs conflict resolution,
-- whether a directory resource conflicts with a file/link of the same path.
-
-### 26.3 Salt fails with duplicate IDs or missing modules
-
-Check:
-
-- `_state_id()` naming,
-- `_collect_salt_roles()` grouping,
-- `resolve_catalog_conflicts()`,
-- guarded `cmd.run` fallbacks for Docker/Podman/Snap/Flatpak.
-
-Salt uses guarded shell commands for some resources because native states/modules are not consistently available across Salt installations.
-
-### 26.4 Ansible check mode reports unexpected changes
-
-Check:
-
-- role ordering,
-- grouped mode versus `--fqdn` / `--no-common-roles`,
-- handler notifications,
-- whether runtime roles were emitted without runtime artifacts,
-- harvested directory/file mode normalisation.
-
-Grouped and per-role output can legitimately produce different numbers of reported changes.
-
-### 26.5 A file was not harvested
-
-Check, in order:
-
-1. Was it excluded by `--exclude-path`?
-2. Was it denied by `IgnorePolicy`?
-3. Was it too large?
-4. Did it look binary?
-5. Did it contain sensitive-looking content?
-6. Was it already captured by another role via `captured_global`?
-7. Is it outside known scanned locations?
-8. Would `--include-path` collect it?
-9. Does it require `--dangerous`?
-
-`enroll explain` can show notes and exclusion reasons.
-
-### 26.6 `diff --enforce` fails
-
-Check:
-
-- whether the selected `--target` tool is on `PATH`,
-- `ansible-playbook` for Ansible,
-- `puppet` for Puppet,
-- `salt-call` for Salt,
-- whether the generated temp manifest has the expected target entrypoint,
-- whether the report contains enforceable drift,
-- whether package drift is only version changes or additions, which enforcement skips.
-
-### 26.7 Remote harvest fails with sudo or SSH key prompts
-
-Relevant flags:
-
-- `--ask-become-pass`,
-- `--ask-key-passphrase`,
-- `--ssh-key-passphrase-env`,
-- `--no-sudo`,
-- `--remote-ssh-config`.
-
-Interactive sessions can prompt and retry. Non-interactive sessions should pass explicit flags or environment variables.
-
----
-
-## 27. Practical code-reading map
-
-| Feature/question | Start with | Then read |
-|---|---|---|
-| CLI option behaviour | `cli.py` | called module for `args.cmd` |
-| Local harvest ordering | `harvest.py:harvest()` | `harvest_collectors/` |
-| Why a file was skipped | `capture.py`, `ignore.py`, `pathfilter.py` | `explain.py` |
-| File metadata/hash helpers | `fsutil.py` | `debian.py`, `capture.py` |
-| Service/package attribution | `harvest_collectors/services.py` | `package_hints.py`, `platform.py` |
-| APT/DNF config capture | `harvest_collectors/package_manager.py` | `system_paths.py` |
-| Users and SSH keys | `harvest_collectors/users.py` | `accounts.py` |
-| Flatpak/Snap parsing | `accounts.py` | renderer Flatpak/Snap helpers |
-| Docker/Podman images | `harvest_collectors/container_images.py` | renderer container image helpers |
-| Runtime firewall | `harvest_collectors/runtime.py`, `harvest.py` | renderer firewall helpers |
-| Sysctl | `harvest.py` sysctl helpers | renderer sysctl role functions |
-| Ansible output | `ansible.py:AnsibleManifestRenderer.render()` | `_render_*` helpers |
-| Puppet output | `puppet.py:PuppetManifestRenderer.render()` | `_collect_puppet_roles()` |
-| Salt output | `salt.py:SaltManifestRenderer.render()` | `_collect_salt_roles()` |
-| Grouping/common roles | `cm.py` | renderer collection functions |
-| JinjaTurtle | `jinjaturtle.py` | renderer managed-content code |
-| Diff/enforce | `diff.py` | `manifest.py`, target renderer |
-| Validation | `validate.py` | schema file and `state.json` |
-| Remote mode | `remote.py` | `cli.py` remote branches |
-| SOPS | `sopsutil.py` | `cli.py`, `manifest.py`, `diff.py` |
-
----
-
-## 28. Glossary
-
-**Harvest bundle**
-A directory or encrypted tarball containing `state.json` and `artifacts/`.
-
-**Snapshot**
-A structured object under `roles` in `state.json`, such as a `ServiceSnapshot` or `PackageSnapshot`.
-
-**Managed file**
-A file Enroll intends generated CM code to recreate. It has a destination path and a matching artifact file.
-
-**Managed link**
-A symlink Enroll intends generated CM code to recreate.
-
-**Managed dir**
-A directory Enroll intends generated CM code to ensure exists with recorded metadata.
-
-**Role**
-The Enroll logical group for related resources. In Ansible it usually maps to an Ansible role. In Puppet it maps to a module/class. In Salt it maps to an SLS role.
-
-**Artifact role**
-The role directory under `artifacts/` that contains a harvested file. This can differ from the generated renderer role when grouping is enabled.
-
-**Common/grouped role**
-A generated role/module/state that merges multiple package/service snapshots by Debian Section or RPM Group.
-
-**Site mode / `--fqdn` mode**
-Host-specific output mode. Ansible uses host vars, Puppet uses Hiera node data, and Salt uses pillar node data.
-
-**Dangerous mode**
-Explicit opt-in mode that relaxes safety checks and enables risky capture such as user shell dotfiles.
-
-**JinjaTurtle**
-Optional external tool used to convert recognised config files into Jinja2 or ERB templates plus variable defaults/context.
-
-**Enforcement target**
-The config manager chosen for `diff --enforce` with `--target ansible|puppet|salt`.
-
----
-
-## 29. Final maintenance model
-
-Most changes should preserve this pipeline:
-
-```text
-Collect facts and files safely
-  -> represent them in target-neutral state.json
-  -> keep artifact references consistent
-  -> let each renderer translate the same state into its own idioms
-  -> validate the bundle and test each target
-```
-
-Before changing code, ask:
-
-1. Is this a harvest concern or renderer concern?
-2. Does `state.json` or the schema need to change?
-3. Does this affect `--fqdn` mode?
-4. Does this introduce duplicate ownership of a path/resource?
-5. Does this weaken default secret avoidance?
-6. Do Puppet and Salt need conflict handling?
-7. Does JinjaTurtle fallback still behave safely?
-8. Does `diff --enforce --target ...` still do the conservative thing?
-9. Do existing tests explain why the current behaviour exists?
-
-Keeping those boundaries clear is the main way to maintain Enroll without creating subtle cross-target regressions.

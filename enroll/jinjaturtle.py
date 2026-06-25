@@ -82,7 +82,6 @@ _JINJA_FOR_RE = re.compile(
     r"{%\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([A-Za-z_][A-Za-z0-9_]*)\b"
 )
 _JINJA_SPECIAL_VARS = {"loop", "true", "false", "none", "True", "False", "None"}
-_ERB_INSTANCE_VAR_RE = re.compile(r"<%=?[^%]*@([A-Za-z_][A-Za-z0-9_]*)", re.S)
 
 
 def _find_undeclared_jinja_vars(template_text: str) -> Set[str]:
@@ -121,21 +120,6 @@ def missing_jinja_template_vars(
     return {name for name in referenced if name not in context}
 
 
-def missing_erb_template_vars(template_text: str, context: Dict[str, Any]) -> Set[str]:
-    """Return ERB ``@param`` references absent from Puppet Hiera/class data."""
-
-    local_names: Set[str] = set()
-    for key in context:
-        text = str(key)
-        if "::" in text:
-            local_names.add(text.split("::", 1)[1])
-        else:
-            local_names.add(text)
-
-    referenced = set(_ERB_INSTANCE_VAR_RE.findall(template_text))
-    return {name for name in referenced if name not in local_names}
-
-
 def jinjify_artifact(
     bundle_dir: str | Path,
     artifact_role: str,
@@ -147,14 +131,8 @@ def jinjify_artifact(
     jt_enabled: bool,
     overwrite_templates: bool = True,
     role_name: Optional[str] = None,
-    template_engine: str = "jinja2",
-    puppet_class: Optional[str] = None,
 ) -> Optional[JinjifiedArtifact]:
-    """Best-effort conversion of one harvested artifact into a template.
-
-    Ansible/Salt use Jinja2 output. Puppet uses ERB output with Puppet Hiera
-    keys when a new enough JinjaTurtle is available.
-    """
+    """Best-effort conversion of one harvested artifact into a Jinja2 template."""
     if not (jt_enabled and jt_exe and can_jinjify_path(dest_path)):
         return None
 
@@ -164,31 +142,20 @@ def jinjify_artifact(
         return None
 
     try:
-        run_kwargs: Dict[str, Any] = {
-            "role_name": role_name or artifact_role,
-            "force_format": infer_other_formats(dest_path),
-        }
-        # Keep the historical call shape for Ansible/Salt and for tests that
-        # monkeypatch run_jinjaturtle with the old signature.  Puppet/ERB is
-        # the only path that needs the newer JinjaTurtle CLI switches.
-        if template_engine != "jinja2":
-            run_kwargs["template_engine"] = template_engine
-        if puppet_class:
-            run_kwargs["puppet_class"] = puppet_class
-        result = run_jinjaturtle(jt_exe, str(artifact_path), **run_kwargs)
+        result = run_jinjaturtle(
+            jt_exe,
+            str(artifact_path),
+            role_name=role_name or artifact_role,
+            force_format=infer_other_formats(dest_path),
+        )
     except Exception:
         return None  # nosec - best-effort template generation
 
-    ext = "erb" if template_engine == "erb" else "j2"
-    template_rel = Path(src_rel).as_posix() + f".{ext}"
+    template_rel = Path(src_rel).as_posix() + ".j2"
     template_dst = Path(template_root) / template_rel
 
     context = yaml_load_mapping(result.vars_text)
-    missing = (
-        missing_erb_template_vars(result.template_text, context)
-        if template_engine == "erb"
-        else missing_jinja_template_vars(result.template_text, context)
-    )
+    missing = missing_jinja_template_vars(result.template_text, context)
     if missing:
         # If this role was generated into an existing output directory, avoid
         # leaving an obsolete template behind after falling back to a raw copy.
@@ -243,10 +210,7 @@ def jinjify_managed_files(
 ) -> Tuple[Set[str], str]:
     """Jinjify a list of managed files and return Ansible-style vars text.
 
-    The return shape intentionally matches the historical Ansible helper:
-    ``(templated_src_rels, combined_vars_text)``. Salt uses
-    :func:`jinjify_artifact` directly because it stores variables as a context
-    map per managed file.
+    The return shape is ``(templated_src_rels, combined_vars_text)``.
     """
     templated: Set[str] = set()
     vars_map: Dict[str, Any] = {}
@@ -340,8 +304,6 @@ def run_jinjaturtle(
     *,
     role_name: str,
     force_format: Optional[str] = None,
-    template_engine: str = "jinja2",
-    puppet_class: Optional[str] = None,
 ) -> JinjifyResult:
     """
     Run jinjaturtle against src_path and return (template, defaults-yaml).
@@ -349,9 +311,6 @@ def run_jinjaturtle(
 
     jinjaturtle CLI:
       jinjaturtle <config> -r <role> [-f <format>] [-d <defaults-output>] [-t <template-output>]
-
-    Newer JinjaTurtle versions also support ``--template-engine erb`` and
-    ``--puppet-class`` for Puppet/Hiera output.
     """
     src = Path(src_path)
     if not src.is_file():
@@ -360,9 +319,7 @@ def run_jinjaturtle(
     with tempfile.TemporaryDirectory(prefix="enroll-jt-") as td:
         td_path = Path(td)
         defaults_out = td_path / "defaults.yml"
-        template_out = td_path / (
-            "template.erb" if template_engine == "erb" else "template.j2"
-        )
+        template_out = td_path / "template.j2"
 
         cmd = [
             jt_exe,
@@ -376,10 +333,6 @@ def run_jinjaturtle(
         ]
         if force_format:
             cmd.extend(["-f", force_format])
-        if template_engine != "jinja2":
-            cmd.extend(["--template-engine", template_engine])
-        if puppet_class:
-            cmd.extend(["--puppet-class", puppet_class])
 
         p = subprocess.run(cmd, text=True, capture_output=True)  # nosec
         if p.returncode != 0:
