@@ -213,3 +213,25 @@ def test_freeze_directory_bundle_rejects_hardlinked_file(tmp_path: Path):
     os.link(secret, hard)
     with pytest.raises(ArtifactSafetyError, match="hardlink"):
         freeze_directory_bundle(bundle)
+
+
+def test_freeze_directory_bundle_fails_loudly_on_unreadable_subdir(tmp_path: Path):
+    """An unreadable subtree must abort the freeze, not silently truncate it.
+
+    Regression test: os.walk() defaults to swallowing directory-listing errors,
+    which previously produced a partial frozen bundle with no error. The freeze
+    now passes onerror= so a PermissionError aborts with ArtifactSafetyError.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root can read 0000 directories; cannot simulate the case")
+
+    bundle = _write_bundle(tmp_path)
+    locked = bundle / "artifacts" / "app" / "etc" / "app"
+    assert locked.is_dir()
+    os.chmod(locked, 0o000)
+    try:
+        with pytest.raises(ArtifactSafetyError, match="could not be fully read"):
+            freeze_directory_bundle(bundle)
+    finally:
+        # Restore perms so tmp_path cleanup can remove the tree.
+        os.chmod(locked, 0o755)

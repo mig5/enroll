@@ -8,6 +8,30 @@ from pathlib import Path
 import pytest
 
 
+# The remote harvest now SHA-256-verifies the uploaded zipapp on the remote
+# before executing it. Tests mock _build_enroll_pyz to write these fixed bytes
+# and return (path, _FAKE_PYZ_SHA256); the fake SSH routers below answer the
+# verification command with the same digest so the happy paths proceed.
+_FAKE_PYZ_BYTES = b"PYZ"
+_FAKE_PYZ_SHA256 = "d6f4e1dbf7ba69af6c798c6f6f67383c978e68f4201bf31902275ef37e6263e1"
+
+
+def _fake_build_enroll_pyz(td) -> tuple[Path, str]:
+    """Stand-in for remote._build_enroll_pyz used across remote tests.
+
+    Writes a tiny fixed payload instead of a real zipapp and returns the
+    (path, sha256) tuple the production builder now returns.
+    """
+    p = Path(td) / "enroll.pyz"
+    p.write_bytes(_FAKE_PYZ_BYTES)
+    return p, _FAKE_PYZ_SHA256
+
+
+def _is_pyz_verify_cmd(cmd: str) -> bool:
+    """True if *cmd* is the remote pyz SHA-256 integrity check."""
+    return "hashlib.sha256" in cmd and "enroll.pyz" in cmd
+
+
 def _make_tgz_bytes(files: dict[str, bytes]) -> bytes:
     bio = io.BytesIO()
     with tarfile.open(fileobj=bio, mode="w:gz") as tf:
@@ -56,12 +80,7 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     import enroll.remote as r
 
     # Avoid building a real zipapp; just create a file.
-    def fake_build(_td: Path) -> Path:
-        p = _td / "enroll.pyz"
-        p.write_bytes(b"PYZ")
-        return p
-
-    monkeypatch.setattr(r, "_build_enroll_pyz", fake_build)
+    monkeypatch.setattr(r, "_build_enroll_pyz", _fake_build_enroll_pyz)
 
     # Prepare a tiny harvest bundle tar stream from the "remote".
     tgz = _make_tgz_bytes({"state.json": b'{"ok": true}\n'})
@@ -156,6 +175,9 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
             return self._sftp
 
         def exec_command(self, cmd: str, *, get_pty: bool = False, **_kwargs):
+            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_verify_cmd(cmd):
+                return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             calls.append((cmd, bool(get_pty)))
             # The tar stream uses exec_command directly.
             if cmd.startswith("tar -cz -C"):
@@ -264,12 +286,7 @@ def test_remote_harvest_no_sudo_does_not_request_pty_or_chown(
 
     import enroll.remote as r
 
-    monkeypatch.setattr(
-        r,
-        "_build_enroll_pyz",
-        lambda td: (Path(td) / "enroll.pyz").write_bytes(b"PYZ")
-        or (Path(td) / "enroll.pyz"),
-    )
+    monkeypatch.setattr(r, "_build_enroll_pyz", _fake_build_enroll_pyz)
 
     tgz = _make_tgz_bytes({"state.json": b"{}"})
     calls: list[tuple[str, bool]] = []
@@ -357,6 +374,9 @@ def test_remote_harvest_no_sudo_does_not_request_pty_or_chown(
             return self._sftp
 
         def exec_command(self, cmd: str, *, get_pty: bool = False, **_kwargs):
+            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_verify_cmd(cmd):
+                return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             calls.append((cmd, bool(get_pty)))
             if cmd == "mktemp -d":
                 return (None, _Stdout(b"/tmp/enroll-remote-456\n"), _Stderr())
@@ -409,12 +429,7 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
     import enroll.remote as r
 
     # Avoid building a real zipapp; just create a file.
-    monkeypatch.setattr(
-        r,
-        "_build_enroll_pyz",
-        lambda td: (Path(td) / "enroll.pyz").write_bytes(b"PYZ")
-        or (Path(td) / "enroll.pyz"),
-    )
+    monkeypatch.setattr(r, "_build_enroll_pyz", _fake_build_enroll_pyz)
 
     tgz = _make_tgz_bytes({"state.json": b'{"ok": true}\n'})
     calls: list[tuple[str, bool]] = []
@@ -514,6 +529,9 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
             return self._sftp
 
         def exec_command(self, cmd: str, *, get_pty: bool = False, **_kwargs):
+            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_verify_cmd(cmd):
+                return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             calls.append((cmd, bool(get_pty)))
 
             # Tar stream
@@ -800,12 +818,7 @@ def test_remote_harvest_ssh_key_passphrase_retry(monkeypatch, tmp_path: Path):
 
     import enroll.remote as r
 
-    monkeypatch.setattr(
-        r,
-        "_build_enroll_pyz",
-        lambda td: (Path(td) / "enroll.pyz").write_bytes(b"PYZ")
-        or (Path(td) / "enroll.pyz"),
-    )
+    monkeypatch.setattr(r, "_build_enroll_pyz", _fake_build_enroll_pyz)
 
     tgz = _make_tgz_bytes({"state.json": b'{"ok": true}\n'})
 
@@ -901,6 +914,9 @@ def test_remote_harvest_ssh_key_passphrase_retry(monkeypatch, tmp_path: Path):
             return self._sftp
 
         def exec_command(self, cmd: str, *, get_pty: bool = False, **_kwargs):
+            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_verify_cmd(cmd):
+                return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             if cmd.startswith("tar -cz -C"):
                 return (_Stdin(cmd), _Stdout(tgz, rc=0), _Stderr(b""))
             if cmd == "mktemp -d":
@@ -952,12 +968,7 @@ def test_remote_harvest_ssh_key_passphrase_raises_when_not_interactive(
 
     import enroll.remote as r
 
-    monkeypatch.setattr(
-        r,
-        "_build_enroll_pyz",
-        lambda td: (Path(td) / "enroll.pyz").write_bytes(b"PYZ")
-        or (Path(td) / "enroll.pyz"),
-    )
+    monkeypatch.setattr(r, "_build_enroll_pyz", _fake_build_enroll_pyz)
 
     class _Chan:
         def __init__(self):
@@ -1022,6 +1033,9 @@ def test_remote_harvest_ssh_key_passphrase_raises_when_not_interactive(
             return self._sftp
 
         def exec_command(self, cmd: str, **_kwargs):
+            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_verify_cmd(cmd):
+                return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             return (_Stdout(), _Stdout(), _Stderr())
 
             def close(self):
@@ -1048,3 +1062,124 @@ def test_remote_harvest_ssh_key_passphrase_raises_when_not_interactive(
             remote_host="example.com",
             stdin=io.StringIO(),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Integrity of the uploaded zipapp before remote (root) execution.
+# --------------------------------------------------------------------------- #
+
+
+class _VerifyChan:
+    """Minimal Paramiko-channel stand-in for _ssh_run consumption."""
+
+    def __init__(self, out: bytes = b"", err: bytes = b"", rc: int = 0):
+        self._out, self._err, self._rc = out, err, rc
+        self._oi = self._ei = 0
+        self._closed = False
+
+    def recv_ready(self) -> bool:
+        return (not self._closed) and self._oi < len(self._out)
+
+    def recv(self, n: int) -> bytes:
+        chunk = self._out[self._oi : self._oi + n]
+        self._oi += len(chunk)
+        return chunk
+
+    def recv_stderr_ready(self) -> bool:
+        return (not self._closed) and self._ei < len(self._err)
+
+    def recv_stderr(self, n: int) -> bytes:
+        chunk = self._err[self._ei : self._ei + n]
+        self._ei += len(chunk)
+        return chunk
+
+    def exit_status_ready(self) -> bool:
+        return self._closed or (
+            self._oi >= len(self._out) and self._ei >= len(self._err)
+        )
+
+    def recv_exit_status(self) -> int:
+        return self._rc
+
+    def shutdown_write(self) -> None:
+        return
+
+    def close(self) -> None:
+        self._closed = True
+
+
+class _VerifyStdio:
+    def __init__(self, chan: _VerifyChan):
+        self.channel = chan
+
+
+def _verify_ssh(out: bytes, *, rc: int = 0):
+    chan = _VerifyChan(out=out, rc=rc)
+
+    class FakeSSH:
+        def exec_command(self, cmd, *, get_pty=False, **_kw):
+            assert "hashlib.sha256" in cmd  # this is the verify command
+            return (io.StringIO(), _VerifyStdio(chan), _VerifyStdio(chan))
+
+    return FakeSSH()
+
+
+def test_remote_verify_pyz_sha256_rejects_mismatch():
+    import enroll.remote as r
+
+    ssh = _verify_ssh(b"0" * 64)
+    with pytest.raises(RuntimeError, match="Integrity check failed"):
+        r._remote_verify_pyz_sha256(
+            ssh, "/tmp/x/enroll.pyz", "a" * 64, remote_python="python3"
+        )
+
+
+def test_remote_verify_pyz_sha256_accepts_match():
+    import enroll.remote as r
+
+    expected = "a" * 64
+    ssh = _verify_ssh(expected.encode())
+    # Should not raise.
+    r._remote_verify_pyz_sha256(
+        ssh, "/tmp/x/enroll.pyz", expected, remote_python="python3"
+    )
+
+
+def test_remote_verify_pyz_sha256_rejects_empty():
+    import enroll.remote as r
+
+    ssh = _verify_ssh(b"")
+    with pytest.raises(RuntimeError, match="empty SHA-256"):
+        r._remote_verify_pyz_sha256(
+            ssh, "/tmp/x/enroll.pyz", "a" * 64, remote_python="python3"
+        )
+
+
+def test_remote_verify_pyz_sha256_rejects_nonzero_rc():
+    import enroll.remote as r
+
+    ssh = _verify_ssh(b"", rc=2)
+    with pytest.raises(RuntimeError, match="verify the integrity"):
+        r._remote_verify_pyz_sha256(
+            ssh, "/tmp/x/enroll.pyz", "a" * 64, remote_python="python3"
+        )
+
+
+def test_build_enroll_pyz_excludes_tests_and_caches_and_returns_sha(tmp_path: Path):
+    import zipfile
+
+    import enroll.remote as r
+
+    pyz, sha = r._build_enroll_pyz(tmp_path)
+    assert isinstance(sha, str) and len(sha) == 64
+    assert sha == r._sha256_file(pyz)
+
+    names = zipfile.ZipFile(pyz).namelist()
+    assert any(n.endswith("schema/state.schema.json") for n in names)
+    for n in names:
+        leaf = n.rsplit("/", 1)[-1]
+        assert "__pycache__" not in n
+        assert not n.endswith((".pyc", ".pyo"))
+        assert "/tests/" not in n
+        assert not leaf.startswith("test_")
+        assert leaf != "conftest.py"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import hashlib
 import os
 import shlex
 import shutil
@@ -232,11 +233,21 @@ def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
             tar.extract(m, path=dest)
 
 
-def _build_enroll_pyz(tmpdir: Path) -> Path:
+def _build_enroll_pyz(tmpdir: Path) -> tuple[Path, str]:
     """Build a self-contained enroll zipapp (pyz) on the local machine.
 
     The resulting file is stdlib-only and can be executed on the remote host
     as long as it has Python 3 available.
+
+    Returns ``(pyz_path, sha256_hex)``. The digest is computed on the exact
+    bytes written locally so the caller can verify, on the remote side, that the
+    file that is about to be executed as root is byte-for-byte the one we built
+    (see ``_remote_verify_pyz_sha256``). This is transport/staging integrity
+    defence-in-depth: it detects a swap of the staged file between upload and
+    execution by anyone who gained write access to the staging directory. It is
+    NOT a defence against a remote host that is already root-compromised -- such
+    a host can subvert the interpreter regardless, and is out of scope per
+    SECURITY.md.
     """
     import enroll as pkg
 
@@ -244,14 +255,57 @@ def _build_enroll_pyz(tmpdir: Path) -> Path:
     stage = tmpdir / "stage"
     (stage / "enroll").mkdir(parents=True, exist_ok=True)
 
-    def _ignore(d: str, names: list[str]) -> set[str]:
-        return {
-            n
-            for n in names
-            if n in {"__pycache__", ".pytest_cache"} or n.endswith(".pyc")
-        }
+    # Names that must never end up in the remote zipapp. The remote only ever
+    # runs ``harvest``; test suites, caches, editor/VCS scratch, and compiled
+    # artifacts are never needed at runtime and should not be shipped to (or
+    # executed on) a harvested host. Excluding them keeps the payload minimal
+    # and avoids transferring irrelevant code to every target.
+    _ignore_dirs = {
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".git",
+        ".hg",
+        ".svn",
+        "tests",
+        "test",
+    }
+    _ignore_suffixes = (".pyc", ".pyo", ".orig", ".rej", ".bak")
+
+    def _ignore(directory: str, names: list[str]) -> set[str]:
+        dropped: set[str] = set()
+        for n in names:
+            if n in _ignore_dirs:
+                dropped.add(n)
+                continue
+            if n.endswith(_ignore_suffixes):
+                dropped.add(n)
+                continue
+            # Defensive: never ship test modules even if they are colocated in
+            # the package directory by a future packaging change.
+            if n.startswith("test_") and n.endswith(".py"):
+                dropped.add(n)
+                continue
+            if n == "conftest.py":
+                dropped.add(n)
+                continue
+        return dropped
 
     shutil.copytree(pkg_dir, stage / "enroll", dirs_exist_ok=True, ignore=_ignore)
+
+    # The JSON Schema is a required runtime data file for ``validate``/``manifest``
+    # consumers of the harvest; the remote harvest itself does not validate, but
+    # the bundle it produces is validated locally, and the schema travels with
+    # the package. Fail loudly if a future ignore rule ever drops it rather than
+    # silently shipping a package that cannot self-validate.
+    staged_schema = stage / "enroll" / "schema" / "state.schema.json"
+    if not staged_schema.is_file():
+        raise RuntimeError(
+            "internal error: enroll.pyz staging is missing the bundled JSON "
+            "schema (schema/state.schema.json); refusing to build an "
+            "incomplete remote payload"
+        )
 
     pyz_path = tmpdir / "enroll.pyz"
     zipapp.create_archive(
@@ -260,7 +314,83 @@ def _build_enroll_pyz(tmpdir: Path) -> Path:
         main="enroll.cli:main",
         compressed=True,
     )
-    return pyz_path
+
+    sha256_hex = _sha256_file(pyz_path)
+    return pyz_path, sha256_hex
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the hex SHA-256 of a file, read in chunks."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _remote_verify_pyz_sha256(
+    ssh,
+    remote_pyz_path: str,
+    expected_sha256: str,
+    *,
+    remote_python: str,
+) -> None:
+    """Verify the uploaded zipapp's SHA-256 on the remote before executing it.
+
+    This is transport/staging integrity defence-in-depth. The check runs on the
+    remote, immediately before the (root) execution of the zipapp, and fails
+    closed if the digest does not match the bytes we built locally. It shrinks
+    the window in which a *non-root* tamperer who somehow gained write access to
+    the staging directory could swap the file between upload and execution.
+
+    It deliberately does NOT establish trust in a root-compromised remote: a
+    host that is already root can forge any check it runs about itself. Per
+    SECURITY.md, such a host is outside Enroll's threat model. The value here is
+    catching accidental corruption and unprivileged-local-user staging races,
+    not defeating a compromised root.
+
+    The hashing is done with Python's hashlib (already required to run the
+    zipapp) rather than a ``sha256sum`` binary, so it does not depend on
+    coreutils being present or on PATH resolution of a hashing tool.
+    """
+
+    # Hash the staged file using the same interpreter that will execute it.
+    # ``-I`` isolates the interpreter from site/user customisation; the script
+    # prints only the lowercase hex digest.
+    hash_script = (
+        "import hashlib,sys;"
+        "h=hashlib.sha256();"
+        "f=open(sys.argv[1],'rb');"
+        "[h.update(c) for c in iter(lambda:f.read(1048576),b'')];"
+        "sys.stdout.write(h.hexdigest())"
+    )
+    cmd = " ".join(
+        shlex.quote(tok)
+        for tok in (remote_python, "-I", "-c", hash_script, remote_pyz_path)
+    )
+    rc, out, err = _ssh_run(ssh, cmd, get_pty=False)
+    if rc != 0:
+        raise RuntimeError(
+            "Failed to verify the integrity of the uploaded enroll.pyz on the "
+            f"remote host.\nCommand: {cmd}\nExit code: {rc}\nStderr: {err.strip()}"
+        )
+    remote_digest = out.strip().lower()
+    expected = expected_sha256.strip().lower()
+    if not remote_digest:
+        raise RuntimeError(
+            "Remote integrity check returned an empty SHA-256 for enroll.pyz; "
+            "refusing to execute it."
+        )
+    if remote_digest != expected:
+        raise RuntimeError(
+            "Integrity check failed for the uploaded enroll.pyz: the staged "
+            "file's SHA-256 on the remote does not match the locally built "
+            "payload. Refusing to execute it as root.\n"
+            f"  expected: {expected}\n"
+            f"  remote:   {remote_digest}\n"
+            "This can indicate the staging directory was tampered with between "
+            "upload and execution, or transfer corruption."
+        )
 
 
 def _ssh_run(
@@ -444,7 +574,7 @@ def _remote_harvest(
     # Build a zipapp locally and upload it to the remote.
     with tempfile.TemporaryDirectory(prefix="enroll-remote-") as td:
         td_path = Path(td)
-        pyz = _build_enroll_pyz(td_path)
+        pyz, pyz_sha256 = _build_enroll_pyz(td_path)
         local_tgz = td_path / "bundle.tgz"
 
         ssh = paramiko.SSHClient()
@@ -594,6 +724,16 @@ def _remote_harvest(
 
             rapp = f"{rtmp}/enroll.pyz"
             sftp.put(str(pyz), rapp)
+
+            # Before executing the uploaded zipapp (as root, under sudo), verify
+            # on the remote that the staged bytes match what we built locally.
+            # This is staging/transport integrity defence-in-depth: it fails
+            # closed if the file was swapped or corrupted between upload and
+            # execution. It does not (and cannot) defend against a remote that
+            # is already root-compromised; see _remote_verify_pyz_sha256.
+            _remote_verify_pyz_sha256(
+                ssh, rapp, pyz_sha256, remote_python=remote_python
+            )
 
             if not no_sudo:
                 # The remote zipapp is staged as the SSH user, but the harvest

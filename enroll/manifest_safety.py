@@ -354,11 +354,32 @@ def freeze_directory_bundle(
             pass
 
         file_count = 0
+
+        def _on_walk_error(exc: OSError) -> None:
+            # os.walk() defaults to *silently swallowing* directory-listing
+            # errors (e.g. an unreadable subdirectory raises os.scandir() ->
+            # PermissionError, which os.walk would otherwise drop). A swallowed
+            # error produces a partial frozen tree with no indication that
+            # content was omitted, which is exactly the "fail loudly instead of
+            # producing a partial frozen copy" guarantee this helper is meant to
+            # provide. Re-raise as an ArtifactSafetyError so the whole freeze
+            # aborts rather than returning a silently-truncated bundle.
+            raise ArtifactSafetyError(
+                f"{label} could not be fully read while freezing "
+                f"({exc.__class__.__name__}: {exc}); refusing to produce a "
+                f"partial frozen copy"
+            )
+
         # followlinks=False: do not descend into symlinked directories. Each
         # discovered file is independently re-opened no-follow before copying, so
         # a symlinked directory cannot smuggle content into the frozen tree even
         # if it is swapped in mid-walk.
-        for cur, dirs, files in os.walk(src_root, followlinks=False):
+        #
+        # onerror=_on_walk_error: fail closed on any unreadable directory rather
+        # than silently skipping it (see callback above).
+        for cur, dirs, files in os.walk(
+            src_root, followlinks=False, onerror=_on_walk_error
+        ):
             cur_p = Path(cur)
 
             # Refuse symlinked subdirectories rather than silently skipping them,
