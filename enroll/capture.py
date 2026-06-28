@@ -100,6 +100,8 @@ def copy_into_bundle(
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise OSError("refusing to copy non-regular source")
+        if st.st_nlink > 1:
+            raise OSError("refusing to copy hardlinked source")
         chunks: list[bytes] = []
         while True:
             chunk = os.read(fd, 1024 * 1024)

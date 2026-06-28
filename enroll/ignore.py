@@ -355,6 +355,12 @@ class IgnorePolicy:
 
             if not stat.S_ISREG(st.st_mode):
                 return "not_regular_file", None
+            if st.st_nlink > 1:
+                # A hardlink gives a file another safe-looking pathname. When
+                # Enroll is run as root, path-based deny rules such as
+                # /etc/shadow must not be bypassed by copying the same inode via
+                # an attacker-controlled alias under an otherwise allowed tree.
+                return "hardlink_source", None
             if st.st_size > self.max_file_bytes:
                 return "too_large", None
 

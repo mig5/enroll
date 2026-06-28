@@ -526,6 +526,16 @@ def _role_tag(role: str) -> str:
     return f"role_{safe}"
 
 
+def _write_generated_task_yaml(path: str, text: str, *, label: str) -> None:
+    """Write generated task/handler/playbook YAML through one safety gate."""
+
+    body = text.rstrip() + "\n"
+    assert_generated_yaml_safe(body, label=label)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body)
+
+
 def _write_playbook_all(path: str, roles: List[str]) -> None:
     pb_lines = [
         "---",
@@ -540,9 +550,7 @@ def _write_playbook_all(path: str, roles: List[str]) -> None:
         pb_lines.append(f"    - role: {safe}")
         pb_lines.append(f"      tags: [{_role_tag(safe)}]")
     text = "\n".join(pb_lines) + "\n"
-    assert_generated_yaml_safe(text, label="playbook.yml")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+    _write_generated_task_yaml(path, text, label="playbook.yml")
 
 
 def _write_playbook_host(path: str, fqdn: str, roles: List[str]) -> None:
@@ -560,9 +568,7 @@ def _write_playbook_host(path: str, fqdn: str, roles: List[str]) -> None:
         pb_lines.append(f"    - role: {safe}")
         pb_lines.append(f"      tags: [{_role_tag(safe)}]")
     text = "\n".join(pb_lines) + "\n"
-    assert_generated_yaml_safe(text, label="host playbook")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+    _write_generated_task_yaml(path, text, label="host playbook")
 
 
 def _ensure_ansible_cfg(cfg_path: str) -> None:
@@ -772,16 +778,16 @@ def _write_ansible_role(
     # and keeps all harvested data in variable files; if any harvested value ever
     # leaked into this text and changed its shape, fail closed here rather than
     # emit a poisoned playbook.
-    assert_generated_yaml_safe(tasks, label=f"role '{role}' tasks/main.yml")
-    assert_generated_yaml_safe(handlers, label=f"role '{role}' handlers/main.yml")
-
-    with open(os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8") as f:
-        f.write(tasks.rstrip() + "\n")
-
-    with open(
-        os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
-    ) as f:
-        f.write(handlers.rstrip() + "\n")
+    _write_generated_task_yaml(
+        os.path.join(role_dir, "tasks", "main.yml"),
+        tasks,
+        label=f"role '{role}' tasks/main.yml",
+    )
+    _write_generated_task_yaml(
+        os.path.join(role_dir, "handlers", "main.yml"),
+        handlers,
+        label=f"role '{role}' handlers/main.yml",
+    )
 
     _write_role_meta(role_dir, collections)
 
@@ -1798,13 +1804,16 @@ def _write_managed_files_role(
         _write_role_defaults(role_dir, vars_map)
 
     tasks = _render_role_tasks(AnsibleRole(role), managed_content=True)
-    with open(os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8") as f:
-        f.write(tasks.rstrip() + "\n")
-
-    with open(
-        os.path.join(role_dir, "handlers", "main.yml"), "w", encoding="utf-8"
-    ) as f:
-        f.write(handlers.rstrip() + "\n")
+    _write_generated_task_yaml(
+        os.path.join(role_dir, "tasks", "main.yml"),
+        tasks,
+        label=f"role '{role}' tasks/main.yml",
+    )
+    _write_generated_task_yaml(
+        os.path.join(role_dir, "handlers", "main.yml"),
+        handlers,
+        label=f"role '{role}' handlers/main.yml",
+    )
 
     with open(os.path.join(role_dir, "meta", "main.yml"), "w", encoding="utf-8") as f:
         f.write("---\ndependencies: []\n")

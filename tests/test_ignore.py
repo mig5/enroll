@@ -416,3 +416,29 @@ def test_inspect_file_still_captures_normal_nested_file(tmp_path: Path):
     assert reason is None
     assert inspection is not None
     assert inspection.data == b"workers=4\n"
+
+
+def test_inspect_file_refuses_hardlinked_source(tmp_path: Path):
+    pol = IgnorePolicy()
+    original = tmp_path / "original.conf"
+    original.write_text("safe=true\n", encoding="utf-8")
+    alias = tmp_path / "alias.conf"
+    os.link(original, alias)
+
+    reason, inspection = pol.inspect_file(str(alias))
+
+    assert reason == "hardlink_source"
+    assert inspection is None
+
+
+def test_inspect_file_refuses_hardlinked_source_even_in_dangerous_mode(tmp_path: Path):
+    pol = IgnorePolicy(dangerous=True)
+    original = tmp_path / "original.conf"
+    original.write_text("safe=true\n", encoding="utf-8")
+    alias = tmp_path / "alias.conf"
+    os.link(original, alias)
+
+    reason, inspection = pol.inspect_file(str(alias))
+
+    assert reason == "hardlink_source"
+    assert inspection is None

@@ -58,12 +58,15 @@ def _default_schema_path() -> Path:
     return Path(__file__).resolve().parent / "schema" / "state.schema.json"
 
 
-def _load_schema(schema: Optional[str]) -> Dict[str, Any]:
+def _load_schema(
+    schema: Optional[str], *, allow_remote_schema: bool = False
+) -> Dict[str, Any]:
     """Load a JSON schema.
 
     If schema is None, load the vendored schema.
-    If schema begins with http(s)://, fetch it.
-    Otherwise, treat it as a local file path.
+    If schema begins with http(s)://, fetch it only when remote schema
+    loading was explicitly enabled by the caller. Otherwise, treat it as a
+    local file path.
     """
 
     if not schema:
@@ -72,6 +75,11 @@ def _load_schema(schema: Optional[str]) -> Dict[str, Any]:
             return json.load(f)
 
     if schema.startswith("http://") or schema.startswith("https://"):
+        if not allow_remote_schema:
+            raise ValueError(
+                "remote schema URLs are disabled by default; use "
+                "--allow-remote-schema only when the schema source is trusted"
+            )
         with urllib.request.urlopen(schema, timeout=10) as resp:  # nosec
             data = resp.read()
         return json.loads(data.decode("utf-8"))
@@ -136,6 +144,7 @@ def validate_harvest(
     sops_mode: bool = False,
     schema: Optional[str] = None,
     no_schema: bool = False,
+    allow_remote_schema: bool = False,
 ) -> ValidationResult:
     """Validate an enroll harvest bundle.
 
@@ -165,7 +174,7 @@ def validate_harvest(
 
         if not no_schema:
             try:
-                sch = _load_schema(schema)
+                sch = _load_schema(schema, allow_remote_schema=allow_remote_schema)
                 validator = jsonschema.Draft202012Validator(sch)
                 for err in sorted(validator.iter_errors(state), key=str):
                     ptr = _json_pointer(err)

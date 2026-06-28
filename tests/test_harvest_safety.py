@@ -320,3 +320,49 @@ def test_ensure_private_empty_dir_creates_private_dir(tmp_path: Path):
     out = hs.ensure_private_empty_dir(tmp_path / "new-cache", label="cache")
     assert out.is_dir()
     assert (out.stat().st_mode & 0o777) == 0o700
+
+
+def test_capture_file_excludes_hardlinked_source(tmp_path: Path):
+    source = tmp_path / "source.conf"
+    source.write_text("safe=true\n", encoding="utf-8")
+    alias = tmp_path / "alias.conf"
+    os.link(source, alias)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+
+    managed: list[ManagedFile] = []
+    excluded: list[ExcludedFile] = []
+    ok = capture_file(
+        bundle_dir=str(bundle),
+        role_name="role",
+        abs_path=str(alias),
+        reason="test",
+        policy=IgnorePolicy(),
+        path_filter=PathFilter(),
+        managed_out=managed,
+        excluded_out=excluded,
+    )
+
+    assert ok is False
+    assert managed == []
+    assert excluded == [ExcludedFile(path=str(alias), reason="hardlink_source")]
+    assert not (bundle / "artifacts" / "role" / str(alias).lstrip("/")).exists()
+
+
+def test_generated_artifact_writer_refuses_existing_symlink(tmp_path: Path):
+    from enroll.harvest import _write_generated_artifact
+
+    bundle = tmp_path / "bundle"
+    dst_dir = bundle / "artifacts" / "firewall_runtime" / "runtime"
+    dst_dir.mkdir(parents=True)
+    target = tmp_path / "target"
+    target.write_text("old\n", encoding="utf-8")
+    link = dst_dir / "iptables-v4.save"
+    os.symlink(target, link)
+
+    with pytest.raises(OSError):
+        _write_generated_artifact(
+            str(bundle), "firewall_runtime", "runtime/iptables-v4.save", "new\n"
+        )
+
+    assert target.read_text(encoding="utf-8") == "old\n"

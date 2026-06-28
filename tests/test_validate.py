@@ -305,16 +305,54 @@ def test_validate_harvest_invalid_json(tmp_path: Path):
     assert any("failed to parse" in e for e in result.errors)
 
 
-def test_validate_harvest_schema_error(tmp_path: Path):
+def test_validate_harvest_rejects_remote_schema_by_default(tmp_path: Path):
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     state_file = bundle_dir / "state.json"
     state_file.write_text("{}", encoding="utf-8")
+
     result = validate_harvest(
         str(bundle_dir), schema="https://invalid.invalid/schema.json"
     )
+
     assert result.ok is False
-    assert any("failed to load/validate schema" in e for e in result.errors)
+    assert any("remote schema URLs are disabled" in e for e in result.errors)
+
+
+def test_validate_harvest_allows_remote_schema_when_explicit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    state_file = bundle_dir / "state.json"
+    state_file.write_text("{}", encoding="utf-8")
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"type":"object"}'
+
+    called = []
+
+    def _fake_urlopen(url: str, timeout: int):
+        called.append((url, timeout))
+        return _Response()
+
+    monkeypatch.setattr("enroll.validate.urllib.request.urlopen", _fake_urlopen)
+
+    result = validate_harvest(
+        str(bundle_dir),
+        schema="https://example.invalid/schema.json",
+        allow_remote_schema=True,
+    )
+
+    assert called == [("https://example.invalid/schema.json", 10)]
+    assert not any("remote schema URLs are disabled" in e for e in result.errors)
 
 
 def test_validate_harvest_missing_artifact(tmp_path: Path):

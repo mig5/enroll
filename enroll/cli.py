@@ -895,8 +895,17 @@ def main() -> None:
     v.add_argument(
         "--schema",
         help=(
-            "Optional JSON schema source (file path or https:// URL). "
-            "If omitted, uses the schema vendored in the enroll codebase."
+            "Optional JSON schema source. File paths are loaded by default; "
+            "http(s) URLs require --allow-remote-schema. If omitted, uses "
+            "the schema vendored in the enroll codebase."
+        ),
+    )
+    v.add_argument(
+        "--allow-remote-schema",
+        action="store_true",
+        help=(
+            "Allow --schema to fetch an http(s) URL. Disabled by default so "
+            "validation never makes network requests unless explicitly requested."
         ),
     )
     v.add_argument(
@@ -1066,6 +1075,7 @@ def main() -> None:
                 sops_mode=bool(getattr(args, "sops", False)),
                 schema=getattr(args, "schema", None),
                 no_schema=bool(getattr(args, "no_schema", False)),
+                allow_remote_schema=bool(getattr(args, "allow_remote_schema", False)),
             )
 
             fmt = str(getattr(args, "format", "text"))

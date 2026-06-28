@@ -31,7 +31,7 @@ from .harvest_types import (
     SysctlSnapshot,
 )
 
-from .capture import capture_file
+from .capture import capture_file, write_bytes_into_bundle
 from . import system_paths
 from .package_hints import package_section_from_installations, safe_name
 
@@ -187,10 +187,12 @@ def _write_generated_artifact(
     bundle_dir: str, role_name: str, src_rel: str, content: str
 ) -> None:
     """Write a generated harvest artifact that did not exist as a file on disk."""
-    dst = os.path.join(bundle_dir, "artifacts", role_name, src_rel)
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    with open(dst, "w", encoding="utf-8") as f:
-        f.write(content)
+
+    # Keep generated artifacts on the same no-follow/exclusive-create path as
+    # copied source artifacts. This preserves the invariant that nothing under
+    # artifacts/ is written via a plain open() that could follow a symlink if a
+    # directory were unexpectedly reused or raced.
+    write_bytes_into_bundle(bundle_dir, role_name, src_rel, content.encode("utf-8"))
 
 
 _SYSCTL_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")

@@ -106,3 +106,16 @@ def test_ansible_unsafe_data_still_tags_jinja_values():
     assert not isinstance(out["safe"], AnsibleUnsafeText)
     assert is_ansible_template_like("{{ x }}")
     assert not is_ansible_template_like("plain")
+
+
+def test_write_generated_task_yaml_uses_safety_gate(tmp_path):
+    from enroll.ansible import _write_generated_task_yaml
+
+    path = tmp_path / "tasks.yml"
+
+    with pytest.raises(RenderSafetyError):
+        _write_generated_task_yaml(
+            str(path), "---\nkey: value\n", label="test tasks/main.yml"
+        )
+
+    assert not path.exists()

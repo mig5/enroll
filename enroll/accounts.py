@@ -186,7 +186,11 @@ def _read_first_existing_text(
         try:
             fd = open_no_follow_path(path)
             st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+            if (
+                not stat.S_ISREG(st.st_mode)
+                or st.st_nlink > 1
+                or st.st_size > max_bytes
+            ):
                 continue
             data = os.read(fd, max_bytes + 1)
             if len(data) > max_bytes:
