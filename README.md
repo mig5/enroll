@@ -172,26 +172,10 @@ Compare two harvest bundles and report what changed.
 - `--sops` when comparing SOPS-encrypted harvest bundles
 - `--exclude-path <PATTERN>` (repeatable) to ignore file/dir drift under matching paths (same pattern syntax as harvest)
 - `--ignore-package-versions` to ignore package version-only drift (upgrades/downgrades)
-- `--enforce` to apply the **old** harvest state locally (requires the relevant config manager tool on `PATH` - defaults to `ansible-playbook`)
-- `--enforce` runs `ansible-playbook` against the regenerated manifest)
 
 **Noise suppression**
 - `--exclude-path` is useful for things that change often but you still want in the harvest baseline (e.g. `/var/anacron`).
 - `--ignore-package-versions` keeps routine upgrades from alerting; package add/remove drift is still reported.
-
-**Enforcement (`--enforce`)**
-If a diff exists and `ansible-playbook` is on the PATH, Enroll will:
-1) generate a manifest from the **old** harvest into a temporary directory
-2) run the config manager tool against that manifest
-3) record in the diff report that the old harvest was enforced
-
-Enforcement is intentionally “safe”:
-- reinstalls packages that were removed (`state: present`), but does **not** attempt downgrades/pinning
-- restores users, files (contents + permissions/ownership), and service enable/start state
-
-If the config manager tool is not on `PATH`, Enroll returns an error and does not enforce.
-
-**IMPORTANT**: Only enforce harvest bundles that you trust. Validation checks bundle structure and artifact safety; it does not prove that the described system state is safe to apply, e.g. hasn't been tampered with by another user with sufficient permission to do so!
 
 
 **Output formats**
@@ -508,11 +492,6 @@ enroll diff --old /path/to/harvestA --new /path/to/harvestB --exclude-path /var/
 enroll diff --old /path/to/harvestA --new /path/to/harvestB --ignore-package-versions
 ```
 
-### Enforce the old harvest state when drift is detected
-```bash
-enroll diff --old /path/to/harvestA --new /path/to/harvestB --enforce --ignore-package-versions --exclude-path /var/anacron
-```
-
 ---
 
 ## Explain
@@ -648,7 +627,6 @@ sops = 54A91143AE0AB4F7743B01FE888ED1B423A3BC99
 # ignore noisy drift
 exclude_path = /var/anacron
 ignore_package_versions = true
-# enforce = true  # requires ansible-playbook on PATH
 
 [single-shot]
 # if you use single-shot, put its defaults here.

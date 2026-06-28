@@ -18,7 +18,11 @@ from .manifest_safety import (
     iter_safe_artifact_files,
     prepare_manifest_output_dir,
 )
-from .render_safety import ansible_unsafe_data
+from .render_safety import (
+    ansible_unsafe_data,
+    assert_generated_yaml_safe,
+    scaffold_token,
+)
 from .role_names import avoid_reserved_role_name
 from .state import inventory_packages_from_state, roles_from_state
 from .yamlutil import yaml_dump_mapping, yaml_load_mapping
@@ -236,7 +240,7 @@ class AnsibleRole(CMModule):
         self.add_snapshot_notes(snap)
 
     def render_firewall_runtime_tasks(self) -> str:
-        var_prefix = self.role_name
+        var_prefix = scaffold_token(self.role_name, field="role var_prefix")
         return f"""- name: Ensure firewall runtime snapshot directory exists
   ansible.builtin.file:
     path: {self.firewall_runtime_dir}
@@ -292,7 +296,7 @@ class AnsibleRole(CMModule):
 """
 
     def render_firewall_runtime_handlers(self) -> str:
-        var_prefix = self.role_name
+        var_prefix = scaffold_token(self.role_name, field="role var_prefix")
         return f"""---
 - name: Flush captured ipsets before restoring members
   ansible.builtin.command:
@@ -512,7 +516,7 @@ def _write_role_scaffold(role_dir: str) -> None:
 def _role_tag(role: str) -> str:
     """Return a stable Ansible tag name for a role.
 
-    Used by `enroll diff --enforce` to run only the roles needed to repair drift.
+    Lets operators run only selected roles via `--tags` when applying a manifest.
     """
     r = str(role or "").strip()
     # Ansible tag charset is fairly permissive, but keep it portable and consistent.
@@ -532,13 +536,17 @@ def _write_playbook_all(path: str, roles: List[str]) -> None:
         "  roles:",
     ]
     for r in roles:
-        pb_lines.append(f"    - role: {r}")
-        pb_lines.append(f"      tags: [{_role_tag(r)}]")
+        safe = scaffold_token(r, field="role name")
+        pb_lines.append(f"    - role: {safe}")
+        pb_lines.append(f"      tags: [{_role_tag(safe)}]")
+    text = "\n".join(pb_lines) + "\n"
+    assert_generated_yaml_safe(text, label="playbook.yml")
     with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(pb_lines) + "\n")
+        f.write(text)
 
 
 def _write_playbook_host(path: str, fqdn: str, roles: List[str]) -> None:
+    fqdn = scaffold_token(fqdn, field="site fqdn")
     pb_lines = [
         "---",
         f"- name: Apply all roles on {fqdn}",
@@ -548,10 +556,13 @@ def _write_playbook_host(path: str, fqdn: str, roles: List[str]) -> None:
         "  roles:",
     ]
     for r in roles:
-        pb_lines.append(f"    - role: {r}")
-        pb_lines.append(f"      tags: [{_role_tag(r)}]")
+        safe = scaffold_token(r, field="role name")
+        pb_lines.append(f"    - role: {safe}")
+        pb_lines.append(f"      tags: [{_role_tag(safe)}]")
+    text = "\n".join(pb_lines) + "\n"
+    assert_generated_yaml_safe(text, label="host playbook")
     with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(pb_lines) + "\n")
+        f.write(text)
 
 
 def _ensure_ansible_cfg(cfg_path: str) -> None:
@@ -755,6 +766,14 @@ def _write_ansible_role(
     _write_ansible_role_vars(
         ctx, role_dir, role, vars_map or {}, site_defaults=site_defaults
     )
+
+    # Backstop guardrail: never write a tasks/handlers document whose *structure*
+    # was altered by a harvested value. Enroll authors this YAML as scaffolding
+    # and keeps all harvested data in variable files; if any harvested value ever
+    # leaked into this text and changed its shape, fail closed here rather than
+    # emit a poisoned playbook.
+    assert_generated_yaml_safe(tasks, label=f"role '{role}' tasks/main.yml")
+    assert_generated_yaml_safe(handlers, label=f"role '{role}' handlers/main.yml")
 
     with open(os.path.join(role_dir, "tasks", "main.yml"), "w", encoding="utf-8") as f:
         f.write(tasks.rstrip() + "\n")
@@ -981,6 +1000,8 @@ def _render_generic_files_tasks(var_prefix: str) -> str:
 def _render_install_packages_tasks(role: str, var_prefix: str) -> str:
     """Render package installation through Ansible's generic package provider."""
 
+    role = scaffold_token(role, field="role name")
+    var_prefix = scaffold_token(var_prefix, field="role var_prefix")
     return f"""- name: Install packages for {role}
   ansible.builtin.package:
     name: "{{{{ {var_prefix}_packages | default([]) }}}}"
@@ -1145,6 +1166,7 @@ def _render_role_tasks(
 
 
 def _single_service_restart_handler_body(var_prefix: str) -> str:
+    var_prefix = scaffold_token(var_prefix, field="role var_prefix")
     return f"""- name: Restart service
   ansible.builtin.service:
     name: "{{{{ {var_prefix}_unit_name }}}}"
@@ -1156,25 +1178,66 @@ def _single_service_restart_handler_body(var_prefix: str) -> str:
 """
 
 
-def _service_restart_handler_name(unit: str) -> str:
-    return f"Restart managed service {unit}"
+def _service_restart_listen_topic(var_prefix: str) -> str:
+    """Return the fixed handler ``listen:`` topic for a grouped role.
+
+    The topic is derived solely from the (already sanitized) role var_prefix and
+    is validated as a scaffold token. It deliberately contains NO harvested data
+    such as a unit name, so the same string can be embedded in both the notify
+    side (data) and the handler ``listen:`` (scaffolding) without ever splicing a
+    harvested value into YAML structure. The specific units to restart travel as
+    the ``<var_prefix>_restart_units`` Ansible *variable*.
+    """
+
+    var_prefix = scaffold_token(var_prefix, field="role var_prefix")
+    return f"enroll_restart_grouped_services_{var_prefix}"
 
 
 def _grouped_service_restart_handlers_body(role: AnsibleRole) -> str:
-    handlers: List[str] = []
+    """Render the grouped-service restart handler.
+
+    Harvested unit names never appear in this YAML text. The handler listens on
+    a fixed, role-scoped topic and restarts each unit from the
+    ``<var_prefix>_restart_units`` variable (written to the role's defaults /
+    host_vars through ``ansible_unsafe_data``). If no unit in the role is in a
+    "started" state, no restart handler is emitted.
+    """
+
+    has_restartable = any(
+        str(svc.get("state") or "stopped") == "started"
+        for svc in role.services.values()
+    )
+    if not has_restartable:
+        return ""
+
+    var_prefix = scaffold_token(role.var_prefix, field="role var_prefix")
+    topic = _service_restart_listen_topic(var_prefix)
+    return f"""- name: Restart managed services for {var_prefix}
+  ansible.builtin.service:
+    name: "{{{{ item }}}}"
+    state: restarted
+  loop: "{{{{ {var_prefix}_restart_units | default([]) }}}}"
+  listen: {topic}
+  when: enroll_manage_systemd_runtime | default(true) | bool
+"""
+
+
+def restart_units_for_role(role: AnsibleRole) -> List[str]:
+    """Return the harvested unit names a grouped role should restart, as data.
+
+    These are emitted into the role's ``<var_prefix>_restart_units`` variable and
+    consumed by the restart handler's loop. They are ordinary harvested values
+    and are protected by ``ansible_unsafe_data`` when the variable file is
+    written -- they never touch YAML scaffolding.
+    """
+
+    units: List[str] = []
     for unit, svc in sorted(role.services.items()):
         name = str(svc.get("name") or unit).strip()
         if not name or str(svc.get("state") or "stopped") != "started":
             continue
-        handlers.append(
-            f"""- name: {_service_restart_handler_name(name)}
-  ansible.builtin.service:
-    name: {name}
-    state: restarted
-  when: enroll_manage_systemd_runtime | default(true) | bool
-"""
-        )
-    return "\n".join(_task_body(handler) for handler in handlers if _task_body(handler))
+        units.append(name)
+    return units
 
 
 def _render_role_handlers(
@@ -1819,16 +1882,19 @@ def _role_managed_content_vars(
         if notify_service_handlers and kind == "service":
             unit = str(snap.get("unit") or "").strip()
             if unit and str(snap.get("active_state") or "") == "active":
-                notify_other = _service_restart_handler_name(unit)
+                # Notify the role's fixed restart topic (scaffold-safe). The
+                # specific unit travels as data in <var_prefix>_restart_units;
+                # it is never spliced into the handler/notify YAML text.
+                notify_other = _service_restart_listen_topic(role)
             else:
                 notify_other = None
         elif notify_service_handlers and kind == "package":
-            notify_other = [
-                _service_restart_handler_name(unit)
-                for unit in CMModule.active_service_units_for_package_snapshot(
-                    snap, service_units_by_package
-                )
-            ]
+            if CMModule.active_service_units_for_package_snapshot(
+                snap, service_units_by_package
+            ):
+                notify_other = _service_restart_listen_topic(role)
+            else:
+                notify_other = None
 
         for item in _build_managed_files_var(
             managed_files,
@@ -2045,7 +2111,10 @@ def _render_common_ansible_roles(
             role,
             notify_by_kind={"service": None},
             overwrite_templates=True,
-            extra_vars={f"{role.var_prefix}_systemd_units": systemd_units},
+            extra_vars={
+                f"{role.var_prefix}_systemd_units": systemd_units,
+                f"{role.var_prefix}_restart_units": restart_units_for_role(role),
+            },
             grouped_services=True,
             restart_grouped_services=True,
             notify_service_handlers=True,

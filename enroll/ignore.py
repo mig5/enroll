@@ -58,12 +58,35 @@ DEFAULT_ALLOW_BINARY_GLOBS = [
 # --dangerous or targeted include/exclude review when a file is genuinely
 # needed.
 #
-# The assignment pattern catches INI/YAML/JSON/TOML-ish keys such as:
-#   password: hunter2
-#   "client_secret": "..."
-#   aws_secret_access_key = ...
-#   GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
-SENSITIVE_CONTENT_PATTERNS = [
+# Patterns are split into two tiers:
+#
+#   HIGH_CONFIDENCE_SECRET_PATTERNS
+#       Unambiguous secret *material* (private-key blocks, age secret keys).
+#       A file containing one of these should never be harvested in safe mode
+#       regardless of how it is framed.  These are scanned against the raw bytes
+#       and are deliberately NOT subject to comment stripping: a private key is
+#       a private key whether or not the surrounding format treats some line as
+#       a comment, and (critically) an attacker must not be able to hide key
+#       material from the scanner by opening a block comment (e.g. a leading
+#       "/*" line) that the line-oriented scanner would otherwise honour.
+#
+#   SENSITIVE_CONTENT_PATTERNS
+#       The single remaining *soft* heuristic: a bare mention of a credential
+#       word (e.g. the literal token "password" with no assigned value). This is
+#       the only pattern prone to false positives on stock config files that
+#       ship commented-out examples, so it -- and only it -- stays comment-aware
+#       via iter_effective_lines().
+#
+# IMPORTANT (conservative-by-default): anything that looks like an actual
+# credential *value* -- a populated "key = value" assignment, a URI with
+# embedded credentials, or an Authorization header -- is treated as
+# high-confidence and is scanned against the RAW bytes, including inside
+# comments. A "commented out" secret is very often a real secret that someone
+# disabled, so Enroll deliberately refuses such a file in safe mode and requires
+# --dangerous (ideally with --sops) to collect it. Only genuinely value-less
+# keyword mentions remain tolerated in comments, which is what keeps Enroll
+# useful for ordinary config files without risking a real disabled credential.
+HIGH_CONFIDENCE_SECRET_PATTERNS = [
     re.compile(
         rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----"
     ),
@@ -71,6 +94,13 @@ SENSITIVE_CONTENT_PATTERNS = [
     re.compile(rb"(?i)AGE-SECRET-KEY-[A-Z0-9]+"),
     re.compile(rb"(?i)OPENSSH PRIVATE KEY"),
     re.compile(rb"(?i)PGP PRIVATE KEY BLOCK"),
+    # Assignment-style credential keys with a value, e.g.
+    #   password: hunter2
+    #   "client_secret": "..."
+    #   aws_secret_access_key = ...
+    #   GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+    # A populated assignment is a real (if disabled) secret regardless of comment
+    # framing, so it is scanned on raw bytes.
     re.compile(
         rb"""(?ix)
         (^|[^A-Za-z0-9])
@@ -94,19 +124,24 @@ SENSITIVE_CONTENT_PATTERNS = [
         \s*[:=]
         """
     ),
-    re.compile(
-        rb"(?i)\b(pass|passwd|password|passphrase|token|secret|"
-        rb"credentials?|api[_-]?key)\b"
-    ),
     # Credentials embedded in connection-string URIs, e.g.
     #   postgres://user:pass@host, redis://:pass@host, amqp://u:p@host
-    # The keyword regex above keys on assignment-style names and misses these.
     re.compile(rb"(?i)[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s@]+@[^/\s]"),
     # HTTP(S) Authorization / Proxy-Authorization header values carrying a
     # bearer/basic/digest credential.
     re.compile(
         rb"(?im)^\s*(?:proxy-)?authorization\s*:\s*"
         rb"(?:bearer|basic|token|digest)\s+\S"
+    ),
+]
+
+SENSITIVE_CONTENT_PATTERNS = [
+    # Bare credential-word mention with no assigned value. This is the only soft
+    # heuristic and the only one tolerated inside comments, because stock config
+    # files legitimately ship value-less commented hints (e.g. "# token").
+    re.compile(
+        rb"(?i)\b(pass|passwd|password|passphrase|token|secret|"
+        rb"credentials?|api[_-]?key)\b"
     ),
 ]
 
@@ -168,21 +203,59 @@ class IgnorePolicy:
         if self.allow_binary_globs is None:
             self.allow_binary_globs = list(DEFAULT_ALLOW_BINARY_GLOBS)
 
+    def _strip_balanced_block_comments(self, content: bytes) -> bytes:
+        """Remove only *properly closed* ``/* ... */`` regions from *content*.
+
+        The previous line-oriented scanner entered "block comment mode" the moment
+        a line began with ``/*`` and then skipped every subsequent line until it
+        saw ``*/``.  That had two problems an attacker (or just an unusual config)
+        could exploit to hide secrets from the content scan:
+
+          * an *unterminated* ``/*`` (no closing ``*/`` anywhere after it) masked
+            the entire remainder of the file, including real key material; and
+          * content appearing *after* a ``*/`` on the same line, or a one-line
+            ``/* ... */ secret``, was dropped.
+
+        Operating on the whole byte stream and removing only *balanced* comment
+        regions fixes both: an opening ``/*`` with no matching ``*/`` is left in
+        place (so its contents are still scanned), and bytes after a closing
+        ``*/`` are preserved.  Each removed region is replaced with a single
+        space so tokens on either side cannot be accidentally joined.
+        """
+
+        out = bytearray()
+        i = 0
+        n = len(content)
+        while i < n:
+            start = content.find(BLOCK_START, i)
+            if start == -1:
+                out += content[i:]
+                break
+            end = content.find(BLOCK_END, start + len(BLOCK_START))
+            if end == -1:
+                # Unterminated block comment: do NOT treat the rest of the file as
+                # commented out. Keep it verbatim so secret scanning still runs.
+                out += content[i:]
+                break
+            out += content[i:start]
+            out += b" "
+            i = end + len(BLOCK_END)
+        return bytes(out)
+
     def iter_effective_lines(self, content: bytes):
-        in_block = False
-        for raw in content.splitlines():
+        """Yield non-comment lines for the soft content heuristics.
+
+        Block comments are removed first (only when properly closed), then
+        single-line comment prefixes are skipped. Genuinely commented-out
+        secrets remain ignored -- that is deliberate, documented behaviour -- but
+        a block-comment open can no longer suppress scanning of later, real
+        content.
+        """
+
+        for raw in self._strip_balanced_block_comments(content).splitlines():
             line = raw.lstrip()
 
-            if in_block:
-                if BLOCK_END in line:
-                    in_block = False
-                continue
-
             if not line:
-                continue
-
-            if line.startswith(BLOCK_START):
-                in_block = True
                 continue
 
             if line.startswith(COMMENT_PREFIXES) or line.startswith(b"*"):
@@ -221,6 +294,20 @@ class IgnorePolicy:
             return "binary_like"
 
         if not self.dangerous:
+            # High-confidence secret *material* (private keys, age secret keys)
+            # is scanned against the raw bytes and is NOT subject to comment
+            # stripping. A private key embedded in a file is sensitive regardless
+            # of comment framing, and this closes the bypass where opening a block
+            # comment (e.g. a leading "/*" line) hid key material from the
+            # line-oriented scanner.
+            for pat in HIGH_CONFIDENCE_SECRET_PATTERNS:
+                if pat.search(data):
+                    return "sensitive_content"
+
+            # Softer assignment/keyword/URI heuristics stay comment-aware so a
+            # genuinely commented-out example does not make Enroll useless for
+            # ordinary config files. iter_effective_lines() is hardened so an
+            # unterminated/inline block comment cannot mask later real content.
             for line in self.iter_effective_lines(data):
                 for pat in SENSITIVE_CONTENT_PATTERNS:
                     if pat.search(line):

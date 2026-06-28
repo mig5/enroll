@@ -29,13 +29,11 @@ Generated configuration-management output
 
 The harvest bundle is deliberately target-neutral. Ansible renderer consumes the same `state.json` shape and the same harvested artifacts. Renderer code should translate harvest state into the target's idioms; it should not invent source facts that belong in the harvest.
 
-`enroll diff` is also built around harvest bundles. It compares two harvests and, when `--enforce` is requested, can generate a temporary manifest from the old harvest and apply it locally with the selected target:
+`enroll diff` is also built around harvest bundles. It compares two harvests and reports drift between them:
 
 ```bash
-enroll diff --old ./baseline --new ./current --enforce
+enroll diff --old ./baseline --new ./current
 ```
-
-For enforcement, the user is responsible for having the chosen local apply tool on `PATH`: `ansible-playbook`.
 
 ---
 
@@ -82,7 +80,7 @@ enroll/
   yamlutil.py                 YAML helpers used by renderers/JinjaTurtle
   jinjaturtle.py              optional config-file templating integration
 
-  diff.py                     harvest comparison, notifications, and target-selected enforcement
+  diff.py                     harvest comparison and notifications
   explain.py                  human/JSON explanation of harvest contents
   validate.py                 schema and artifact consistency validation
   remote.py                   Paramiko remote harvest implementation
@@ -127,7 +125,7 @@ The supported subcommands are:
 harvest       collect a harvest bundle from a local or remote host
 manifest      generate Ansible output from a harvest bundle
 single-shot   run harvest and manifest in one command
-diff          compare two harvest bundles and optionally enforce old state
+diff          compare two harvest bundles and report drift
 explain       produce a human/JSON explanation of a harvest
 validate      validate state.json and referenced artifacts
 ```
@@ -148,10 +146,6 @@ flowchart TD
   D --> E
   B -->|diff| F[diff.compare_harvests]
   F --> G[diff.format_report]
-  F --> H{--enforce?}
-  H -->|yes| I[diff.enforce_old_harvest]
-  I --> J[manifest.manifest]
-  J --> K[ansible-playbook]
   B -->|explain| L[explain.explain_state]
   B -->|validate| M[validate.validate_harvest]
 ```
@@ -953,7 +947,7 @@ Ansible playbook roles are ordered intentionally:
 
 ### 13.4 Role tags
 
-Generated playbooks tag roles with `role_<safe_role_name>`. `diff --enforce --target ansible` uses these tags to narrow enforcement to roles relevant to the drift report when it can.
+Generated playbooks tag roles with `role_<safe_role_name>`, so operators can narrow a manual `ansible-playbook` run to specific roles with `--tags`.
 
 ### 13.5 Ansible and JinjaTurtle
 
@@ -1026,7 +1020,7 @@ When checks fail, Enroll deletes obsolete generated templates when appropriate a
 
 ---
 
-## 15. Diff, notifications, and enforcement
+## 15. Diff and notifications
 
 File: `diff.py`
 
@@ -1062,28 +1056,7 @@ Reports are formatted by:
 format_report(report, fmt="text" | "markdown" | "json")
 ```
 
-### 15.3 Enforcement decision
-
-`has_enforceable_drift()` is intentionally conservative.
-
-Enforceable drift includes:
-
-- packages that were removed from the current host but existed in the baseline,
-- baseline services that were removed or changed in meaningful non-package fields,
-- baseline users that were removed or changed,
-- baseline files that were removed or changed.
-
-Not enforceable:
-
-- newly installed packages,
-- package version changes alone,
-- newly enabled services,
-- newly added users,
-- newly added managed files.
-
-This keeps `--enforce` focused on restoring baseline state rather than deleting unknown current state or downgrading packages.
-
-### 15.4 Notifications
+### 15.3 Notifications
 
 `diff.py` also supports webhooks and email notifications:
 
@@ -1131,8 +1104,6 @@ This is intended to answer “what did Enroll collect and why?”
 - `enroll validate` exposes the checks directly to users.
 - `manifest.manifest()` validates before rendering Ansible output.
 - `diff.compare_harvests()` validates both input bundles before comparing them, using `no_schema=True` so older harvests can still be inspected while artifact safety checks remain active.
-
-`diff --enforce` renders the old harvest through `manifest.manifest()`, so enforcement also passes through manifest-time validation before a local apply tool is invoked.
 
 It returns a `ValidationResult` with `errors`, `warnings`, `ok()`, `to_dict()`, and `to_text()`.
 

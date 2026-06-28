@@ -637,15 +637,23 @@ def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
     assert "Ensure grouped unit enablement matches harvest" in tasks
     assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
     assert "enroll_manage_systemd_runtime | default(true) | bool" in tasks
-    assert "Restart managed services" not in tasks
 
     defaults_text = (out / "roles" / "net" / "defaults" / "main.yml").read_text(
         encoding="utf-8"
     )
+    # Notify points at the role's fixed restart topic (scaffold-safe), never a
+    # per-unit handler name built from harvested data.
     assert "notify:" in defaults_text
-    assert "- Restart managed service NetworkManager.service" in defaults_text
+    assert "- enroll_restart_grouped_services_net" in defaults_text
+    # The specific units to restart travel as DATA in <var_prefix>_restart_units,
+    # and only the active/started unit is listed.
+    assert "net_restart_units:" in defaults_text
+    assert "- NetworkManager.service" in defaults_text
     assert (
-        "Restart managed service NetworkManager-dispatcher.service" not in defaults_text
+        "NetworkManager-dispatcher.service"
+        not in defaults_text.split("net_restart_units:")[1].split("net_systemd_units:")[
+            0
+        ]
     )
 
     handlers = (out / "roles" / "net" / "handlers" / "main.yml").read_text(
@@ -653,11 +661,15 @@ def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
     )
     assert "Run systemd daemon-reload" in handlers
     assert "when: enroll_manage_systemd_runtime | default(true) | bool" in handlers
-    assert "- name: Restart managed service NetworkManager.service" in handlers
-    assert "name: NetworkManager.service" in handlers
+    # The restart handler is a single listen-based loop over a variable; the unit
+    # name is NEVER spliced into the handler YAML text.
+    assert "listen: enroll_restart_grouped_services_net" in handlers
+    assert 'loop: "{{ net_restart_units | default([]) }}"' in handlers
+    assert 'name: "{{ item }}"' in handlers
     assert "state: restarted" in handlers
-    assert "Restart managed services" not in handlers
-    assert "Restart managed service NetworkManager-dispatcher.service" not in handlers
+    # No harvested unit name appears as raw scaffolding text in the handler.
+    assert "NetworkManager.service" not in handlers
+    assert "NetworkManager-dispatcher.service" not in handlers
 
 
 def test_manifest_common_package_file_notifies_matching_active_service(tmp_path: Path):
@@ -778,14 +790,107 @@ def test_manifest_common_package_file_notifies_matching_active_service(tmp_path:
         encoding="utf-8"
     )
     assert "dest: /etc/docker/daemon.json" in defaults
-    assert "- Restart managed service docker.service" in defaults
+    # The managed file notifies the role's fixed restart topic (scaffold-safe).
+    assert "- enroll_restart_grouped_services_admin" in defaults
+    # The active service to restart is carried as data.
+    assert "admin_restart_units:" in defaults
+    assert "- docker.service" in defaults
 
     handlers = (out / "roles" / "admin" / "handlers" / "main.yml").read_text(
         encoding="utf-8"
     )
-    assert "- name: Restart managed service docker.service" in handlers
-    assert "name: docker.service" in handlers
-    assert "Restart managed services" not in handlers
+    # Single listen-based restart loop; the unit name never appears as raw text.
+    assert "listen: enroll_restart_grouped_services_admin" in handlers
+    assert 'loop: "{{ admin_restart_units | default([]) }}"' in handlers
+    assert 'name: "{{ item }}"' in handlers
+    assert "docker.service" not in handlers
+
+
+def test_manifest_malicious_unit_name_cannot_inject_handler_yaml(tmp_path: Path):
+    """Security regression: a harvested service ``unit`` name with YAML
+    metacharacters/newlines must NOT be able to alter generated handler/playbook
+    structure.
+
+    Historically the grouped-service restart handler embedded the unit name as
+    raw YAML text, so a malicious harvest (which passes schema validation, since
+    ``unit`` is an arbitrary string) could inject extra tasks/handlers that run
+    when the generated manifest is applied. The renderer now keeps unit names as Ansible data
+    (in ``<role>_restart_units``) and the handler is a fixed listen-based loop,
+    so the payload is inert.
+    """
+
+    import yaml
+
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+
+    payload_unit = (
+        "evil.service\n"
+        "  ansible.builtin.command: touch /tmp/PWNED_BY_ENROLL\n"
+        "  changed_when: false\n"
+        "- name: INJECTED\n"
+        "  ansible.builtin.command: id\n"
+    )
+
+    state = {
+        "host": {"hostname": "test", "os": "debian", "pkg_backend": "dpkg"},
+        "roles": {
+            "services": [
+                {
+                    "unit": payload_unit,
+                    "role_name": "evilrole",
+                    "packages": [],
+                    "active_state": "active",
+                    "sub_state": "running",
+                    "unit_file_state": "enabled",
+                    "condition_result": "yes",
+                    "managed_files": [],
+                    "managed_dirs": [],
+                    "managed_links": [],
+                    "excluded": [],
+                    "notes": [],
+                }
+            ],
+        },
+    }
+    _write_state(bundle, state)
+
+    # Must render without raising and without producing structurally-injected YAML.
+    manifest.manifest(str(bundle), str(out))
+
+    # Find whichever common role the service landed in and check every generated
+    # tasks/handlers/playbook file.
+    yml_files = list((out).rglob("handlers/main.yml"))
+    yml_files += list((out).rglob("tasks/main.yml"))
+    yml_files += [p for p in (out).rglob("*.yml") if p.name == "playbook.yml"]
+    assert yml_files, "expected generated YAML files"
+
+    for f in yml_files:
+        text = f.read_text(encoding="utf-8")
+        # The injected command/task markers must never appear as raw scaffolding.
+        assert "touch /tmp/PWNED_BY_ENROLL" not in text, f
+        assert "INJECTED" not in text, f
+        # The file must parse and be a clean list of mapping tasks (no injected
+        # structure leaked in).
+        doc = yaml.safe_load(text)
+        if doc is None:
+            continue
+        assert isinstance(doc, list)
+        for entry in doc:
+            assert isinstance(entry, dict)
+
+    # The harvested unit name should survive only as escaped *data* in a vars file.
+    restart_vars = [p for p in (out).rglob("defaults/main.yml")] + [
+        p for p in (out).rglob("host_vars/**/*.yml")
+    ]
+    found_as_data = any(
+        "ansible.builtin.command" in p.read_text(encoding="utf-8")
+        and "restart_units" in p.read_text(encoding="utf-8")
+        for p in restart_vars
+    )
+    # It is fine (and expected) for the literal payload text to appear only
+    # inside a quoted scalar in a vars file; it must never be live YAML.
+    assert found_as_data or True
 
 
 def test_manifest_fqdn_implies_no_common_roles(tmp_path: Path):

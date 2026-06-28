@@ -12,8 +12,8 @@ In particular:
 
 * If Enroll is run as root, the root user is assumed to control and understand the command line, environment, configuration file, and output location being used.
 * If an `enroll.ini` configuration file is loaded, its location and contents are assumed to be owned, selected, and understood by the operator.
-* The operator is expected to understand the implications of options such as `--dangerous`, `--assume-safe-path`, `--sops`, `--enforce`, `--remote-host`, and `--remote-ssh-config`.
-* Harvest bundles used for `manifest`, `diff`, or `diff --enforce` are assumed to come from a trusted source unless the operator is deliberately inspecting untrusted input without applying it.
+* The operator is expected to understand the implications of options such as `--dangerous`, `--assume-safe-path`, `--sops`, `--remote-host`, and `--remote-ssh-config`.
+* Harvest bundles used for `manifest` or `diff` are assumed to come from a trusted source unless the operator is deliberately inspecting untrusted input without applying it.
 * Configuration-management tools invoked by Enroll, such as Ansible, SOPS, SSH, `sudo`, Docker, Podman, Flatpak, Snap, package managers, and system utilities, are assumed to be the trusted tools the operator intended to use.
 
 ## What is in scope
@@ -44,22 +44,21 @@ The following are generally out of scope and should not be reported as Enroll vu
 * A root user loading an `enroll.ini` file whose contents intentionally request dangerous behavior.
 * A root user passing `--dangerous` and then observing that Enroll may collect sensitive information.
 * A root user passing `--assume-safe-path` and then observing that Enroll does not prompt about `PATH` safety.
-* A root user enforcing a malicious or manually edited harvest bundle with `diff --enforce`.
 * A user applying generated Ansible manifests from an untrusted harvest.
 * A user configuring a webhook, email target, SSH proxy command, SOPS binary, package manager, or configuration-management tool that they do not trust.
 * A compromised system where an attacker already controls root-owned files, root’s shell, root’s configuration, or the privileged tools Enroll invokes.
 * Reports that amount to “if root runs this tool with malicious options, root can make the system do dangerous things.”
-* Enroll harvesting a file that has a *commented out* secret even with `--dangerous` disabled (it ignores comments so as to not be totally useless when it comes to harvesting config files). It is still the responsibility of the user to use `--sops` or appropriate at-rest encryption if in the slightest doubt about what might get harvested.
+* Enroll harvesting a file that merely *mentions* a credential-related word in a comment with no assigned value (for example a commented-out `# token` hint in a stock config). Enroll tolerates value-less keyword mentions in comments so it is not useless for harvesting ordinary configuration files. However, a commented-out credential *value* — a populated `key = value` assignment, a URI with embedded credentials, an `Authorization` header, or private-key material — is treated as sensitive even inside a comment, because a "commented out" secret is very often a real secret that was merely disabled. Such a file is refused in default safe mode and requires `--dangerous` (ideally with `--sops`) to collect. It remains the responsibility of the user to use `--sops` or appropriate at-rest encryption if in the slightest doubt about what might get harvested.
 
 Enroll is a tool for administrators, not a sandbox for hostile local users. It cannot make unsafe local trust decisions safe if the operator’s own execution environment is already attacker-controlled.
 
-## Trusted harvests and enforcement
+## Trusted harvests
 
 Harvest bundles should be treated as sensitive and trusted administrative artifacts.
 
 A harvest may contain hostnames, usernames, package lists, service state, filesystem metadata, configuration files, firewall snapshots, container image references, Flatpak/Snap state, and other operational details. In `--dangerous` mode it may contain substantially more sensitive material.
 
-Before running `manifest`, `diff`, or especially `diff --enforce`, the operator should be confident that the harvest bundle came from a trusted source and has not been tampered with.
+Before running `manifest` or `diff`, or applying a generated manifest, the operator should be confident that the harvest bundle came from a trusted source and has not been tampered with.
 
 Enroll validates harvest structure and artifact safety. Validation can detect many unsafe filesystem constructs, such as path traversal, missing artifacts, symlinks, hardlinks, and schema mismatches. Validation does not and cannot prove that the desired state represented by a harvest is safe to apply.
 
@@ -91,7 +90,6 @@ Less useful reports, and normally out of scope, include:
 * “Root can pass `--dangerous` and collect dangerous data.”
 * “Root can pass `--assume-safe-path` and bypass the root `PATH` warning.”
 * “Root can point Enroll at a malicious config file.”
-* “Root can enforce a malicious harvest bundle.”
 * “A malicious local user can compromise Enroll after already controlling root’s environment or binaries.”
 
 Reports about concrete bypasses of Enroll's hardening are welcomed (see https://enroll.sh/security.html), but the project does not treat intentional administrator-controlled execution as a vulnerability.
