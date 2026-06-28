@@ -6,10 +6,6 @@
  * BREAKING CHANGE: Don't allow reading `.enroll.ini` in the CWD. Use only the ENROLL_CONFIG env var, an explicit `--config` path or else the XDG default location (or `~/.config/enroll/enroll.ini` if `XDG_CONFIG_HOME` is not set).
  * Detect active sysctl parameters and write them to a `/etc/sysctl.d/99-enroll.conf` file
  * Use `no_log` on systemd unit interrogations to suppress potential sensitive output when applying Ansible
- * Support manifesting Puppet code, as well as Ansible!
- * Support manifesting Salt code, as well as Ansible and Puppet!
- * Take advantage of Jinjaturtle 0.5.5 if it's present, to render .erb templates for Puppet (as well as j2 for Ansible and Salt)
- * A lot of under-the-bonnet refactoring to make it easier to extend to cover other config managers (that don't suck) in future.
  * Support for detecting Docker and Podman images and enforcing their presence (by SHA256 hash).
  * Add support for detecting Flatpaks and Snaps.
  * Stricter validation of harvests to ensure that they meet the schema and don't contain unsafe artifacts (e.g symlinks pointing outside the artifact tree)
