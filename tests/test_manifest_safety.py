@@ -9,6 +9,7 @@ from enroll.manifest_safety import (
     ArtifactSafetyError,
     ManifestOutputError,
     copy_safe_artifact_file,
+    freeze_directory_bundle,
     iter_safe_artifact_files,
     prepare_manifest_output_dir,
     safe_artifact_file,
@@ -124,3 +125,91 @@ def test_iter_safe_artifact_files_rejects_symlink_subdir(tmp_path: Path):
 
     with pytest.raises(ArtifactSafetyError, match="directory is a symlink"):
         list(iter_safe_artifact_files(bundle, "role"))
+
+
+def _write_bundle(tmp_path: Path) -> Path:
+    bundle = tmp_path / "bundle"
+    art = bundle / "artifacts" / "app" / "etc" / "app"
+    art.mkdir(parents=True)
+    (art / "app.conf").write_text("original-content\n", encoding="utf-8")
+    (bundle / "state.json").write_text("{}\n", encoding="utf-8")
+    return bundle
+
+
+def test_freeze_directory_bundle_copies_content(tmp_path: Path):
+    bundle = _write_bundle(tmp_path)
+    frozen_dir, td = freeze_directory_bundle(bundle)
+    try:
+        frozen = Path(frozen_dir)
+        assert frozen != bundle
+        assert (frozen / "state.json").read_text(encoding="utf-8") == "{}\n"
+        assert (frozen / "artifacts" / "app" / "etc" / "app" / "app.conf").read_text(
+            encoding="utf-8"
+        ) == "original-content\n"
+        # The frozen copy is a private directory.
+        mode = (Path(frozen_dir)).stat().st_mode & 0o777
+        assert mode == 0o700
+    finally:
+        td.cleanup()
+
+
+def test_freeze_directory_bundle_is_immutable_after_source_swap(tmp_path: Path):
+    """The core TOCTOU regression: mutating the source after freezing must not
+    change what a consumer reads, and must not let a post-freeze symlink redirect
+    reads to a secret."""
+    bundle = _write_bundle(tmp_path)
+    art_file = bundle / "artifacts" / "app" / "etc" / "app" / "app.conf"
+
+    frozen_dir, td = freeze_directory_bundle(bundle)
+    try:
+        secret = tmp_path / "secret"
+        secret.write_text("TOP-SECRET\n", encoding="utf-8")
+
+        # Attacker swaps the validated regular file for a symlink to a secret and
+        # also rewrites another path's content. None of this may affect the frozen
+        # copy the consumer actually uses.
+        art_file.unlink()
+        art_file.symlink_to(secret)
+
+        frozen_file = (
+            Path(frozen_dir) / "artifacts" / "app" / "etc" / "app" / "app.conf"
+        )
+        assert not frozen_file.is_symlink()
+        assert frozen_file.read_text(encoding="utf-8") == "original-content\n"
+        assert "TOP-SECRET" not in frozen_file.read_text(encoding="utf-8")
+    finally:
+        td.cleanup()
+
+
+def test_freeze_directory_bundle_rejects_symlinked_file(tmp_path: Path):
+    bundle = _write_bundle(tmp_path)
+    secret = tmp_path / "secret"
+    secret.write_text("secret\n", encoding="utf-8")
+    # A bundle that already contains a symlinked artifact at freeze time is
+    # rejected outright rather than silently following it.
+    link = bundle / "artifacts" / "app" / "etc" / "app" / "link.conf"
+    link.symlink_to(secret)
+    with pytest.raises(ArtifactSafetyError, match="symlink"):
+        freeze_directory_bundle(bundle)
+
+
+def test_freeze_directory_bundle_rejects_symlinked_subdir(tmp_path: Path):
+    bundle = _write_bundle(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "x.conf").write_text("x\n", encoding="utf-8")
+    (bundle / "artifacts" / "app" / "linkdir").symlink_to(
+        outside, target_is_directory=True
+    )
+    with pytest.raises(ArtifactSafetyError, match="symlink"):
+        freeze_directory_bundle(bundle)
+
+
+def test_freeze_directory_bundle_rejects_hardlinked_file(tmp_path: Path):
+    bundle = _write_bundle(tmp_path)
+    secret = tmp_path / "secret"
+    secret.write_text("secret\n", encoding="utf-8")
+    hard = bundle / "artifacts" / "app" / "etc" / "app" / "hard.conf"
+    os.link(secret, hard)
+    with pytest.raises(ArtifactSafetyError, match="hardlink"):
+        freeze_directory_bundle(bundle)

@@ -28,6 +28,7 @@ from .state import (
 )
 from .pathfilter import PathFilter
 from .sopsutil import decrypt_file_binary_to, require_sops_cmd
+from .manifest_safety import freeze_directory_bundle
 
 
 def _validate_diff_bundle(label: str, bundle_dir: Path) -> None:
@@ -145,7 +146,9 @@ class BundleRef:
         return state_path(self.dir)
 
 
-def _bundle_from_input(path: str, *, sops_mode: bool) -> BundleRef:
+def _bundle_from_input(
+    path: str, *, sops_mode: bool, freeze: bool = False
+) -> BundleRef:
     """Resolve a user-supplied path to a harvest bundle directory.
 
     Accepts:
@@ -153,6 +156,14 @@ def _bundle_from_input(path: str, *, sops_mode: bool) -> BundleRef:
       - a path to state.json inside a bundle directory
       - (sops mode or .sops) a SOPS-encrypted tar.gz bundle
       - a plain tar.gz/tgz bundle
+
+    When ``freeze`` is True, a plain *directory* input is copied into a private
+    0700 temp directory (no-follow, regular-files-only) before being returned, so
+    a later consumer cannot be raced by an unprivileged owner mutating the source
+    directory after validation. Tar/SOPS inputs are always extracted into a
+    private temp directory and so are inherently frozen. ``freeze`` is left False
+    for purely diagnostic callers (e.g. ``validate``) that should report on the
+    exact directory the operator named rather than on a copy of it.
     """
 
     p = Path(path).expanduser()
@@ -162,6 +173,9 @@ def _bundle_from_input(path: str, *, sops_mode: bool) -> BundleRef:
         p = p.parent
 
     if p.is_dir():
+        if freeze:
+            frozen_dir, td_frozen = freeze_directory_bundle(p, label="harvest bundle")
+            return BundleRef(dir=Path(frozen_dir), tempdir=td_frozen)
         return BundleRef(dir=p)
 
     if not p.exists():
@@ -384,8 +398,8 @@ def compare_harvests(
     Returns (report, has_changes).
     """
     with ExitStack() as stack:
-        old_b = _bundle_from_input(old_path, sops_mode=sops_mode)
-        new_b = _bundle_from_input(new_path, sops_mode=sops_mode)
+        old_b = _bundle_from_input(old_path, sops_mode=sops_mode, freeze=True)
+        new_b = _bundle_from_input(new_path, sops_mode=sops_mode, freeze=True)
         if old_b.tempdir:
             stack.callback(old_b.tempdir.cleanup)
         if new_b.tempdir:

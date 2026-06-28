@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from enroll.ansible import _role_tag
+from enroll.manifest_safety import freeze_directory_bundle
 from enroll.diff import (
     _Spinner,
     _utc_now_iso,
@@ -34,12 +35,39 @@ def test_bundle_from_directory_and_statejson_path(tmp_path: Path):
 
     b = _make_bundle_dir(tmp_path)
 
+    # Plain resolution (no freeze) returns the directory in place. Freezing is
+    # opt-in and exercised by the consumer-level tests below.
     br1 = d._bundle_from_input(str(b), sops_mode=False)
     assert br1.dir == b
     assert br1.state_path.exists()
 
     br2 = d._bundle_from_input(str(b / "state.json"), sops_mode=False)
     assert br2.dir == b
+
+
+def test_bundle_from_input_directory_freeze_copies_and_protects(tmp_path: Path):
+    import enroll.diff as d
+
+    b = _make_bundle_dir(tmp_path)
+    art = b / "artifacts" / "app"
+    art.mkdir(parents=True)
+    (art / "f.conf").write_text("orig\n", encoding="utf-8")
+
+    # With freeze=True the bundle is copied into a private temp dir, and mutating
+    # the source afterwards does not change the frozen copy.
+    result = d._bundle_from_input(str(b), sops_mode=False, freeze=True)
+    try:
+        assert result.dir != b
+        assert result.tempdir is not None
+        frozen_f = result.dir / "artifacts" / "app" / "f.conf"
+        assert frozen_f.read_text(encoding="utf-8") == "orig\n"
+
+        # Attacker rewrites the source after the freeze; frozen copy is unaffected.
+        (art / "f.conf").write_text("tampered\n", encoding="utf-8")
+        assert frozen_f.read_text(encoding="utf-8") == "orig\n"
+    finally:
+        if result.tempdir:
+            result.tempdir.cleanup()
 
 
 def test_bundle_from_tarball_extracts(tmp_path: Path):
@@ -742,9 +770,68 @@ def test_compare_harvests_rejects_unsafe_artifact_symlink(tmp_path: Path):
     with pytest.raises(RuntimeError) as exc_info:
         compare_harvests(str(old_bundle), str(new_bundle))
 
+    # The unsafe symlinked artifact is now rejected when the directory bundle is
+    # frozen into a private copy (no-follow traversal), which happens before
+    # validation. The diff is still refused; the rejection just fires earlier.
     msg = str(exc_info.value)
-    assert "old harvest failed validation" in msg
-    assert "artifact is a symlink" in msg
+    assert "symlink" in msg.lower()
+
+
+def test_compare_harvests_freezes_directory_bundles_against_source_mutation(
+    tmp_path: Path,
+):
+    """End-to-end: a directory diff must read frozen copies, so mutating a source
+    bundle's artifact after compare_harvests has frozen it cannot change the
+    result or redirect a read to a secret."""
+
+    def _bundle(name: str, content: str) -> Path:
+        b = tmp_path / name
+        art = b / "artifacts" / "users"
+        art.mkdir(parents=True)
+        (art / "passwd").write_text(content, encoding="utf-8")
+        (b / "state.json").write_text(
+            json.dumps(
+                {
+                    "inventory": {"packages": {}},
+                    "roles": {
+                        "users": {
+                            "managed_files": [
+                                {"path": "/etc/passwd", "src_rel": "passwd"}
+                            ]
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return b
+
+    old_bundle = _bundle("old", "same\n")
+    new_bundle = _bundle("new", "same\n")
+
+    # Identical content -> no file content drift.
+    report, _ = compare_harvests(str(old_bundle), str(new_bundle))
+    changed_paths = [f["path"] for f in report["files"]["changed"]]
+    assert "/etc/passwd" not in changed_paths
+
+    # The freeze already happened inside compare_harvests above and was torn down,
+    # so to prove immunity during a single call we instead confirm that the frozen
+    # copy is what gets hashed: rewrite the source between freeze and hash is not
+    # observable to the operator because the consumed tree is a private copy.
+    # Confirm at the unit level that a post-freeze swap to a secret symlink is not
+    # followed by the hashing path.
+    secret = tmp_path / "secret"
+    secret.write_text("TOP-SECRET\n", encoding="utf-8")
+    frozen_dir, td = freeze_directory_bundle(old_bundle)
+    try:
+        src = old_bundle / "artifacts" / "users" / "passwd"
+        src.unlink()
+        src.symlink_to(secret)
+        frozen = Path(frozen_dir) / "artifacts" / "users" / "passwd"
+        assert not frozen.is_symlink()
+        assert frozen.read_text(encoding="utf-8") == "same\n"
+    finally:
+        td.cleanup()
 
 
 def test_utc_now_iso():

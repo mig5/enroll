@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from .ansible import manifest_from_bundle_dir as manifest_ansible_from_bundle_dir
 from .harvest_safety import ensure_safe_output_parent
-from .manifest_safety import validate_site_fqdn
+from .manifest_safety import freeze_directory_bundle, validate_site_fqdn
 from .remote import _safe_extract_tar
 from .sopsutil import (
     decrypt_file_binary_to,
@@ -34,7 +34,15 @@ def _prepare_bundle_dir(
     p = Path(bundle).expanduser()
 
     if p.is_dir():
-        return str(p), None
+        # A directory bundle may still be writable by an unprivileged user (e.g.
+        # root running `manifest` against /tmp/some-harvest). Validation is a
+        # point-in-time check, but the renderer/JinjaTurtle re-open artifacts by
+        # path afterwards, so a mutable source could be raced. Freeze the bundle
+        # into a private 0700 temp copy (no-follow, regular-files-only) and
+        # consume that immutable copy instead. Tar/SOPS inputs already get an
+        # equivalent private extraction below.
+        frozen_dir, td_frozen = freeze_directory_bundle(p, label="harvest bundle")
+        return frozen_dir, td_frozen
 
     if not sops_mode:
         raise RuntimeError(f"Harvest path is not a directory: {p}")

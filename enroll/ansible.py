@@ -1275,21 +1275,6 @@ def _render_role_handlers(
     return "---\n" + (body.rstrip() + "\n" if body else "")
 
 
-# --- Ansible variable builders ---
-def _normalise_flatpak_item(
-    item: Any,
-    *,
-    method: str,
-    user: Optional[str] = None,
-    home: Optional[str] = None,
-) -> Dict[str, Any]:
-    return CMModule.normalise_flatpak_item(item, method=method, user=user, home=home)
-
-
-def _normalise_flatpak_remote(item: Any) -> Dict[str, Any]:
-    return CMModule.normalise_flatpak_remote(item)
-
-
 def _normalise_snap_item(item: Any) -> Dict[str, Any]:
     out = CMModule.normalise_snap_item(item)
 

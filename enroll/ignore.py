@@ -191,7 +191,6 @@ class IgnorePolicy:
     deny_globs: Optional[list[str]] = None
     allow_binary_globs: Optional[list[str]] = None
     max_file_bytes: int = 256_000
-    sample_bytes: int = 64_000
     # If True, be much less conservative about collecting potentially
     # sensitive files. This disables deny globs (e.g. /etc/shadow,
     # /etc/ssl/private/*) and skips heuristic content scanning.
