@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import secrets
 import shutil
 import subprocess  # nosec
 import tempfile
@@ -206,6 +208,61 @@ def jinjify_artifact(
     )
 
 
+def _resolve_var_prefix_salt() -> str:
+    """Return the salt mixed into generated JinjaTurtle variable prefixes.
+
+    Rationale and the security/reproducibility trade-off
+    ----------------------------------------------------
+    The generated variable namespace is ``<role>_jt_<salt>_<src_rel>``. The salt
+    exists as *defence in depth* for one specific attack: a malicious harvested
+    config (e.g. a JSON file) that injects a key referencing an Enroll-declared
+    variable, e.g. ``{{ <role>_jt_<src_rel>_port }}``. To pre-compute that name at
+    harvest-authoring time the attacker must know the salt.
+
+    This is deliberately *not* random-per-run by default. JinjaTurtle already
+    closes the injection directly (it escapes verbatim keys and an independent
+    output-safety gate rejects any Jinja in a JSON key), so the salt is a belt to
+    that suspenders. A random-per-run salt would change every generated variable
+    name on every ``manifest`` run, producing spurious churn in any
+    version-controlled manifest tree and in tools that diff regenerated output.
+    Note this never affected ``enroll diff``, which compares *harvest bundles*
+    (state.json + artifact content hashes) and never reads generated variable
+    names -- but it would have churned a git-tracked Ansible manifest.
+
+    Default behaviour is therefore a fixed, reproducible namespace:
+
+    * ``ENROLL_JINJATURTLE_VAR_SALT=<value>`` -- operator-pinned salt. Use this to
+      make the namespace unpredictable to a config author while staying stable and
+      reproducible across runs/machines (recommended when generating manifests
+      from untrusted harvests into a tracked repo). ``random`` is special-cased to
+      mean "fresh per process".
+    * unset -- a fixed default salt. Output is fully reproducible; security relies
+      on JinjaTurtle's escaping + key gate, which fully close the issue.
+    """
+
+    override = os.environ.get("ENROLL_JINJATURTLE_VAR_SALT")
+    if override is None or override == "":
+        # Stable default: reproducible output, no manifest churn. The vulnerability
+        # is already closed in JinjaTurtle; this fixed namespace is sufficient.
+        return "en"
+    if override == "random":
+        # Opt-in: unpredictable per process (maximally defensive, churns output).
+        return secrets.token_hex(4)
+    return re.sub(r"[^A-Za-z0-9]+", "", override)[:16] or "en"
+
+
+# Cache holder; resolved lazily on first use so an operator (or test) can set
+# ENROLL_JINJATURTLE_VAR_SALT before the first manifest call and have it honoured.
+_VAR_PREFIX_SALT: Optional[str] = None
+
+
+def _var_prefix_salt() -> str:
+    global _VAR_PREFIX_SALT
+    if _VAR_PREFIX_SALT is None:
+        _VAR_PREFIX_SALT = _resolve_var_prefix_salt()
+    return _VAR_PREFIX_SALT
+
+
 def managed_file_var_prefix(role_name: str, src_rel: str) -> str:
     """Return a JinjaTurtle-safe variable prefix for one managed file.
 
@@ -215,9 +272,14 @@ def managed_file_var_prefix(role_name: str, src_rel: str) -> str:
     Always include a ``jt`` namespace and the relative artifact path so harvested
     config keys cannot produce Enroll-owned variables such as
     ``<role>_managed_files``.
+
+    A salt segment is mixed in (see ``_resolve_var_prefix_salt``). It is a fixed,
+    reproducible value by default and can be pinned or randomised via
+    ``ENROLL_JINJATURTLE_VAR_SALT`` as defence in depth against an injected key
+    that references an Enroll-declared variable.
     """
 
-    raw = f"{role_name}_jt_{src_rel}"
+    raw = f"{role_name}_jt_{_var_prefix_salt()}_{src_rel}"
     safe = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_").lower()
     safe = re.sub(r"_+", "_", safe)
     if not safe:
