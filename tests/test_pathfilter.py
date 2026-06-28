@@ -338,3 +338,37 @@ def test_path_filter_with_include_patterns():
     patterns = pf_filter.iter_include_patterns()
     assert len(patterns) == 1
     assert patterns[0].kind == "glob"
+
+
+def test_expand_includes_skips_file_through_symlinked_parent(tmp_path: Path):
+    from enroll.pathfilter import compile_path_pattern, expand_includes
+
+    real = tmp_path / "real"
+    (real / "child").mkdir(parents=True)
+    target = real / "child" / "secret.conf"
+    target.write_text("secret", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    paths, _notes = expand_includes(
+        [compile_path_pattern(str(link / "child" / "secret.conf"))], max_files=10
+    )
+
+    assert paths == []
+
+
+def test_expand_includes_skips_directory_through_symlinked_parent(tmp_path: Path):
+    from enroll.pathfilter import compile_path_pattern, expand_includes
+
+    real = tmp_path / "real"
+    (real / "child").mkdir(parents=True)
+    target = real / "child" / "secret.conf"
+    target.write_text("secret", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    paths, _notes = expand_includes(
+        [compile_path_pattern(str(link / "child"))], max_files=10
+    )
+
+    assert paths == []

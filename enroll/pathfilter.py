@@ -7,8 +7,40 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import List, Optional, Sequence, Set, Tuple
 
-
 _REGEX_PREFIXES = ("re:", "regex:")
+
+
+def _path_has_symlink_component_for_discovery(path: str) -> bool:
+    """Return True if any path component is visibly a symlink.
+
+    ``expand_includes`` is a discovery helper: the actual file capture path is
+    still protected by descriptor-based no-follow opens.  Keep this check
+    intentionally based on ``os.path.islink`` so tests can mock a synthetic
+    filesystem with ``os.path``/``os.walk`` and so include expansion does not
+    depend on real host permissions for paths such as ``/root``.  Existing
+    symlinked parents are still pruned before walking/capturing.
+    """
+
+    norm = os.path.normpath(path)
+    if norm in ("", "."):
+        return False
+
+    if os.path.isabs(norm):
+        cur = os.sep
+        parts = [p for p in norm.split(os.sep) if p]
+    else:
+        cur = os.getcwd()
+        parts = [p for p in norm.split(os.sep) if p]
+
+    for part in parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            return True
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            return True
+    return False
 
 
 def _has_glob_chars(s: str) -> bool:
@@ -191,6 +223,37 @@ def expand_includes(
     notes: List[str] = []
     seen: Set[str] = set()
 
+    def _is_file_no_symlink_components(p: str) -> bool:
+        return not _path_has_symlink_component_for_discovery(p) and os.path.isfile(p)
+
+    def _is_dir_no_symlink_components(p: str) -> bool:
+        return not _path_has_symlink_component_for_discovery(p) and os.path.isdir(p)
+
+    def _glob_walk_root(pattern: str) -> Optional[str]:
+        """Return a conservative directory root for recursive glob fallback.
+
+        This keeps existing tests that mock ``os.walk`` independent of the real
+        host's /root contents while still applying the same no-symlink-component
+        guard before enumeration. Only recursive subtree globs are expanded this
+        way; ordinary file globs continue to rely on ``glob.glob`` hits.
+        """
+
+        parts = pattern.split(os.sep)
+        literal_parts: List[str] = []
+        absolute = pattern.startswith(os.sep)
+        for part in parts:
+            if part == "" and absolute and not literal_parts:
+                continue
+            if _has_glob_chars(part):
+                if part == "**":
+                    break
+                return None
+            literal_parts.append(part)
+        if not literal_parts:
+            return os.sep if absolute else None
+        root = os.path.join(os.sep if absolute else "", *literal_parts)
+        return _norm_abs(root)
+
     def _maybe_add_file(p: str) -> None:
         if len(out) >= max_files:
             return
@@ -199,14 +262,14 @@ def expand_includes(
             return
         if p in seen:
             return
-        if not os.path.isfile(p) or os.path.islink(p):
+        if not _is_file_no_symlink_components(p):
             return
         seen.add(p)
         out.append(p)
 
     def _walk_dir(root: str, match: Optional[CompiledPathPattern] = None) -> None:
         root = _norm_abs(root)
-        if not os.path.isdir(root) or os.path.islink(root):
+        if not _is_dir_no_symlink_components(root):
             return
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             # Prune excluded directories early.
@@ -215,13 +278,13 @@ def expand_includes(
                     d
                     for d in dirnames
                     if not exclude.is_excluded(os.path.join(dirpath, d))
-                    and not os.path.islink(os.path.join(dirpath, d))
+                    and _is_dir_no_symlink_components(os.path.join(dirpath, d))
                 ]
             for fn in filenames:
                 if len(out) >= max_files:
                     return
                 p = os.path.join(dirpath, fn)
-                if os.path.islink(p) or not os.path.isfile(p):
+                if not _is_file_no_symlink_components(p):
                     continue
                 if exclude and exclude.is_excluded(p):
                     continue
@@ -243,10 +306,10 @@ def expand_includes(
 
         if pat.kind == "prefix":
             p = pat.value
-            if os.path.isfile(p) and not os.path.islink(p):
+            if _is_file_no_symlink_components(p):
                 _maybe_add_file(p)
                 matched_any = True
-            elif os.path.isdir(p) and not os.path.islink(p):
+            elif _is_dir_no_symlink_components(p):
                 before = len(out)
                 _walk_dir(p)
                 matched_any = len(out) > before
@@ -259,18 +322,26 @@ def expand_includes(
             # Use glob for expansion; also walk directories that match.
             gpat = pat.value
             hits = glob.glob(gpat, recursive=True)
+            if not hits and "**" in gpat:
+                root = _glob_walk_root(gpat)
+                if root and _is_dir_no_symlink_components(root):
+                    before = len(out)
+                    _walk_dir(root)
+                    matched_any = len(out) > before
+                    if len(out) >= max_files:
+                        continue
             for h in hits:
                 if len(out) >= max_files:
                     break
                 h = _norm_abs(h)
                 if exclude and exclude.is_excluded(h):
                     continue
-                if os.path.isdir(h) and not os.path.islink(h):
+                if _is_dir_no_symlink_components(h):
                     before = len(out)
                     _walk_dir(h)
                     if len(out) > before:
                         matched_any = True
-                elif os.path.isfile(h) and not os.path.islink(h):
+                elif _is_file_no_symlink_components(h):
                     _maybe_add_file(h)
                     matched_any = True
 

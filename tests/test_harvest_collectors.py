@@ -444,3 +444,25 @@ def test_extra_paths_collector_records_include_path_that_is_symlink(tmp_path):
         (str(link_root), str(real_root), "user_include_link")
     ]
     assert result.managed_files == []
+
+
+def test_extra_paths_collector_skips_directory_through_symlinked_parent(tmp_path):
+    real_root = tmp_path / "real"
+    child = real_root / "child"
+    child.mkdir(parents=True)
+    (child / "inside.conf").write_text("do-not-follow", encoding="utf-8")
+    link_root = tmp_path / "linked-root"
+    link_root.symlink_to(real_root, target_is_directory=True)
+
+    include_path = str(link_root / "child")
+    ctx = _context(tmp_path, include=[include_path])
+    result = ExtraPathsCollector(
+        ctx,
+        seen_by_role={},
+        already_all=set(),
+        include_paths=[include_path],
+    ).collect()
+
+    assert result.managed_dirs == []
+    assert result.managed_files == []
+    assert result.managed_links == []

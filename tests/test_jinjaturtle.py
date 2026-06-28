@@ -114,10 +114,10 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
     def fake_run_jinjaturtle(
         jt_exe: str, src_path: str, *, role_name: str, force_format=None
     ):
-        assert role_name == "foo"
+        assert role_name == "foo_jt_etc_foo_ini"
         return JinjifyResult(
-            template_text="[main]\nkey = {{ foo_key }}\n",
-            vars_text="foo_key: 1\n",
+            template_text=f"[main]\nkey = {{{{ {role_name}_key }}}}\n",
+            vars_text=f"{role_name}_key: 1\n",
         )
 
     monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
@@ -134,7 +134,7 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
 
     # Defaults should include jinjaturtle vars.
     defaults = (role_dir / "defaults" / "main.yml").read_text(encoding="utf-8")
-    assert "foo_key: 1" in defaults
+    assert "foo_jt_etc_foo_ini_key: 1" in defaults
 
 
 def test_openssh_paths_are_jinjaturtle_supported_and_forced_to_ssh() -> None:
@@ -188,14 +188,14 @@ def test_jinjify_managed_files_namespaces_multiple_templates(
 
     assert templated == {"etc/foo/a.yaml", "etc/foo/b.yaml"}
     assert calls == [
-        ("a.yaml", "foo_etc_foo_a_yaml"),
-        ("b.yaml", "foo_etc_foo_b_yaml"),
+        ("a.yaml", "foo_jt_etc_foo_a_yaml"),
+        ("b.yaml", "foo_jt_etc_foo_b_yaml"),
     ]
-    assert "foo_etc_foo_a_yaml_ignore: []" in vars_text
-    assert "foo_etc_foo_b_yaml_ignore: []" in vars_text
+    assert "foo_jt_etc_foo_a_yaml_ignore: []" in vars_text
+    assert "foo_jt_etc_foo_b_yaml_ignore: []" in vars_text
     assert (template_root / "etc" / "foo" / "a.yaml.j2").read_text(
         encoding="utf-8"
-    ) == "ignore: {{ foo_etc_foo_a_yaml_ignore }}\n"
+    ) == "ignore: {{ foo_jt_etc_foo_a_yaml_ignore }}\n"
 
 
 def test_jinjify_managed_files_rejects_templates_with_missing_defaults(
@@ -231,6 +231,80 @@ def test_jinjify_managed_files_rejects_templates_with_missing_defaults(
     assert templated == set()
     assert vars_text == ""
     assert not (template_root / "etc" / "foo" / "pdk.yaml.j2").exists()
+
+
+def test_jinjify_managed_files_always_namespaces_single_template(
+    monkeypatch, tmp_path: Path
+):
+    from enroll.jinjaturtle import jinjify_managed_files
+
+    bundle = tmp_path / "bundle"
+    template_root = tmp_path / "templates"
+    artifact = bundle / "artifacts" / "foo" / "etc" / "foo.yaml"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("managed_files: []\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_run_jinjaturtle(jt_exe, src_path, *, role_name, force_format=None):
+        calls.append(role_name)
+        return JinjifyResult(
+            template_text=f"managed_files: {{{{ {role_name}_managed_files }}}}\n",
+            vars_text=f"{role_name}_managed_files: []\n",
+        )
+
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    templated, vars_text = jinjify_managed_files(
+        bundle,
+        "foo",
+        template_root,
+        [{"path": "/etc/foo.yaml", "src_rel": "etc/foo.yaml"}],
+        jt_exe="jinjaturtle",
+        jt_enabled=True,
+        overwrite_templates=True,
+        role_name="foo",
+    )
+
+    assert templated == {"etc/foo.yaml"}
+    assert calls == ["foo_jt_etc_foo_yaml"]
+    assert "foo_jt_etc_foo_yaml_managed_files: []" in vars_text
+    assert "foo_managed_files:" not in vars_text
+
+
+def test_jinjify_managed_files_rejects_reserved_role_variable_collision(
+    monkeypatch, tmp_path: Path
+):
+    from enroll.jinjaturtle import jinjify_managed_files
+
+    bundle = tmp_path / "bundle"
+    template_root = tmp_path / "templates"
+    artifact = bundle / "artifacts" / "foo" / "etc" / "foo.yaml"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("managed_files: []\n", encoding="utf-8")
+
+    def fake_run_jinjaturtle(jt_exe, src_path, *, role_name, force_format=None):
+        return JinjifyResult(
+            template_text="managed_files: {{ foo_managed_files }}\n",
+            vars_text="foo_managed_files: []\n",
+        )
+
+    monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
+
+    templated, vars_text = jinjify_managed_files(
+        bundle,
+        "foo",
+        template_root,
+        [{"path": "/etc/foo.yaml", "src_rel": "etc/foo.yaml"}],
+        jt_exe="jinjaturtle",
+        jt_enabled=True,
+        overwrite_templates=True,
+        role_name="foo",
+    )
+
+    assert templated == set()
+    assert vars_text == ""
+    assert not (template_root / "etc" / "foo.yaml.j2").exists()
 
 
 def test_jinjify_artifact_rejects_unsafe_src_rel(monkeypatch, tmp_path: Path):

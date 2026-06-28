@@ -513,3 +513,68 @@ def test_flatpak_list_attempts_respect_supported_columns():
     assert any("--columns=application,branch" in cmd for cmd in command_strings)
     assert not any("origin" in cmd for cmd in command_strings)
     assert command_strings[-1] == "flatpak list --system"
+
+
+def test_user_flatpak_origin_symlink_is_not_read(tmp_path: Path):
+    import enroll.accounts as a
+
+    home = tmp_path / "home"
+    active = (
+        home
+        / ".local"
+        / "share"
+        / "flatpak"
+        / "app"
+        / "org.evil.App"
+        / "x86_64"
+        / "stable"
+        / "active"
+    )
+    active.mkdir(parents=True)
+    secret = tmp_path / "root-only-secret"
+    secret.write_text("ROOTSECRET\n", encoding="utf-8")
+    (active / "origin").symlink_to(secret)
+
+    apps = a.find_user_flatpaks(str(home), user="alice")
+
+    assert len(apps) == 1
+    assert apps[0].name == "org.evil.App"
+    assert apps[0].remote is None
+
+
+def test_user_flatpak_repo_config_symlink_is_not_read(tmp_path: Path):
+    import enroll.accounts as a
+
+    home = tmp_path / "home"
+    flatpak_root = home / ".local" / "share" / "flatpak"
+    (flatpak_root / "repo").mkdir(parents=True)
+    secret = tmp_path / "root-only-secret"
+    secret.write_text(
+        '[remote "ROOTSECRET"]\nurl=https://evil.example/\n', encoding="utf-8"
+    )
+    (flatpak_root / "repo" / "config").symlink_to(secret)
+
+    assert a.find_user_flatpak_remotes(str(home), user="alice") == []
+
+
+def test_user_flatpak_tree_with_symlinked_parent_is_not_walked(tmp_path: Path):
+    import enroll.accounts as a
+
+    home = tmp_path / "home"
+    real = tmp_path / "real-flatpak"
+    active = (
+        real
+        / "share"
+        / "flatpak"
+        / "app"
+        / "org.evil.App"
+        / "x86_64"
+        / "stable"
+        / "active"
+    )
+    active.mkdir(parents=True)
+    (active / "origin").write_text("evil\n", encoding="utf-8")
+    home.mkdir()
+    (home / ".local").symlink_to(real, target_is_directory=True)
+
+    assert a.find_user_flatpaks(str(home), user="alice") == []

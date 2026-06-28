@@ -126,6 +126,57 @@ def open_no_follow_path(path: str, *, write: bool = False, mode: int = 0o600) ->
         os.close(dir_fd)
 
 
+def path_has_symlink_component(path: str) -> bool:
+    """Return True if any existing component of *path* is a symlink.
+
+    This is a lightweight discovery-time companion to ``open_no_follow_path``.
+    It is intended for directory-walking code paths that must decide whether a
+    candidate root is safe to enumerate before opening individual files. Missing
+    trailing components are treated as non-symlinks; ``..`` is treated as unsafe
+    and therefore reported as a symlink-like component.
+    """
+
+    norm = os.path.normpath(path)
+    if norm in ("", "."):
+        return False
+
+    if os.path.isabs(norm):
+        cur = os.sep
+        parts = [p for p in norm.split(os.sep) if p]
+    else:
+        cur = os.getcwd()
+        parts = [p for p in norm.split(os.sep) if p]
+
+    for part in parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            return True
+        cur = os.path.join(cur, part)
+        try:
+            st = os.lstat(cur)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            # Fail closed for unreadable/racy paths used as discovery roots.
+            return True
+        if stat.S_ISLNK(st.st_mode):
+            return True
+    return False
+
+
+def is_dir_no_symlink_components(path: str) -> bool:
+    """Return True only for directories reached without symlink components."""
+
+    if path_has_symlink_component(path):
+        return False
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode)
+
+
 def stat_triplet_from_stat(st: os.stat_result) -> Tuple[str, str, str]:
     """Return (owner, group, mode) for an existing stat result."""
 

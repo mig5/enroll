@@ -3,10 +3,17 @@ from __future__ import annotations
 import configparser
 import os
 import re
+import stat
 import shutil
 import subprocess  # nosec
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
+
+from .fsutil import (
+    is_dir_no_symlink_components,
+    open_no_follow_path,
+    path_has_symlink_component,
+)
 
 
 @dataclass
@@ -161,15 +168,40 @@ def find_user_ssh_files(home: str) -> List[str]:
     return sorted(set(out))
 
 
-def _read_first_existing_text(paths: List[str]) -> Optional[str]:
+def _read_first_existing_text(
+    paths: List[str], *, max_bytes: int = 8192
+) -> Optional[str]:
+    """Read the first small regular text file without following symlinks.
+
+    Per-user Flatpak metadata lives under user-controlled home directories.
+    When Enroll is run as root, plain ``open()`` would let a user replace
+    ``active/origin`` or ``repo/config`` with a symlink to a privileged file and
+    have its contents copied into state.json.  Use the same no-symlink component
+    invariant as the normal harvester, require a regular file, and cap reads to
+    avoid device/large-file DoS.
+    """
+
     for path in paths:
+        fd: Optional[int] = None
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                value = f.read().strip()
-                if value:
-                    return value
+            fd = open_no_follow_path(path)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+                continue
+            data = os.read(fd, max_bytes + 1)
+            if len(data) > max_bytes:
+                continue
+            value = data.decode("utf-8", errors="replace").strip()
+            if value:
+                return value
         except OSError:
             continue
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
     return None
 
 
@@ -457,7 +489,7 @@ def _flatpak_remote_from_ref(
             arch,
             branch,
         )
-        if os.path.exists(ref):
+        if not path_has_symlink_component(ref) and os.path.exists(ref):
             return remote_name
     return None
 
@@ -473,11 +505,11 @@ def _parse_flatpak_deploy_origin(branch_dir: str) -> Optional[str]:
     if origin:
         return origin
 
-    metadata = candidates[1]
-    if os.path.isfile(metadata):
+    metadata = _read_first_existing_text([candidates[1]])
+    if metadata:
         parser = configparser.ConfigParser(interpolation=None)
         try:
-            parser.read(metadata, encoding="utf-8")
+            parser.read_string(metadata)
         except Exception:
             return None
         for section in ("Application", "Runtime"):
@@ -496,7 +528,7 @@ def _find_flatpaks_in_root(
     home: Optional[str] = None,
 ) -> List[FlatpakInstall]:
     apps_dir = os.path.join(flatpak_root, "app")
-    if not os.path.isdir(apps_dir):
+    if not is_dir_no_symlink_components(apps_dir):
         return []
 
     remote_names = [
@@ -513,7 +545,7 @@ def _find_flatpaks_in_root(
     seen: Set[Tuple[str, Optional[str], Optional[str], Optional[str]]] = set()
     for app_id in app_ids:
         app_path = os.path.join(apps_dir, app_id)
-        if not os.path.isdir(app_path):
+        if not is_dir_no_symlink_components(app_path):
             continue
         try:
             arches = sorted(os.listdir(app_path))
@@ -521,7 +553,7 @@ def _find_flatpaks_in_root(
             continue
         for arch in arches:
             arch_path = os.path.join(app_path, arch)
-            if not os.path.isdir(arch_path):
+            if not is_dir_no_symlink_components(arch_path):
                 continue
             try:
                 branches = sorted(os.listdir(arch_path))
@@ -529,10 +561,10 @@ def _find_flatpaks_in_root(
                 continue
             for branch in branches:
                 branch_path = os.path.join(arch_path, branch)
-                if not os.path.isdir(branch_path):
+                if not is_dir_no_symlink_components(branch_path):
                     continue
                 active_dir = os.path.join(branch_path, "active")
-                if not os.path.exists(active_dir):
+                if not is_dir_no_symlink_components(active_dir):
                     continue
                 remote = _parse_flatpak_deploy_origin(branch_path)
                 if not remote:
@@ -576,12 +608,13 @@ def find_flatpak_remotes(
     .flatpakref/.flatpakrepo URL that was used during installation.
     """
     config_path = os.path.join(flatpak_root, "repo", "config")
-    if not os.path.isfile(config_path):
+    config_text = _read_first_existing_text([config_path])
+    if not config_text:
         return []
 
     parser = configparser.ConfigParser(interpolation=None, strict=False)
     try:
-        parser.read(config_path, encoding="utf-8")
+        parser.read_string(config_text)
     except Exception:
         return []
 

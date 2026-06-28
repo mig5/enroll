@@ -16,6 +16,7 @@ from ..harvest_types import (
 )
 from ..system_paths import MAX_FILES_CAP
 from ..pathfilter import expand_includes
+from ..fsutil import is_dir_no_symlink_components, path_has_symlink_component
 from .context import HarvestCollector, HarvestContext
 
 
@@ -192,13 +193,13 @@ class ExtraPathsCollector(HarvestCollector):
                 path = pat.value
                 if os.path.islink(path):
                     self._capture_included_link(path, role_seen)
-                elif os.path.isdir(path):
+                elif is_dir_no_symlink_components(path):
                     self._walk_and_capture_dirs(path, role_seen)
             elif pat.kind == "glob":
                 for hit in glob.glob(pat.value, recursive=True):
                     if os.path.islink(hit):
                         self._capture_included_link(hit, role_seen)
-                    elif os.path.isdir(hit):
+                    elif is_dir_no_symlink_components(hit):
                         self._walk_and_capture_dirs(hit, role_seen)
 
     def _capture_included_link(self, path: str, role_seen: Set[str]) -> None:
@@ -224,7 +225,7 @@ class ExtraPathsCollector(HarvestCollector):
         root = os.path.normpath(root)
         if not root.startswith("/"):
             root = "/" + root
-        if not os.path.isdir(root) or os.path.islink(root):
+        if not is_dir_no_symlink_components(root):
             return
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             if len(self.managed_dirs) >= MAX_FILES_CAP:
@@ -238,7 +239,7 @@ class ExtraPathsCollector(HarvestCollector):
             if self.context.path_filter.is_excluded(dirpath):
                 dirnames[:] = []
                 continue
-            if os.path.islink(dirpath) or not os.path.isdir(dirpath):
+            if not is_dir_no_symlink_components(dirpath):
                 dirnames[:] = []
                 continue
 
@@ -274,6 +275,8 @@ class ExtraPathsCollector(HarvestCollector):
                     continue
                 if os.path.islink(path):
                     self._capture_included_link(path, role_seen)
+                    continue
+                if path_has_symlink_component(path):
                     continue
                 pruned.append(dirname)
             dirnames[:] = pruned

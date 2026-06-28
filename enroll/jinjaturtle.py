@@ -69,6 +69,33 @@ def _merge_mappings_overwrite(
     return merged
 
 
+_RESERVED_ROLE_VAR_SUFFIXES = {
+    "managed_files",
+    "managed_dirs",
+    "managed_links",
+    "packages",
+    "restart_units",
+    "system_flatpaks",
+    "remotes",
+    "user_flatpaks",
+    "user_flatpak_remotes",
+}
+
+
+def reserved_role_var_names(role_name: str) -> Set[str]:
+    """Return Enroll-owned variable names for a generated role.
+
+    JinjaTurtle variables come from harvested, attacker-influenceable config
+    content. They must never overwrite variables that drive Enroll's renderer
+    tasks, such as ``<role>_managed_files``.
+    """
+
+    role = re.sub(r"[^A-Za-z0-9_]+", "_", role_name.strip().lower()).strip("_")
+    if not role:
+        return set()
+    return {f"{role}_{suffix}" for suffix in _RESERVED_ROLE_VAR_SUFFIXES}
+
+
 @dataclass(frozen=True)
 class JinjifiedArtifact:
     template_rel: str
@@ -131,6 +158,7 @@ def jinjify_artifact(
     jt_enabled: bool,
     overwrite_templates: bool = True,
     role_name: Optional[str] = None,
+    reserved_context_keys: Optional[Set[str]] = None,
 ) -> Optional[JinjifiedArtifact]:
     """Best-effort conversion of one harvested artifact into a Jinja2 template."""
     if not (jt_enabled and jt_exe and can_jinjify_path(dest_path)):
@@ -155,6 +183,9 @@ def jinjify_artifact(
     template_dst = Path(template_root) / template_rel
 
     context = yaml_load_mapping(result.vars_text)
+    if reserved_context_keys and (set(context) & set(reserved_context_keys)):
+        return None
+
     missing = missing_jinja_template_vars(result.template_text, context)
     if missing:
         # If this role was generated into an existing output directory, avoid
@@ -181,10 +212,12 @@ def managed_file_var_prefix(role_name: str, src_rel: str) -> str:
     JinjaTurtle's ``--role-name`` is a variable prefix. Enroll can place many
     unrelated managed files in one generated role, so using only the role name
     can collide for common keys such as ``enabled``, ``ignore``, or ``name``.
-    Include the relative artifact path when a role templates multiple files.
+    Always include a ``jt`` namespace and the relative artifact path so harvested
+    config keys cannot produce Enroll-owned variables such as
+    ``<role>_managed_files``.
     """
 
-    raw = f"{role_name}_{src_rel}"
+    raw = f"{role_name}_jt_{src_rel}"
     safe = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_").lower()
     safe = re.sub(r"_+", "_", safe)
     if not safe:
@@ -215,14 +248,7 @@ def jinjify_managed_files(
     templated: Set[str] = set()
     vars_map: Dict[str, Any] = {}
     base_role_name = role_name or artifact_role
-    candidates = [
-        mf
-        for mf in managed_files
-        if str(mf.get("path") or "")
-        and str(mf.get("src_rel") or "")
-        and can_jinjify_path(str(mf.get("path") or ""))
-    ]
-    namespace_by_file = len(candidates) > 1
+    reserved_context_keys = reserved_role_var_names(base_role_name)
 
     for mf in managed_files:
         dest_path = str(mf.get("path") or "")
@@ -239,11 +265,8 @@ def jinjify_managed_files(
             jt_exe=jt_exe,
             jt_enabled=jt_enabled,
             overwrite_templates=overwrite_templates,
-            role_name=(
-                managed_file_var_prefix(base_role_name, src_rel)
-                if namespace_by_file
-                else base_role_name
-            ),
+            role_name=managed_file_var_prefix(base_role_name, src_rel),
+            reserved_context_keys=reserved_context_keys,
         )
         if converted is None:
             continue
