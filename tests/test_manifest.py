@@ -87,6 +87,24 @@ def _write_state(bundle: Path, state: dict) -> None:
     write_schema_state(bundle, state)
 
 
+def test_manifest_warns_that_validation_is_not_semantic_safety(tmp_path: Path, capsys):
+    bundle = tmp_path / "bundle"
+    out = tmp_path / "ansible"
+    _write_state(bundle, _minimal_package_state([]))
+
+    manifest.manifest(str(bundle), str(out))
+
+    captured = capsys.readouterr()
+    assert (
+        "This harvest is structurally valid, but Enroll cannot prove it is semantically safe."
+        in captured.err
+    )
+    assert (
+        "Only apply manifests generated from harvests whose provenance you trust."
+        in captured.err
+    )
+
+
 def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     bundle = tmp_path / "bundle"
     out = tmp_path / "ansible"

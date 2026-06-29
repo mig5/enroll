@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -17,6 +18,16 @@ from .sopsutil import (
     require_sops_cmd,
 )
 from .validate import validate_harvest
+
+
+_SEMANTIC_SAFETY_WARNING = (
+    "This harvest is structurally valid, but Enroll cannot prove it is semantically safe.\n"
+    "Only apply manifests generated from harvests whose provenance you trust.\n"
+)
+
+
+def _warn_semantic_safety() -> None:
+    sys.stderr.write(_SEMANTIC_SAFETY_WARNING)
 
 
 def _prepare_bundle_dir(
@@ -216,6 +227,8 @@ def manifest(
                 "please re-harvest the host with this version of Enroll.\n"
                 + validation.to_text().strip()
             )
+
+        _warn_semantic_safety()
 
         if not sops_mode:
             manifest_ansible_from_bundle_dir(
