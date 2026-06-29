@@ -256,6 +256,7 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
         return ("root", "root", "0644")
 
     monkeypatch.setattr(harvest, "stat_triplet", fake_stat_triplet)
+    monkeypatch.setattr(harvest, "stat_dir_triplet", fake_stat_triplet)
     monkeypatch.setattr(capture, "stat_triplet", fake_stat_triplet)
 
     # Avoid needing source files on disk by implementing our own bundle copier
@@ -400,6 +401,7 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
     monkeypatch.setattr(harvest, "get_backend", lambda info=None: backend)
 
     monkeypatch.setattr(harvest, "stat_triplet", lambda p: ("root", "root", "0644"))
+    monkeypatch.setattr(harvest, "stat_dir_triplet", lambda p: ("root", "root", "0755"))
     monkeypatch.setattr(capture, "stat_triplet", lambda p: ("root", "root", "0644"))
     monkeypatch.setattr(harvest, "collect_non_system_users", lambda: [])
 

@@ -7,7 +7,13 @@ import stat
 from typing import Tuple
 
 
-def open_no_follow_path(path: str, *, write: bool = False, mode: int = 0o600) -> int:
+def open_no_follow_path(
+    path: str,
+    *,
+    write: bool = False,
+    mode: int = 0o600,
+    directory: bool = False,
+) -> int:
     """Open ``path`` without following a symlink in *any* path component.
 
     ``O_NOFOLLOW`` only protects the final component of a path. A regular
@@ -42,10 +48,21 @@ def open_no_follow_path(path: str, *, write: bool = False, mode: int = 0o600) ->
     o_directory = getattr(os, "O_DIRECTORY", 0)
     o_path = getattr(os, "O_PATH", 0)
 
+    if write and directory:
+        raise ValueError("directory=True cannot be combined with write=True")
+
     if write:
         final_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | cloexec | nofollow
+    elif directory and o_path:
+        # O_PATH|O_NOFOLLOW opens a final symlink as the symlink object itself
+        # on Linux, allowing inspect_dir_no_follow() to reject it via fstat().
+        # O_RDONLY|O_DIRECTORY|O_NOFOLLOW can still follow a symlink-to-dir on
+        # some kernels/filesystems.
+        final_flags = o_path | cloexec | nofollow
     else:
         final_flags = os.O_RDONLY | cloexec | nofollow
+        if directory:
+            final_flags |= o_directory
 
     supports_openat = bool(
         o_directory and nofollow and os.open in getattr(os, "supports_dir_fd", set())
@@ -124,6 +141,40 @@ def open_no_follow_path(path: str, *, write: bool = False, mode: int = 0o600) ->
         return os.open(leaf, final_flags, mode, dir_fd=dir_fd)
     finally:
         os.close(dir_fd)
+
+
+def inspect_dir_no_follow(path: str) -> os.stat_result:
+    """Return fstat() metadata for a directory opened without following symlinks.
+
+    Directory metadata capture must have the same TOCTOU properties as file
+    capture: inspect the exact object reached through a no-follow descriptor,
+    and reject symlink components anywhere in the path.  Path-based
+    ``os.stat()`` / ``os.path.isdir()`` checks can be swapped between check and
+    use when an include root is attacker-writable; this helper keeps the check
+    bound to the opened descriptor.
+    """
+
+    fd = open_no_follow_path(path, directory=True)
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISLNK(st.st_mode):
+            raise OSError(errno.ELOOP, "symlinked directory path", path)
+        if not stat.S_ISDIR(st.st_mode):
+            raise OSError(errno.ENOTDIR, "not a directory", path)
+        return st
+    finally:
+        os.close(fd)
+
+
+def stat_dir_triplet(path: str) -> Tuple[str, str, str]:
+    """Return (owner, group, mode) for a safely-opened directory path.
+
+    Unlike :func:`stat_triplet`, this refuses final symlinks and symlinked
+    parent components, and derives metadata from the directory descriptor that
+    passed those checks.
+    """
+
+    return stat_triplet_from_stat(inspect_dir_no_follow(path))
 
 
 def path_has_symlink_component(path: str) -> bool:

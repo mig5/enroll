@@ -39,8 +39,12 @@ def test_deny_reason_dir_behaviour(tmp_path: Path):
     link = tmp_path / "link"
     link.symlink_to(d)
 
+    parent_link = tmp_path / "parent_link"
+    parent_link.symlink_to(tmp_path, target_is_directory=True)
+
     assert pol.deny_reason_dir(str(d)) is None
     assert pol.deny_reason_dir(str(link)) == "symlink"
+    assert pol.deny_reason_dir(str(parent_link / "dir")) == "symlink"
     assert pol.deny_reason_dir(str(f)) == "not_directory"
 
     # Denied by glob.

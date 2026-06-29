@@ -254,7 +254,7 @@ class ExtraPathsCollector(HarvestCollector):
                         deny = None
                 if not deny:
                     try:
-                        owner, group, mode = h.stat_triplet(dirpath)
+                        owner, group, mode = h.stat_dir_triplet(dirpath)
                         self.managed_dirs.append(
                             ManagedDir(
                                 path=dirpath,

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import fnmatch
 import errno
+import fnmatch
 import os
 import re
 import stat
 from dataclasses import dataclass
 from typing import Optional
 
-from .fsutil import open_no_follow_path
+from .fsutil import inspect_dir_no_follow, open_no_follow_path
 
 
 DEFAULT_DENY_GLOBS = [
@@ -407,15 +407,13 @@ class IgnorePolicy:
                     return "denied_path"
 
         try:
-            os.stat(path, follow_symlinks=True)
-        except OSError:
+            inspect_dir_no_follow(path)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return "symlink"
+            if exc.errno == errno.ENOTDIR:
+                return "not_directory"
             return "unreadable"
-
-        if os.path.islink(path):
-            return "symlink"
-
-        if not os.path.isdir(path):
-            return "not_directory"
 
         return None
 

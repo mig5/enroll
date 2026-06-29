@@ -285,7 +285,7 @@ def test_extra_paths_collector_records_dirs_files_notes_and_excludes(
         )
         return True
 
-    monkeypatch.setattr(paths.h, "stat_triplet", fake_stat_triplet)
+    monkeypatch.setattr(paths.h, "stat_dir_triplet", fake_stat_triplet)
     monkeypatch.setattr(paths, "capture_file", lambda *a, **kw: fake_capture_file(**kw))
 
     ctx = _context(
@@ -321,7 +321,7 @@ def test_extra_paths_collector_skips_already_captured_files(monkeypatch, tmp_pat
     file_path.write_text("ok", encoding="utf-8")
     calls: list[str] = []
 
-    monkeypatch.setattr(paths.h, "stat_triplet", lambda p: ("root", "root", "0755"))
+    monkeypatch.setattr(paths.h, "stat_dir_triplet", lambda p: ("root", "root", "0755"))
     monkeypatch.setattr(
         paths, "capture_file", lambda *a, **kw: calls.append(kw["abs_path"]) or True
     )

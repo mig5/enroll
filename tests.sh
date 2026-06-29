@@ -228,6 +228,7 @@ ensure_jinjaturtle() {
 
   # Clone git repo
   run git clone https://git.mig5.net/mig5/jinjaturtle /tmp/jinjaturtle
+  cd /tmp/jinjaturtle && run poetry install --with dev
   cd /tmp/jinjaturtle && run poetry build
   cd /tmp/jinjaturtle && run poetry run pyproject-appimage --output /usr/bin/jinjaturtle
 }

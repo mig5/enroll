@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import accounts as _accounts
 from . import systemd as _systemd
-from .fsutil import stat_triplet
+from .fsutil import stat_dir_triplet
 from .platform import detect_platform, get_backend
 from .ignore import IgnorePolicy
 from .harvest_safety import ensure_private_empty_dir, prepare_new_private_dir
@@ -118,7 +118,7 @@ def _merge_parent_dirs(
             continue
 
         try:
-            owner, group, mode = stat_triplet(dpath)
+            owner, group, mode = stat_dir_triplet(dpath)
         except OSError:
             continue
 

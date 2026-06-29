@@ -4,7 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from enroll.fsutil import file_md5, stat_triplet
+from enroll.fsutil import file_md5, stat_dir_triplet, stat_triplet
 
 
 def test_file_md5_matches_hashlib(tmp_path: Path):
@@ -71,6 +71,49 @@ def test_open_no_follow_path_refuses_symlinked_leaf(tmp_path: Path):
     try:
         fd = open_no_follow_path(str(link))
         os.close(fd)
+        raise AssertionError("expected OSError for symlinked leaf")
+    except OSError as e:
+        assert e.errno == errno.ELOOP
+
+
+def test_stat_dir_triplet_reports_directory_mode_without_following(tmp_path: Path):
+    d = tmp_path / "dir"
+    d.mkdir()
+    os.chmod(d, 0o750)
+
+    owner, group, mode = stat_dir_triplet(str(d))
+    assert mode == "0750"
+    assert owner
+    assert group
+
+
+def test_stat_dir_triplet_refuses_symlinked_parent(tmp_path: Path):
+    import errno
+
+    real = tmp_path / "real"
+    real.mkdir()
+    child = real / "child"
+    child.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    try:
+        stat_dir_triplet(str(link / "child"))
+        raise AssertionError("expected OSError for symlinked parent")
+    except OSError as e:
+        assert e.errno == errno.ELOOP
+
+
+def test_stat_dir_triplet_refuses_final_symlink(tmp_path: Path):
+    import errno
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    try:
+        stat_dir_triplet(str(link))
         raise AssertionError("expected OSError for symlinked leaf")
     except OSError as e:
         assert e.errno == errno.ELOOP
