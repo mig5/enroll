@@ -4,7 +4,6 @@ import glob
 import os
 from typing import Dict, List, Optional, Set
 
-from .. import harvest as h
 from ..capture import capture_file, capture_link
 from ..harvest_types import (
     ExcludedFile,
@@ -16,7 +15,12 @@ from ..harvest_types import (
 )
 from ..system_paths import MAX_FILES_CAP
 from ..pathfilter import expand_includes
-from ..fsutil import is_dir_no_symlink_components, path_has_symlink_component
+from ..fsutil import (
+    is_dir_no_symlink_components,
+    path_has_symlink_component,
+    stat_dir_triplet,
+    stat_triplet,
+)
 from .context import HarvestCollector, HarvestContext
 
 
@@ -78,7 +82,7 @@ class UsrLocalCustomCollector(HarvestCollector):
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
                 try:
-                    owner, group, mode = h.stat_triplet(path)
+                    owner, group, mode = stat_triplet(path)
                 except OSError:
                     self.excluded.append(ExcludedFile(path=path, reason="unreadable"))
                     continue
@@ -254,7 +258,7 @@ class ExtraPathsCollector(HarvestCollector):
                         deny = None
                 if not deny:
                     try:
-                        owner, group, mode = h.stat_dir_triplet(dirpath)
+                        owner, group, mode = stat_dir_triplet(dirpath)
                         self.managed_dirs.append(
                             ManagedDir(
                                 path=dirpath,

@@ -10,6 +10,7 @@ from enroll.platform import PlatformInfo
 from enroll.systemd import UnitInfo
 from enroll.pathfilter import PathFilter
 import enroll.capture as capture
+from enroll.harvest_collectors import paths as path_collectors
 from enroll.capture import (
     capture_file as _capture_file,
     capture_link as _capture_link,
@@ -255,7 +256,7 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
         # /usr/local/bin/readme.txt remains non-executable
         return ("root", "root", "0644")
 
-    monkeypatch.setattr(harvest, "stat_triplet", fake_stat_triplet)
+    monkeypatch.setattr(path_collectors, "stat_triplet", fake_stat_triplet)
     monkeypatch.setattr(harvest, "stat_dir_triplet", fake_stat_triplet)
     monkeypatch.setattr(capture, "stat_triplet", fake_stat_triplet)
 
@@ -400,7 +401,9 @@ def test_shared_cron_snippet_prefers_matching_role_over_lexicographic(
     )
     monkeypatch.setattr(harvest, "get_backend", lambda info=None: backend)
 
-    monkeypatch.setattr(harvest, "stat_triplet", lambda p: ("root", "root", "0644"))
+    monkeypatch.setattr(
+        path_collectors, "stat_triplet", lambda p: ("root", "root", "0644")
+    )
     monkeypatch.setattr(harvest, "stat_dir_triplet", lambda p: ("root", "root", "0755"))
     monkeypatch.setattr(capture, "stat_triplet", lambda p: ("root", "root", "0644"))
     monkeypatch.setattr(harvest, "collect_non_system_users", lambda: [])
