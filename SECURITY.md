@@ -28,10 +28,12 @@ In-scope security concerns include:
 * Supporting encrypted harvest bundles via `--sops`.
 * Avoiding symlink traversal and time-of-check/time-of-use mistakes when copying harvested files.
 * Refusing unsafe artifact paths, symlinks, hardlinks, device nodes, and tar path traversal in harvest bundles.
+* Treating a harvest bundle as point-in-time validated: before `manifest` or `diff` re-open artifacts to render or hash them, a plain *directory* bundle is copied into a private, attacker-immutable temp tree (regular files only, no symlinks or hardlinks, opened without following links) so the bundle that is consumed cannot be raced and swapped after validation. Tar and SOPS inputs get the equivalent treatment by being extracted into a private temp directory.
+* Keeping harvested values in Ansible *data* rather than playbook *structure*, so a harvested path, owner, group, username, or link target cannot inject YAML structure or be re-evaluated as a Jinja/template expression at apply time.
 * Writing plaintext harvest outputs into private directories by default.
 * Hardening root-run output path handling so Enroll does not accidentally write through attacker-prepared symlinks or unsafe parent directories.
 * Refusing to continue non-interactively when run as root with an unsafe `PATH`, unless the operator explicitly confirms with `--assume-safe-path`.
-* Avoiding shell injection in generated manifests where harvested values are embedded into Ansible output.
+* Avoiding injection in generated manifests where harvested values are embedded into Ansible output — not only shell injection, but YAML-structure injection and runtime Jinja/template re-evaluation — by serializing harvested data through a safe YAML dumper, tagging template-looking values as Ansible `!unsafe`, and allowlisting the only identifiers ever spliced into raw task YAML.
 * Rejecting unknown SSH host keys by default during remote harvests.
 
 These measures are defense-in-depth. They are intended to reduce the chance of accidental exposure, unsafe filesystem writes, path traversal, command injection, or dangerous behavior when Enroll is used normally by an administrator.

@@ -73,12 +73,16 @@ enroll/
   package_hints.py            service/package name and config attribution helpers
 
   capture.py                  safe file/symlink capture into artifacts/
-  fsutil.py                   file md5 + owner/group/mode helpers
+  fsutil.py                   file md5 + owner/group/mode helpers, open_no_follow_path
   ignore.py                   secret/noise avoidance policy
   pathfilter.py               --include-path / --exclude-path matching and expansion
   state.py                    state.json load/write helpers
   yamlutil.py                 YAML helpers used by renderers/JinjaTurtle
   jinjaturtle.py              optional config-file templating integration
+
+  harvest_safety.py           private output dirs, safe output parents, output path hardening
+  manifest_safety.py          artifact-file safety, manifest output dirs, directory-bundle freezing
+  render_safety.py            scaffold-token allowlist + !unsafe data wrapping for generated YAML
 
   diff.py                     harvest comparison and notifications
   explain.py                  human/JSON explanation of harvest contents
@@ -456,8 +460,10 @@ Several safety helpers protect privileged runs from following attacker-controlle
 - `cache.new_harvest_cache_dir()` creates unpredictable per-harvest cache directories beneath the hardened cache root with `mkdtemp()` and private permissions.
 - `manifest_safety.safe_artifact_file()` validates referenced harvested artifacts before renderers copy them. It rejects absolute or `..` paths, symlinks, non-regular files, hardlinks, and paths that resolve outside the artifact root.
 - `manifest_safety.prepare_manifest_output_dir()` refuses unsafe manifest output paths. In `--fqdn` site mode, where an existing tree is intentionally reused, it walks the existing output tree and refuses symlinks before merging generated files.
+- `manifest_safety.freeze_directory_bundle()` copies a *directory* harvest bundle into a fresh private `0700` temp tree before it is validated and consumed. Validation is point-in-time, but `manifest`/`diff` later re-open artifacts by path (to copy, hash, or feed to JinjaTurtle), so a still-writable source directory could be raced by its unprivileged owner — a validated regular file swapped for a symlink or different file after the check. Freezing uses no-follow traversal and takes each file's bytes from a validated descriptor (regular files only, no symlinks, no hardlinks), so a later mutation of the original directory cannot affect the consumed copy. Tar and SOPS inputs are already extracted into a private temp directory and are inherently frozen; this helper gives plain directory inputs the same guarantee. See sections 11 and 15.1 for where it is wired in.
+- `render_safety.scaffold_token()` / `render_safety.ansible_unsafe_data()` keep harvested data out of generated playbook *structure*: the former is a strict allowlist for the only values ever spliced into raw task/handler YAML (already-sanitized role/var-prefix identifiers), and the latter recursively tags template-looking harvested strings as Ansible `!unsafe` data so they cannot be re-evaluated as Jinja at apply time. See section 13.6.
 
-When adding a new code path that writes plaintext host state, prefer these helpers over raw `mkdir(parents=True)`, `open()`, `shutil.copy*()`, or `tar.extract*()`.
+When adding a new code path that writes plaintext host state, prefer these helpers over raw `mkdir(parents=True)`, `open()`, `shutil.copy*()`, or `tar.extract*()`. When a new consumer re-opens artifacts from a directory bundle, route the bundle through `freeze_directory_bundle()` first.
 
 ---
 
@@ -795,7 +801,14 @@ SOPS mode:
 
 The renderers do not know about SOPS.
 
-Before dispatching to a renderer, `manifest.manifest()` calls `validate.validate_harvest()` with normal schema validation enabled. That means generated configuration-management code is only rendered after Enroll has checked the bundle schema, referenced artifact existence, and artifact safety. If validation fails, manifest generation stops rather than trying to produce best-effort output from a malformed or tampered bundle.
+Bundle preparation (`_prepare_bundle_dir()`) runs before validation in both modes:
+
+- A *directory* bundle is frozen with `manifest_safety.freeze_directory_bundle()` into a private `0700` temp copy, and the frozen copy is what gets validated and rendered (see section 7.6). This holds even in SOPS mode when the input is an already-decrypted directory.
+- A SOPS-encrypted tarball is decrypted and extracted into a private temp directory with `remote._safe_extract_tar()`.
+
+Either way the bundle Enroll consumes is an immutable-by-attacker private copy, not the path the operator named.
+
+Before dispatching to a renderer, `manifest.manifest()` calls `validate.validate_harvest()` on the prepared (frozen/extracted) bundle with normal schema validation enabled. That means generated configuration-management code is only rendered after Enroll has checked the bundle schema, referenced artifact existence, and artifact safety. If validation fails, manifest generation stops rather than trying to produce best-effort output from a malformed or tampered bundle.
 
 ---
 
@@ -960,6 +973,16 @@ When JinjaTurtle is enabled and supports a harvested config file, the renderer c
 
 If JinjaTurtle is unavailable in `auto` mode, fails, emits missing variables, or does not support the path, Ansible falls back to copying the raw harvested file.
 
+### 13.6 Keeping harvested data out of playbook structure
+
+Harvested values (file paths, owners, groups, usernames, GECOS fields, link targets, package names, unit names, ...) are attacker-influenceable on a host an unprivileged user partly controls. The renderer keeps them strictly in Ansible *data*, never in playbook *structure*, through three layers in `render_safety.py` and `yamlutil.py`:
+
+1. **Variable files are serialized, not templated.** `_write_role_defaults()` / `_write_hostvars()` dump mappings with a PyYAML `SafeDumper` (`yamlutil.yaml_dump_mapping`), so metacharacters and newlines in a harvested value fold into a quoted scalar and cannot introduce new keys or list items.
+2. **Template-looking strings are tagged `!unsafe`.** `ansible_unsafe_data()` recursively wraps any harvested string containing a Jinja start (`{{`, `{%`, `{#`) as `AnsibleUnsafeText`, dumped as a YAML `!unsafe` scalar. Ansible then treats it as literal data instead of re-evaluating it at apply time.
+3. **Raw task/handler YAML uses only allowlisted tokens.** The renderer hand-writes task/handler text with f-strings, but the *only* dynamic value ever spliced in is an already-sanitized role/var-prefix identifier, and every such splice goes through `scaffold_token()`, whose allowlist (`^[A-Za-z0-9_][A-Za-z0-9_ .-]*$`) excludes quotes, colons, braces, and newlines. A harvested free-text value can never reach scaffolding — it must travel as a variable referenced through `{{ ... }}` indirection. As a structural backstop, `_write_generated_task_yaml()` runs `assert_generated_yaml_safe()`, which parses every generated task/handler document and confirms it is still a list of string-keyed mappings.
+
+The harvest schema gate is what makes layer 3 sufficient in practice: `manifest` validates against the schema before rendering, and role names are constrained to `const` singletons or `^[A-Za-z0-9_]+$`, so the value handed to `scaffold_token()` is already within its allowlist. Layers 1 and 2 protect the unconstrained fields (owner, group, the post-slash portion of a path, link targets, user fields) that travel only as data.
+
 ---
 
 ## 14. JinjaTurtle integration
@@ -1033,7 +1056,12 @@ File: `diff.py`
 - plain `.tar.gz` / `.tgz` bundles,
 - SOPS-encrypted bundles when `sops_mode=True` or the name ends with `.sops`.
 
-Bundle resolution is handled by `_bundle_from_input()`, which reuses `remote._safe_extract_tar()` for tarball extraction.
+Bundle resolution is handled by `_bundle_from_input()`, which reuses `remote._safe_extract_tar()` for tarball/SOPS extraction. It takes a `freeze` flag:
+
+- `compare_harvests()` resolves both inputs with `freeze=True`, so a *directory* bundle is copied into a private `0700` tree (via `freeze_directory_bundle()`) before any artifact is hashed. This matters because diff re-opens artifacts by path to hash file contents; freezing removes the race where an unprivileged owner mutates the source directory after validation. Tar/SOPS inputs are already extracted into a private temp directory and so are inherently frozen.
+- `validate` and `explain` resolve with `freeze=False` (the default). `validate` is a diagnostic that should report on the exact directory the operator named rather than a copy of it, and `explain` only ever reads `state.json` — it never opens artifact files — so there is nothing to race.
+
+Both diff inputs are then re-validated with `_validate_diff_bundle()` (artifact safety checks, `no_schema=True`) before any comparison reads them.
 
 ### 15.2 What diff compares
 
@@ -1093,7 +1121,7 @@ This is intended to answer “what did Enroll collect and why?”
 1. `state.json` exists,
 2. it parses as JSON,
 3. it validates against the vendored schema unless `--no-schema` is set,
-4. every `managed_file.src_rel` is relative and points to a safe artifact file,
+4. every `managed_file.src_rel` is rejected up front if it is absolute or contains a `..` component, then checked with `safe_artifact_file()` so it points to a safe, existing artifact (this absolute/`..` rejection runs even under `no_schema=True`, which is what keeps the `diff` path safe despite skipping schema validation),
 5. firewall runtime generated artifacts exist and are safe,
 6. the top-level `artifacts/` path is a real directory rather than a symlink or file,
 7. the whole artifact tree contains no symlink directories, symlink files, hardlinks, special files, or paths that escape the artifact root,
@@ -1101,9 +1129,9 @@ This is intended to answer “what did Enroll collect and why?”
 
 `validate_harvest()` is used in three important contexts:
 
-- `enroll validate` exposes the checks directly to users.
-- `manifest.manifest()` validates before rendering Ansible output.
-- `diff.compare_harvests()` validates both input bundles before comparing them, using `no_schema=True` so older harvests can still be inspected while artifact safety checks remain active.
+- `enroll validate` exposes the checks directly to users (on the directory the operator named; not frozen).
+- `manifest.manifest()` validates the frozen/extracted bundle before rendering Ansible output (schema validation enabled).
+- `diff.compare_harvests()` validates both input bundles before comparing them, using `no_schema=True` so older harvests can still be inspected while artifact safety checks remain active. Directory inputs are frozen first (see section 15.1), so validation and the subsequent content hashing both run against the private copy.
 
 It returns a `ValidationResult` with `errors`, `warnings`, `ok()`, `to_dict()`, and `to_text()`.
 
@@ -1220,13 +1248,14 @@ Encryption/decryption helpers write via temp files and default to mode `0600`.
 
 `cli.py` supports optional INI config files.
 
-Discovery order:
+Discovery order (see `_discover_config_path()`):
 
-1. `--no-config` disables config loading,
+1. `--no-config` disables config loading entirely,
 2. `--config PATH` or `-c PATH`,
 3. `$ENROLL_CONFIG`,
-6. `$XDG_CONFIG_HOME/enroll/enroll.ini`,
-7. `~/.config/enroll/enroll.ini`.
+4. `$XDG_CONFIG_HOME/enroll/enroll.ini`, falling back to `~/.config/enroll/enroll.ini` when `$XDG_CONFIG_HOME` is unset.
+
+Current-directory config files are deliberately not auto-loaded; pass `--config ./enroll.ini` if that behaviour is wanted.
 
 Config sections are translated into argv tokens by `_inject_config_argv()`:
 
