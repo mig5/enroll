@@ -147,6 +147,10 @@ Example:
 ansible-playbook -i "localhost," -c local /tmp/enroll-ansible/playbook.yml --tags role_services,role_users
 ```
 
+**IMPORTANT**: Always make sure that you take adequate precautions to prevent a malicious actor from tampering with your harvest. Enroll tries to set the permissions of it to something your running user has access to, but environments and situations can vary. A malicious actor could change your harvest contents in a way that doesn't violate the schema but results in sensitive exposure or dangerous execution once you apply the 'manifested' configuration management version of it.
+
+Whenever in doubt, add `--sops` (with SOPS installed on your PATH) and encrypt the harvest so that only you can decrypt it.
+
 ---
 
 ### `enroll single-shot`
