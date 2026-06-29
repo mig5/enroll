@@ -323,7 +323,7 @@ run_ansible_jinjaturtle_variant() {
   ensure_ansible
   cd "${PROJECT_ROOT}"
   rm -rf "${out_dir}"
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${out_dir}" --target ansible "$@"
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${out_dir}" "$@"
   assert_template_files "${out_dir}" "j2" "${expected}" "${label}"
   ansible-galaxy install -r "${out_dir}/requirements.yml"
   run ansible-lint "${out_dir}"
@@ -352,20 +352,20 @@ run_ansible_noop_tests() {
   cd "${PROJECT_ROOT}"
   rm -rf "${ANSIBLE_DIR}" "${ANSIBLE_NO_COMMON_DIR}" "${ANSIBLE_FQDN_DIR}"
 
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_DIR}" --target ansible
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_DIR}"
   ansible-galaxy install -r "${ANSIBLE_DIR}/requirements.yml"
   run ansible-lint "${ANSIBLE_DIR}"
   cd "${ANSIBLE_DIR}"
   run ansible-playbook playbook.yml -i "localhost," -c local --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 
   cd "${PROJECT_ROOT}"
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_NO_COMMON_DIR}" --target ansible --no-common-roles
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_NO_COMMON_DIR}" --no-common-roles
   ansible-galaxy install -r "${ANSIBLE_NO_COMMON_DIR}/requirements.yml"
   cd "${ANSIBLE_NO_COMMON_DIR}"
   run ansible-playbook playbook.yml -i "localhost," -c local --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 
   cd "${PROJECT_ROOT}"
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_FQDN_DIR}" --target ansible --fqdn "${TEST_FQDN}"
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_FQDN_DIR}" --fqdn "${TEST_FQDN}"
   ansible-galaxy install -r "${ANSIBLE_FQDN_DIR}/requirements.yml"
   cd "${ANSIBLE_FQDN_DIR}"
   run ansible-playbook "playbooks/${TEST_FQDN}.yml" -i inventory/hosts.ini -c local --limit "${TEST_FQDN}" --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
