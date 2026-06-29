@@ -42,7 +42,7 @@ These measures are defense-in-depth. They are intended to reduce the chance of a
 
 The following are generally out of scope and should not be reported as Enroll vulnerabilities unless they also bypass one of Enroll’s explicit hardening mechanisms:
 
-* A malicious local user who can already control the root user’s command line, shell environment, config file, `PATH`, SSH config, working directory, or invoked binaries.
+* A malicious local user who can already control the root user’s command line, shell environment, config file, `PATH`, `XDG_CONFIG_HOME`, SSH config, working directory, or invoked binaries.
 * A root user loading an `enroll.ini` file whose contents intentionally request dangerous behavior.
 * A root user passing `--dangerous` and then observing that Enroll may collect sensitive information.
 * A root user passing `--assume-safe-path` and then observing that Enroll does not prompt about `PATH` safety.

@@ -422,11 +422,6 @@ run_ansible_jinjaturtle_variant() {
 }
 
 run_jinjaturtle_manifest_tests() {
-  if is_rpm_family ; then
-    section "JinjaTurtle integration matrix"
-    printf 'Skipping JinjaTurtle package integration on RPM-family CI;\n'
-    return
-  fi
   ensure_jinjaturtle
   require_cmd jinjaturtle "Install JinjaTurtle before running the JinjaTurtle integration matrix."
 
