@@ -219,13 +219,49 @@ ensure_epel_repo() {
   DNF_UPDATED=
 }
 
+# Where to install the JinjaTurtle virtualenv and the PATH dir we symlink its
+# console script into. /usr/local/bin is already on root's PATH on Debian/RPM.
+JINJATURTLE_VENV_DIR="${ENROLL_TEST_JINJATURTLE_VENV:-${WORK_DIR}/jinjaturtle-venv}"
+JINJATURTLE_BIN_DIR="${ENROLL_TEST_JINJATURTLE_BIN_DIR:-/usr/local/bin}"
+
+# Build + install JinjaTurtle from a git checkout (default) instead of the
+# apt.mig5.net package repository, which is not always reachable.
+#
+# Override knobs (all optional):
+#   ENROLL_TEST_JINJATURTLE_METHOD   git (default) | apt   -- install strategy
+#   ENROLL_TEST_JINJATURTLE_SOURCE   path to an existing local checkout; when
+#                                    set, no clone happens (offline/CI friendly)
+#   ENROLL_TEST_JINJATURTLE_GIT      git URL to clone
+#                                    (default: https://git.mig5.net/mig5/jinjaturtle)
+#   ENROLL_TEST_JINJATURTLE_REF      branch/tag/commit to check out (default: main)
+#   ENROLL_TEST_JINJATURTLE_VENV     venv dir (default: under the test work dir)
+#   ENROLL_TEST_JINJATURTLE_BIN_DIR  PATH dir to expose the script in
+#                                    (default: /usr/local/bin)
 ensure_jinjaturtle() {
-  section "Setup: JinjaTurtle package"
+  section "Setup: JinjaTurtle"
   if command -v jinjaturtle >/dev/null 2>&1; then
     printf 'jinjaturtle already available at: %s\n' "$(command -v jinjaturtle)"
     return
   fi
 
+  local method="${ENROLL_TEST_JINJATURTLE_METHOD:-git}"
+
+  case "${method}" in
+    apt)
+      ensure_jinjaturtle_apt
+      ;;
+    git)
+      ensure_jinjaturtle_from_git
+      ;;
+    *)
+      fail "Unknown ENROLL_TEST_JINJATURTLE_METHOD='${method}' (expected 'git' or 'apt')."
+      ;;
+  esac
+}
+
+# Legacy apt.mig5.net package install, kept as an opt-in fallback
+# (ENROLL_TEST_JINJATURTLE_METHOD=apt) for hosts where that repo is reachable.
+ensure_jinjaturtle_apt() {
   if is_debian; then
     pkg_install ca-certificates curl gnupg lsb-release
     run mkdir -p /usr/share/keyrings
@@ -238,11 +274,65 @@ ensure_jinjaturtle() {
     APT_UPDATED=1
     run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jinjaturtle
   elif is_rpm_family; then
-    printf 'Skipping JinjaTurtle package integration on RPM-family CI;\n'
+    printf 'Skipping JinjaTurtle apt package integration on RPM-family CI;\n'
     return
   else
-    fail "Unsupported OS for JinjaTurtle package install: $(os_id)."
+    fail "Unsupported OS for JinjaTurtle apt install: $(os_id)."
   fi
+}
+
+ensure_jinjaturtle_from_git() {
+  # Tools we need to fetch and build from source.
+  if is_debian; then
+    pkg_install ca-certificates git python3 python3-venv
+  elif is_rpm_family; then
+    pkg_install ca-certificates git python3
+  else
+    fail "Unsupported OS for JinjaTurtle git build: $(os_id)."
+  fi
+
+  local src="${ENROLL_TEST_JINJATURTLE_SOURCE:-}"
+  local cloned=0
+  if [[ -z "${src}" ]]; then
+    local git_url="${ENROLL_TEST_JINJATURTLE_GIT:-https://git.mig5.net/mig5/jinjaturtle}"
+    local git_ref="${ENROLL_TEST_JINJATURTLE_REF:-main}"
+    src="${WORK_DIR}/jinjaturtle-src"
+    rm -rf "${src}"
+    run git clone --depth 1 --branch "${git_ref}" "${git_url}" "${src}" \
+      || run git clone "${git_url}" "${src}"
+    cloned=1
+  else
+    [[ -d "${src}" ]] || fail "ENROLL_TEST_JINJATURTLE_SOURCE='${src}' is not a directory."
+    printf 'Using existing JinjaTurtle checkout: %s\n' "${src}"
+  fi
+
+  # Build into a dedicated venv so the system Python stays clean, then expose
+  # the console script on PATH. Enroll only needs shutil.which("jinjaturtle")
+  # to succeed, which a symlink into /usr/local/bin satisfies.
+  rm -rf "${JINJATURTLE_VENV_DIR}"
+  run python3 -m venv "${JINJATURTLE_VENV_DIR}"
+  run "${JINJATURTLE_VENV_DIR}/bin/pip" install --upgrade pip
+  run "${JINJATURTLE_VENV_DIR}/bin/pip" install "${src}"
+
+  local script="${JINJATURTLE_VENV_DIR}/bin/jinjaturtle"
+  [[ -x "${script}" ]] || fail "JinjaTurtle build did not produce ${script}."
+
+  run mkdir -p "${JINJATURTLE_BIN_DIR}"
+  run ln -sf "${script}" "${JINJATURTLE_BIN_DIR}/jinjaturtle"
+
+  # Make sure the chosen bin dir is actually on PATH for the rest of this run.
+  case ":${PATH}:" in
+    *":${JINJATURTLE_BIN_DIR}:"*) ;;
+    *) export PATH="${JINJATURTLE_BIN_DIR}:${PATH}" ;;
+  esac
+
+  hash -r 2>/dev/null || true
+  command -v jinjaturtle >/dev/null 2>&1 \
+    || fail "jinjaturtle was built but is not on PATH (looked in ${JINJATURTLE_BIN_DIR})."
+  printf 'jinjaturtle installed from %s%s and available at: %s\n' \
+    "${src}" \
+    "$([[ "${cloned}" -eq 1 ]] && printf ' (cloned)')" \
+    "$(command -v jinjaturtle)"
 }
 
 require_cmd() {
