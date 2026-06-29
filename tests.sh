@@ -226,23 +226,10 @@ ensure_jinjaturtle() {
     return
   fi
 
-  if is_debian; then
-    pkg_install ca-certificates curl gnupg lsb-release
-    run mkdir -p /usr/share/keyrings
-    run bash -c "curl -fsSL https://mig5.net/static/mig5.asc | gpg --dearmor --yes -o /usr/share/keyrings/mig5.gpg"
-
-    local codename
-    codename="$(lsb_release -cs)"
-    run bash -c "printf '%s\n' 'deb [arch=amd64 signed-by=/usr/share/keyrings/mig5.gpg] https://apt.mig5.net ${codename} main' > /etc/apt/sources.list.d/mig5.list"
-    run apt-get update
-    APT_UPDATED=1
-    run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jinjaturtle
-  elif is_rpm_family; then
-    printf 'Skipping JinjaTurtle package integration on RPM-family CI;\n'
-    return
-  else
-    fail "Unsupported OS for JinjaTurtle package install: $(os_id)."
-  fi
+  # Clone git repo
+  run git clone https://git.mig5.net/mig5/jinjaturtle /tmp/jinjaturtle
+  cd /tmp/jinjaturtle && run poetry build
+  cd /tmp/jinjaturtle && run poetry run pyproject-appimage --output /usr/bin/jinjaturtle
 }
 
 require_cmd() {
