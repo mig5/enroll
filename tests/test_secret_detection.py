@@ -93,6 +93,49 @@ def test_password_keyword_no_false_positives():
         assert pol._content_deny_reason("/etc/app.conf", data) is None, data
 
 
+def test_pw_abbreviation_credential_key_denied():
+    """The ``pw`` abbreviation is an extremely common password key form
+    (``db_pw``, ``DB_PW``, ``root_pw``). It must be treated like ``pwd``/``pass``
+    so a real assignment-style credential using ``pw`` is not silently harvested
+    in default safe mode."""
+    pol = IgnorePolicy(dangerous=False)
+    for data in [
+        b"pw = hunter2\n",
+        b"db_pw = SuperSecret123\n",
+        b"DB_PW=hunter2\n",
+        b"root_pw: aaaa\n",
+        b"master_pw = topsecret\n",
+        b"ftp_pw=x\n",
+        b"mysql_root_pw: x\n",
+        b"pw_hash = abc\n",
+        b'"pw": "x"\n',
+    ]:
+        assert (
+            pol._content_deny_reason("/etc/app.conf", data) == "sensitive_content"
+        ), data
+
+
+def test_pw_abbreviation_no_false_positives():
+    """Adding the short ``pw`` token must not flag ordinary keys that merely
+    contain the letters ``pw`` without it being a delimited credential token.
+    The surrounding token-boundary structure (a keyword must stand alone between
+    ``[_.-]`` delimiters) is what keeps these benign."""
+    pol = IgnorePolicy(dangerous=False)
+    for data in [
+        b"pwned = 1\n",
+        b"software = x\n",
+        b"hardware = y\n",
+        b"firmware: z\n",
+        b"spwd = z\n",
+        b"powerline = on\n",
+        b"wallpaper = img\n",
+        b"pwm_freq = 1000\n",
+        b"cpwd_check=1\n",
+        b"newpwx = 1\n",
+    ]:
+        assert pol._content_deny_reason("/etc/app.conf", data) is None, data
+
+
 def test_block_comment_open_cannot_mask_private_key():
     """Security regression: a line beginning with ``/*`` must not put the content
     scanner into a runaway block-comment state that hides later real secrets.

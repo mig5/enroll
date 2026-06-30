@@ -266,7 +266,7 @@ enroll validate ./harvest --fail-on-warnings
 
 By default, `enroll` does **not** assume how you handle secrets in Ansible. It will attempt to avoid harvesting likely sensitive data (private keys, passwords, tokens, etc.). This can mean it skips some config files you may ultimately want to manage.
 
-Safe-mode content scanning is intentionally conservative. It treats common assignment-style credential keys as sensitive, including names such as `password`, `client_secret`, `secret_key`, `auth_token`, `api_key`, `aws_access_key_id`, `aws_secret_access_key`, `azure_client_secret`, `GOOGLE_APPLICATION_CREDENTIALS`, and service-account key names.
+Safe-mode content scanning is intentionally conservative. It treats common assignment-style credential keys as sensitive, including names such as `password` (and abbreviations like `passwd`, `pwd`, and `pw`, e.g. `db_pw`), `client_secret`, `secret_key`, `auth_token`, `api_key`, `aws_access_key_id`, `aws_secret_access_key`, `azure_client_secret`, `GOOGLE_APPLICATION_CREDENTIALS`, and service-account key names.
 
 **IMPORTANT**: Enroll ignores comments in files! If you have commented out *real secrets*, there's still a risk that Enroll could capture that data even without `--dangerous`. If you are in doubt, play it safe: use `--sops` and/or encrypt the output at rest in a way that makes sense to you.
 

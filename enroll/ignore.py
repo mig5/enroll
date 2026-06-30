@@ -108,7 +108,7 @@ HIGH_CONFIDENCE_SECRET_PATTERNS = [
         (
             (?:[A-Za-z0-9]+[_.-])*
             (
-                password|passwd|passphrase|pwd|
+                password|passwd|passphrase|pwd|pw|
                 token|auth[_.-]?token|access[_.-]?token|refresh[_.-]?token|
                 secret|client[_.-]?secret|secret[_.-]?key|
                 api[_.-]?key|access[_.-]?key|private[_.-]?key|
