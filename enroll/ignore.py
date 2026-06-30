@@ -103,23 +103,24 @@ HIGH_CONFIDENCE_SECRET_PATTERNS = [
     # framing, so it is scanned on raw bytes.
     re.compile(
         rb"""(?ix)
-        (^|[^A-Za-z0-9])
+        (^|[^A-Za-z0-9_.-])
         [\"']?
         (
-            [A-Za-z0-9_.-]*
+            (?:[A-Za-z0-9]+[_.-])*
             (
-                password|passwd|passphrase|pass|pin|pwd|
-                token|auth[_-]?token|access[_-]?token|refresh[_-]?token|
-                secret|client[_-]?secret|secret[_-]?key|
-                api[_-]?key|access[_-]?key|private[_-]?key|
+                password|passwd|passphrase|pwd|
+                token|auth[_.-]?token|access[_.-]?token|refresh[_.-]?token|
+                secret|client[_.-]?secret|secret[_.-]?key|
+                api[_.-]?key|access[_.-]?key|private[_.-]?key|
                 credential|credentials|
-                aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|
-                azure[_-]?client[_-]?secret|azure[_-]?tenant[_-]?id|azure[_-]?client[_-]?id|
-                google[_-]?application[_-]?credentials|gcp[_-]?service[_-]?account|
-                service[_-]?account[_-]?key|
-                session_key
+                aws[_.-]?access[_.-]?key[_.-]?id|aws[_.-]?secret[_.-]?access[_.-]?key|
+                azure[_.-]?client[_.-]?secret|azure[_.-]?tenant[_.-]?id|azure[_.-]?client[_.-]?id|
+                google[_.-]?application[_.-]?credentials|gcp[_.-]?service[_.-]?account|
+                service[_.-]?account[_.-]?key|
+                session[_.-]?key|
+                pass|pin
             )
-            [A-Za-z0-9_.-]*
+            (?:[_.-][A-Za-z0-9]+)*
         )
         [\"']?
         \s*[:=]
@@ -141,7 +142,7 @@ SENSITIVE_CONTENT_PATTERNS = [
     # heuristic and the only one tolerated inside comments, because stock config
     # files legitimately ship value-less commented hints (e.g. "# token").
     re.compile(
-        rb"(?i)\b(pass|passwd|password|passphrase|token|secret|"
+        rb"(?i)\b(pass|pin|passwd|password|passphrase|token|secret|"
         rb"credentials?|api[_-]?key)\b"
     ),
 ]

@@ -51,6 +51,7 @@ def test_bare_word_password_denied():
         b"machine api.example.com login bob password s3cret\n",
         b"passphrase mysecretphrase\n",
         b"credentials /run/creds/db\n",
+        b"pin 1234\n",
     ]:
         assert (
             pol._content_deny_reason("/etc/svc.conf", data) == "sensitive_content"
@@ -63,11 +64,29 @@ def test_ppp_secrets_paths_denied():
         assert pol._path_deny_reason(p) == "denied_path", p
 
 
+def test_short_credential_key_components_denied():
+    pol = IgnorePolicy(dangerous=False)
+    for data in [
+        b"pass = hunter2\n",
+        b"db_pass = hunter2\n",
+        b"pass_key = hunter2\n",
+        b"db-pass: hunter2\n",
+        b"pin = 1234\n",
+        b"db_pin = 1234\n",
+        b"pin-key: 1234\n",
+    ]:
+        assert (
+            pol._content_deny_reason("/etc/app.conf", data) == "sensitive_content"
+        ), data
+
+
 def test_password_keyword_no_false_positives():
     pol = IgnorePolicy(dangerous=False)
     for data in [
         b"passive_mode = true\n",
         b"PassengerRoot /usr/lib\n",
+        b"pinboard = enabled\n",
+        b"pinot_region = noir\n",
         b"description = reset the account\n",
         b"compression = gzip\n",
     ]:
