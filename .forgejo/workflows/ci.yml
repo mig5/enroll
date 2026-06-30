@@ -15,7 +15,7 @@ jobs:
             image: docker.io/library/debian:13
             python: python3
           - distro: almalinux
-            image: docker.io/library/almalinux:9
+            image: docker.io/library/almalinux:10
             python: python3.11
 
     container:
