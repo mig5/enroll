@@ -108,7 +108,7 @@ HIGH_CONFIDENCE_SECRET_PATTERNS = [
         (
             [A-Za-z0-9_.-]*
             (
-                password|passwd|passphrase|
+                password|passwd|passphrase|pass|pin|pwd|
                 token|auth[_-]?token|access[_-]?token|refresh[_-]?token|
                 secret|client[_-]?secret|secret[_-]?key|
                 api[_-]?key|access[_-]?key|private[_-]?key|
@@ -116,7 +116,8 @@ HIGH_CONFIDENCE_SECRET_PATTERNS = [
                 aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|
                 azure[_-]?client[_-]?secret|azure[_-]?tenant[_-]?id|azure[_-]?client[_-]?id|
                 google[_-]?application[_-]?credentials|gcp[_-]?service[_-]?account|
-                service[_-]?account[_-]?key
+                service[_-]?account[_-]?key|
+                session_key
             )
             [A-Za-z0-9_.-]*
         )
