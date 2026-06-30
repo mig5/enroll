@@ -127,7 +127,7 @@ def test_manifest_uses_jinjaturtle_templates_and_does_not_copy_raw(
 
     monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", fake_run_jinjaturtle)
 
-    manifest_mod.manifest(str(bundle), str(out), jinjaturtle="on")
+    manifest_mod.manifest(str(bundle), str(out), jinjaturtle=True)
 
     role_dir = out / "roles" / "utils"
 

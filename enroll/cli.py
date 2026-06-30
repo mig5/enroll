@@ -481,12 +481,12 @@ def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _jt_mode(args: argparse.Namespace) -> str:
+def _jt_mode(args: argparse.Namespace) -> Optional[bool]:
     if getattr(args, "jinjaturtle", False):
-        return "on"
+        return True
     if getattr(args, "no_jinjaturtle", False):
-        return "off"
-    return "auto"
+        return False
+    return None
 
 
 def _add_config_args(p: argparse.ArgumentParser) -> None:

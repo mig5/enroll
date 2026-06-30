@@ -43,24 +43,26 @@ SUPPORTED_SUFFIXES = {
 } | SYSTEMD_SUFFIXES
 
 
-def resolve_jinjaturtle_mode(jinjaturtle: str) -> Tuple[Optional[str], bool]:
-    """Resolve Enroll's common JinjaTurtle mode flag.
+def resolve_jinjaturtle_mode(
+    jinjaturtle: Optional[bool] = None,
+) -> Tuple[Optional[str], bool]:
+    """Resolve Enroll's common JinjaTurtle flag.
 
-    Renderers accept the same values:
-    - ``auto``: use JinjaTurtle when present on PATH
-    - ``on``: require it and fail if it is absent
-    - ``off``: never use it
+    ``None`` means the default behaviour: use JinjaTurtle when its executable
+    is present on PATH. ``True`` corresponds to ``--jinjaturtle`` and requires
+    the executable. ``False`` corresponds to ``--no-jinjaturtle`` and disables
+    the integration.
     """
     jt_exe = find_jinjaturtle_cmd()
-    if jinjaturtle not in {"auto", "on", "off"}:
-        raise ValueError("jinjaturtle must be one of: auto, on, off")
-    if jinjaturtle == "on":
+    if jinjaturtle is True:
         if not jt_exe:
             raise RuntimeError("jinjaturtle requested but not found on PATH")
         return jt_exe, True
-    if jinjaturtle == "auto":
+    if jinjaturtle is False:
+        return jt_exe, False
+    if jinjaturtle is None:
         return jt_exe, jt_exe is not None
-    return jt_exe, False
+    raise TypeError("jinjaturtle must be None, True, or False")
 
 
 def _merge_mappings_overwrite(

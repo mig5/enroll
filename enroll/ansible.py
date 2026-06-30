@@ -418,7 +418,7 @@ def _prepare_ansible_context(
     out_dir: str,
     *,
     fqdn: Optional[str],
-    jinjaturtle: str,
+    jinjaturtle: Optional[bool],
 ) -> AnsibleManifestContext:
     site_mode = fqdn is not None and fqdn != ""
     jt_exe, jt_enabled = resolve_jinjaturtle_mode(jinjaturtle)
@@ -2400,7 +2400,7 @@ class AnsibleManifestRenderer:
         out_dir: str,
         *,
         fqdn: Optional[str] = None,
-        jinjaturtle: str = "auto",
+        jinjaturtle: Optional[bool] = None,
         no_common_roles: bool = False,
     ) -> None:
         self.bundle_dir = bundle_dir
@@ -2499,7 +2499,7 @@ def manifest_from_bundle_dir(
     out_dir: str,
     *,
     fqdn: Optional[str] = None,
-    jinjaturtle: str = "auto",
+    jinjaturtle: Optional[bool] = None,
     no_common_roles: bool = False,
 ) -> None:
     AnsibleManifestRenderer(

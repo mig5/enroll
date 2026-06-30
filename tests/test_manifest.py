@@ -1541,7 +1541,7 @@ def test_manifest_applies_jinjaturtle_to_jinjifyable_managed_file(
     monkeypatch.setattr(jinjaturtle_mod, "run_jinjaturtle", lambda *a, **k: _Res())
 
     out_dir = tmp_path / "out"
-    manifest.manifest(str(bundle), str(out_dir), jinjaturtle="on")
+    manifest.manifest(str(bundle), str(out_dir), jinjaturtle=True)
 
     tmpl = out_dir / "roles" / "apt_config" / "templates" / "etc" / "apt" / "foo.ini.j2"
     assert tmpl.exists()

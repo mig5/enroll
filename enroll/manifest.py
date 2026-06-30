@@ -189,7 +189,7 @@ def manifest(
     out: str,
     *,
     fqdn: Optional[str] = None,
-    jinjaturtle: str = "auto",  # auto|on|off
+    jinjaturtle: Optional[bool] = None,
     sops_fingerprints: Optional[List[str]] = None,
     no_common_roles: bool = False,
 ) -> Optional[str]:

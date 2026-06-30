@@ -137,6 +137,38 @@ is_rpm_family() {
   esac
 }
 
+preferred_python_bin() {
+  if [[ -n "${ENROLL_TEST_PYTHON_BIN:-}" ]]; then
+    printf '%s' "${ENROLL_TEST_PYTHON_BIN}"
+    return
+  fi
+  if [[ -n "${PYTHON_BIN:-}" ]]; then
+    printf '%s' "${PYTHON_BIN}"
+    return
+  fi
+  if command -v python3.11 >/dev/null 2>&1; then
+    printf '%s' "python3.11"
+    return
+  fi
+  printf '%s' "python3"
+}
+
+require_python_for_jinjaturtle() {
+  local py_bin
+  py_bin="$(preferred_python_bin)"
+  command -v "${py_bin}" >/dev/null 2>&1 \
+    || fail "Python interpreter '${py_bin}' was not found; set PYTHON_BIN or ENROLL_TEST_PYTHON_BIN."
+  "${py_bin}" - <<'PY'
+import sys
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        f"Python {sys.version.split()[0]} is too old for JinjaTurtle; "
+        "install/use Python >= 3.10 (for AlmaLinux 9, set PYTHON_BIN=python3.11)."
+    )
+PY
+  printf '%s' "${py_bin}"
+}
+
 pkg_update_once() {
   if is_debian; then
     if [[ -z "${APT_UPDATED:-}" ]]; then
@@ -292,10 +324,13 @@ ensure_jinjaturtle_from_git() {
   if is_debian; then
     pkg_install ca-certificates git python3 python3-venv
   elif is_rpm_family; then
-    pkg_install ca-certificates git python3
+    pkg_install ca-certificates git python3.11 python3.11-pip
   else
     fail "Unsupported OS for JinjaTurtle git build: $(os_id)."
   fi
+
+  local jt_python
+  jt_python="$(require_python_for_jinjaturtle)"
 
   local src="${ENROLL_TEST_JINJATURTLE_SOURCE:-}"
   local cloned=0
@@ -316,7 +351,7 @@ ensure_jinjaturtle_from_git() {
   # the console script on PATH. Enroll only needs shutil.which("jinjaturtle")
   # to succeed, which a symlink into /usr/local/bin satisfies.
   rm -rf "${JINJATURTLE_VENV_DIR}"
-  run python3 -m venv "${JINJATURTLE_VENV_DIR}"
+  run "${jt_python}" -m venv "${JINJATURTLE_VENV_DIR}"
   run "${JINJATURTLE_VENV_DIR}/bin/pip" install --upgrade pip
   run "${JINJATURTLE_VENV_DIR}/bin/pip" install "${src}"
 

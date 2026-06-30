@@ -777,7 +777,7 @@ manifest(
     bundle_dir,
     out,
     fqdn=None,
-    jinjaturtle="auto",
+    jinjaturtle=None,
     sops_fingerprints=None,
     no_common_roles=False,
     target="ansible",
@@ -876,7 +876,7 @@ ansible.manifest_from_bundle_dir(
     bundle_dir,
     out_dir,
     fqdn=None,
-    jinjaturtle="auto",
+    jinjaturtle=None,
     no_common_roles=False,
 )
 ```
@@ -992,14 +992,14 @@ File: `jinjaturtle.py`
 JinjaTurtle mode is resolved by:
 
 ```python
-resolve_jinjaturtle_mode("auto" | "on" | "off")
+resolve_jinjaturtle_mode(None | True | False)
 ```
 
 Semantics:
 
-- `auto`: use `jinjaturtle` when it exists on `PATH`; otherwise copy raw files.
-- `on`: require `jinjaturtle`; error if missing.
-- `off`: never use it.
+- `None`: use `jinjaturtle` when it exists on `PATH`; otherwise copy raw files.
+- `True`: require `jinjaturtle`; error if missing.
+- `False`: never use it.
 
 Supported path types include structured config suffixes:
 
@@ -1285,12 +1285,12 @@ Disables the default grouping of package/service snapshots by Debian Section or 
 
 ### 20.3 `--jinjaturtle` / `--no-jinjaturtle`
 
-The CLI maps these to renderer mode strings:
+The CLI exposes these as boolean flags, not as options that take values:
 
 ```text
-no flag           -> auto
---jinjaturtle     -> on
---no-jinjaturtle  -> off
+no flag           -> use jinjaturtle when it exists on PATH
+--jinjaturtle     -> require jinjaturtle; fail if it is missing
+--no-jinjaturtle  -> disable jinjaturtle
 ```
 
 ---

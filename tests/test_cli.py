@@ -67,7 +67,7 @@ def test_cli_manifest_subcommand_calls_manifest(monkeypatch, tmp_path):
     assert called["harvest"] == str(tmp_path / "bundle")
     assert called["out"] == str(tmp_path / "ansible")
     assert called["fqdn"] is None
-    assert called["jinjaturtle"] == "auto"
+    assert called["jinjaturtle"] is None
     assert called["no_common_roles"] is False
 
 
@@ -202,7 +202,7 @@ def test_cli_enroll_subcommand_runs_harvest_then_manifest(monkeypatch, tmp_path)
     cli.main()
     assert calls == [
         ("harvest", str(tmp_path / "bundle"), False, [], []),
-        ("manifest", str(tmp_path / "bundle"), str(tmp_path / "ansible"), None, "auto"),
+        ("manifest", str(tmp_path / "bundle"), str(tmp_path / "ansible"), None, None),
     ]
 
 
@@ -491,7 +491,7 @@ def test_cli_manifest_common_args(monkeypatch, tmp_path):
 
     cli.main()
     assert called["fqdn"] == "example.test"
-    assert called["jinjaturtle"] == "off"
+    assert called["jinjaturtle"] is False
 
 
 def test_cli_explain_passes_args_and_writes_stdout(monkeypatch, capsys, tmp_path):
