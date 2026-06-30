@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -713,8 +714,53 @@ def role_order_key(role: str) -> tuple[int, str]:
     return (priority.get(role, 50), role)
 
 
+# Control characters (excluding ordinary tab) that must never reach generated
+# documentation. A raw newline/carriage return in a harvested value would let it
+# break out of a Markdown list item or code span and inject new document
+# structure (a fake heading, a misleading link/command block); other C0/C1
+# control bytes can smuggle terminal escape sequences when the README is printed.
+_MARKDOWN_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def sanitize_markdown_text(value: Any) -> str:
+    """Neutralise harvested text before it is spliced into generated Markdown.
+
+    Generated docs (the Ansible ``README.md``) embed harvested, attacker-
+    influenceable values such as the host name and captured file paths. These
+    are not executed by Ansible, but a value containing a newline, carriage
+    return, backtick, or control byte could otherwise break out of its
+    surrounding list item / code span and inject misleading Markdown structure
+    (a forged heading, a deceptive ``[link](...)``/command block) or a terminal
+    escape sequence when the file is viewed. This collapses any whitespace run
+    (including newlines and tabs) to a single space, drops other control bytes,
+    and replaces backticks with a similar-looking single quote so a value can
+    never escape an inline code span. It is deliberately lossy: the README is a
+    human-readable summary, and faithful representation of hostile bytes there
+    is not a goal.
+    """
+
+    text = str(value)
+    # Collapse any run of whitespace (newlines, CR, tabs, spaces) to one space so
+    # a harvested value stays on a single Markdown line / inside one code span.
+    text = re.sub(r"\s+", " ", text)
+    # Drop remaining control characters that survived the whitespace collapse.
+    text = _MARKDOWN_CONTROL_RE.sub("", text)
+    # A backtick would close an inline code span and let following characters be
+    # interpreted as Markdown; swap it for a visually-similar acute accent.
+    text = text.replace("`", "\u00b4")
+    return text.strip()
+
+
 def markdown_list(items: Iterable[Any], *, empty: str = "None.") -> str:
-    values = [str(item) for item in items if str(item)]
+    """Render already-composed Markdown list lines.
+
+    Callers that embed harvested values (``snapshot_note_lines``,
+    ``snapshot_excluded_lines``, ``path_reason_lines``) sanitise those values
+    with :func:`sanitize_markdown_text` before composing each line, so this
+    helper only joins lines it is given. It still drops empty entries.
+    """
+
+    values = [str(item) for item in items if str(item).strip()]
     return "\n".join(f"- {item}" for item in values) or f"- {empty}"
 
 
@@ -723,10 +769,10 @@ def path_reason_lines(
 ) -> List[str]:
     lines: List[str] = []
     for item in items or []:
-        path = str(item.get(source_key) or "")
+        path = sanitize_markdown_text(item.get(source_key) or "")
         if not path:
             continue
-        reason = str(item.get("reason") or "")
+        reason = sanitize_markdown_text(item.get("reason") or "")
         lines.append(f"{path} ({reason})" if reason else path)
     return lines
 
@@ -744,17 +790,20 @@ def iter_role_snapshots(roles: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]
 def snapshot_note_lines(roles: Mapping[str, Any]) -> List[str]:
     notes: List[str] = []
     for snap in iter_role_snapshots(roles):
-        source = str(
+        source = sanitize_markdown_text(
             snap.get("role_name") or snap.get("unit") or snap.get("package") or "role"
         )
-        notes.extend(f"`{source}`: {note}" for note in snap.get("notes", []) or [])
+        notes.extend(
+            f"`{source}`: {sanitize_markdown_text(note)}"
+            for note in snap.get("notes", []) or []
+        )
     return notes
 
 
 def snapshot_excluded_lines(roles: Mapping[str, Any]) -> List[str]:
     excluded: List[str] = []
     for snap in iter_role_snapshots(roles):
-        source = str(
+        source = sanitize_markdown_text(
             snap.get("role_name") or snap.get("unit") or snap.get("package") or "role"
         )
         for line in path_reason_lines(snap.get("excluded", []) or []):

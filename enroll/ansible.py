@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .cm import CMModule, markdown_list, snapshot_excluded_lines, snapshot_note_lines
+from .cm import (
+    CMModule,
+    markdown_list,
+    sanitize_markdown_text,
+    snapshot_excluded_lines,
+    snapshot_note_lines,
+)
 from .jinjaturtle import (
     jinjify_managed_files as _jinjify_managed_files,
     resolve_jinjaturtle_mode,
@@ -824,7 +830,7 @@ def _render_readme(
     fqdn: Optional[str] = None,
 ) -> str:
     host = state.get("host", {}) if isinstance(state.get("host"), dict) else {}
-    hostname = host.get("hostname") or "unknown"
+    hostname = sanitize_markdown_text(host.get("hostname") or "unknown") or "unknown"
     roles = state.get("roles", {}) if isinstance(state.get("roles"), dict) else {}
     excluded = snapshot_excluded_lines(roles)
     notes = snapshot_note_lines(roles)
