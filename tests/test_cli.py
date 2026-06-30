@@ -645,7 +645,9 @@ def test_cli_harvest_remote_sops_encrypts_and_prints_path(
     assert calls.get("encrypt")
 
 
-def test_cli_harvest_remote_password_required_exits_cleanly(monkeypatch):
+def test_cli_harvest_remote_password_required_exits_cleanly(
+    tmp_path: Path, monkeypatch
+):
     def boom(**kwargs):
         raise RemoteSudoPasswordRequired("pw required")
 
@@ -660,6 +662,8 @@ def test_cli_harvest_remote_password_required_exits_cleanly(monkeypatch):
             "example.com",
             "--remote-user",
             "root",
+            "--out",
+            str(tmp_path / "remote-harvest"),
         ],
     )
     with pytest.raises(SystemExit) as e:

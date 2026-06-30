@@ -969,6 +969,10 @@ def test_manifest_fqdn_existing_output_rejects_symlink_component(tmp_path: Path)
     _write_state(bundle, state)
 
     (out / "inventory").mkdir(parents=True)
+    # The output path itself must be root-safe so this test reaches the
+    # intended nested-symlink guard even when CI/root uses a permissive umask.
+    out.chmod(0o700)
+    (out / "inventory").chmod(0o700)
     escape.mkdir()
     (out / "inventory" / "host_vars").symlink_to(escape, target_is_directory=True)
 

@@ -36,7 +36,11 @@ def test_prepare_manifest_output_dir_allows_existing_clean_tree_in_site_mode(
 ):
     out = tmp_path / "site"
     out.mkdir()
+    # Match Enroll's root-run output safety expectations regardless of the
+    # ambient CI/container umask.
+    out.chmod(0o700)
     (out / ".git").mkdir()
+    (out / ".git").chmod(0o700)
     (out / ".git" / "ignored-link").symlink_to(tmp_path, target_is_directory=True)
 
     assert prepare_manifest_output_dir(out, allow_existing=True) == out
@@ -45,6 +49,9 @@ def test_prepare_manifest_output_dir_allows_existing_clean_tree_in_site_mode(
 def test_prepare_manifest_output_dir_rejects_existing_tree_symlink(tmp_path: Path):
     out = tmp_path / "site"
     out.mkdir()
+    # Keep the root-safety check from masking the specific symlink assertion on
+    # Forgejo/Docker hosts that run with umask 0002.
+    out.chmod(0o700)
     (out / "bad-link").symlink_to(tmp_path, target_is_directory=True)
 
     with pytest.raises(ManifestOutputError, match="contains a symlink"):

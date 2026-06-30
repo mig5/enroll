@@ -2,6 +2,11 @@
 
 set -Eeuo pipefail
 
+# These tests intentionally run as root and exercise Enroll's root-output
+# safety checks. Keep test-created directories private even on Forgejo/Docker
+# images that default to a permissive umask such as 0002.
+umask 077
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP_PARENT="${TMPDIR:-/tmp}"
 KEEP_WORKDIR=0
@@ -9,6 +14,7 @@ if [[ -n "${ENROLL_TEST_WORKDIR:-}" ]]; then
   WORK_DIR="${ENROLL_TEST_WORKDIR}"
   KEEP_WORKDIR=1
   mkdir -p "${WORK_DIR}"
+  chmod 700 "${WORK_DIR}" || true
 else
   WORK_DIR="$(mktemp -d "${TMP_PARENT%/}/enroll-tests.XXXXXX")"
 fi
