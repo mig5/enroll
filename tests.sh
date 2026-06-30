@@ -377,6 +377,9 @@ EOF
   cd "${PROJECT_ROOT}"
   rm -rf "${BUNDLE_DIR}" "${BUNDLE_DIFF_DIR}"
 
+  # Enforce decent perms on /root subdirs
+  find /root -type d -print0 | xargs -0 -r chmod 755
+
   run poetry run enroll harvest --out "${BUNDLE_DIR}" --include-path "${JINJATURTLE_FIXTURE}"
   run poetry run enroll explain "${BUNDLE_DIR}"
   run bash -c "poetry run enroll explain '${BUNDLE_DIR}' --format json | jq"
@@ -442,7 +445,6 @@ run_ansible_noop_tests() {
   cd "${PROJECT_ROOT}"
   rm -rf "${ANSIBLE_DIR}" "${ANSIBLE_NO_COMMON_DIR}" "${ANSIBLE_FQDN_DIR}"
 
-  find /root -type d -print0 | xargs -0 -r chmod 755
   run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_DIR}"
   ansible-galaxy install -r "${ANSIBLE_DIR}/requirements.yml"
   run ansible-lint "${ANSIBLE_DIR}"
