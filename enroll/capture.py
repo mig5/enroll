@@ -170,10 +170,22 @@ def capture_file(
         return False
 
     try:
-        if metadata is not None:
-            owner, group, mode = metadata
-        elif inspection is not None:
+        if inspection is not None:
+            # Prefer the stat taken from the no-follow descriptor that was
+            # actually inspected and whose bytes are about to be written. A
+            # caller-supplied ``metadata`` triplet (see below) may have been
+            # derived from a separate, symlink-following stat with its own
+            # time-of-check/time-of-use window, so it must not override the
+            # authoritative descriptor stat when we have one.
             owner, group, mode = stat_triplet_from_stat(inspection.stat_result)
+        elif metadata is not None:
+            # Fallback for callers that pre-computed metadata and are not using a
+            # real IgnorePolicy that returns a FileInspection (e.g. tests, or the
+            # /usr/local scanner when inspection is unavailable). This value is a
+            # convenience/perf optimisation only; it never widens what gets
+            # captured, since inspection (secret scan, no-follow, size/hardlink
+            # checks) has already run above.
+            owner, group, mode = metadata
         else:
             owner, group, mode = stat_triplet(abs_path)
     except OSError:

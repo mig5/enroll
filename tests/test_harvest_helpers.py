@@ -396,3 +396,78 @@ def test_collect_sysctl_snapshot_writes_generated_artifact(monkeypatch, tmp_path
     text = conf.read_text(encoding="utf-8")
     assert "net.ipv4.ip_forward = 1" in text
     assert "vm.swappiness = 10" in text
+
+
+def test_capture_file_prefers_inspected_stat_over_metadata(tmp_path):
+    """When a real IgnorePolicy inspection is available, capture_file must record
+    owner/group/mode from the no-follow descriptor it actually inspected, not
+    from a caller-supplied ``metadata`` triplet (which may come from a separate,
+    symlink-following stat with its own TOCTOU window)."""
+
+    import os
+
+    from enroll.capture import capture_file
+    from enroll.ignore import IgnorePolicy
+    from enroll.pathfilter import PathFilter
+    from enroll.harvest_types import ExcludedFile, ManagedFile
+
+    src = tmp_path / "conf"
+    src.write_text("key = value\n", encoding="utf-8")
+    os.chmod(src, 0o640)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+
+    managed: list[ManagedFile] = []
+    excluded: list[ExcludedFile] = []
+    ok = capture_file(
+        bundle_dir=str(bundle),
+        role_name="r",
+        abs_path=str(src),
+        reason="custom_unowned",
+        policy=IgnorePolicy(),
+        path_filter=PathFilter([], []),
+        managed_out=managed,
+        excluded_out=excluded,
+        metadata=("BOGUSOWNER", "BOGUSGROUP", "7777"),
+    )
+    assert ok
+    mf = managed[0]
+    # The inspected descriptor's real mode wins over the bogus supplied metadata.
+    assert mf.mode == "0640"
+    assert mf.owner != "BOGUSOWNER"
+    assert mf.group != "BOGUSGROUP"
+
+
+def test_capture_file_metadata_used_when_no_inspection(tmp_path):
+    """A caller-supplied metadata triplet is still honoured as a fallback for
+    non-real policies that expose only deny_reason() (tests/legacy callers)."""
+
+    from enroll.capture import capture_file
+    from enroll.pathfilter import PathFilter
+    from enroll.harvest_types import ExcludedFile, ManagedFile
+
+    class _DenyReasonOnlyPolicy:
+        def deny_reason(self, _path):
+            return None
+
+    src = tmp_path / "conf"
+    src.write_text("x\n", encoding="utf-8")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+
+    managed: list[ManagedFile] = []
+    excluded: list[ExcludedFile] = []
+    ok = capture_file(
+        bundle_dir=str(bundle),
+        role_name="r",
+        abs_path=str(src),
+        reason="custom_unowned",
+        policy=_DenyReasonOnlyPolicy(),
+        path_filter=PathFilter([], []),
+        managed_out=managed,
+        excluded_out=excluded,
+        metadata=("myowner", "mygroup", "0600"),
+    )
+    assert ok
+    mf = managed[0]
+    assert (mf.owner, mf.group, mf.mode) == ("myowner", "mygroup", "0600")
