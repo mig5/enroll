@@ -29,6 +29,7 @@ from .state import (
 from .pathfilter import PathFilter
 from .sopsutil import decrypt_file_binary_to, require_sops_cmd
 from .manifest_safety import freeze_directory_bundle
+from .cm import sanitize_markdown_text, sanitize_report_text
 
 
 def _validate_diff_bundle(label: str, bundle_dir: Path) -> None:
@@ -651,19 +652,26 @@ def format_report(report: Dict[str, Any], *, fmt: str = "text") -> str:
 
 
 def _report_text(report: Dict[str, Any]) -> str:
+    # Harvested, attacker-influenceable values (host names, file paths, owners,
+    # groups, link targets, metadata old/new values) must be neutralised before
+    # being spliced into the report. A raw newline/CR could otherwise forge
+    # additional report lines, and other control bytes could smuggle terminal
+    # escape sequences into a printed or piped report. ``s`` is the text-report
+    # sanitiser (collapses whitespace, drops control bytes).
+    s = sanitize_report_text
     lines: List[str] = []
     old = report.get("old", {})
     new = report.get("new", {})
     lines.append(
-        f"enroll diff report (generated {report.get('generated_at')})\n"
-        f"old: {old.get('input')} (host={old.get('host')}, state_mtime={old.get('state_mtime')})\n"
-        f"new: {new.get('input')} (host={new.get('host')}, state_mtime={new.get('state_mtime')})"
+        f"enroll diff report (generated {s(report.get('generated_at'))})\n"
+        f"old: {s(old.get('input'))} (host={s(old.get('host'))}, state_mtime={s(old.get('state_mtime'))})\n"
+        f"new: {s(new.get('input'))} (host={s(new.get('host'))}, state_mtime={s(new.get('state_mtime'))})"
     )
 
     filt = report.get("filters", {}) or {}
     ex_paths = filt.get("exclude_paths", []) or []
     if ex_paths:
-        lines.append(f"file exclude patterns: {', '.join(str(p) for p in ex_paths)}")
+        lines.append(f"file exclude patterns: {', '.join(s(p) for p in ex_paths)}")
 
     if filt.get("ignore_package_versions"):
         ignored = int(
@@ -683,73 +691,77 @@ def _report_text(report: Dict[str, Any]) -> str:
     suffix = f" (ignored {ignored_v})" if ignored_v else ""
     lines.append(f"  version_changed: {vc}{suffix}")
     for p in pk.get("added", []) or []:
-        lines.append(f"    + {p}")
+        lines.append(f"    + {s(p)}")
     for p in pk.get("removed", []) or []:
-        lines.append(f"    - {p}")
+        lines.append(f"    - {s(p)}")
     for ch in pk.get("version_changed", []) or []:
-        lines.append(f"    ~ {ch.get('package')}: {ch.get('old')} -> {ch.get('new')}")
+        lines.append(
+            f"    ~ {s(ch.get('package'))}: {s(ch.get('old'))} -> {s(ch.get('new'))}"
+        )
 
     sv = report.get("services", {})
     lines.append("\nServices (enabled systemd units)")
     for u in sv.get("enabled_added", []) or []:
-        lines.append(f"  + {u}")
+        lines.append(f"  + {s(u)}")
     for u in sv.get("enabled_removed", []) or []:
-        lines.append(f"  - {u}")
+        lines.append(f"  - {s(u)}")
     for ch in sv.get("changed", []) or []:
         unit = ch.get("unit")
-        lines.append(f"  * {unit} changed")
+        lines.append(f"  * {s(unit)} changed")
         for k, v in (ch.get("changes") or {}).items():
             if k == "packages":
                 a = (v or {}).get("added", [])
                 r = (v or {}).get("removed", [])
                 if a:
-                    lines.append(f"      packages +: {', '.join(a)}")
+                    lines.append(f"      packages +: {', '.join(s(x) for x in a)}")
                 if r:
-                    lines.append(f"      packages -: {', '.join(r)}")
+                    lines.append(f"      packages -: {', '.join(s(x) for x in r)}")
             else:
-                lines.append(f"      {k}: {v.get('old')} -> {v.get('new')}")
+                lines.append(f"      {s(k)}: {s(v.get('old'))} -> {s(v.get('new'))}")
 
     us = report.get("users", {})
     lines.append("\nUsers")
     for u in us.get("added", []) or []:
-        lines.append(f"  + {u}")
+        lines.append(f"  + {s(u)}")
     for u in us.get("removed", []) or []:
-        lines.append(f"  - {u}")
+        lines.append(f"  - {s(u)}")
     for ch in us.get("changed", []) or []:
         name = ch.get("name")
-        lines.append(f"  * {name} changed")
+        lines.append(f"  * {s(name)} changed")
         for k, v in (ch.get("changes") or {}).items():
             if k == "supplementary_groups":
                 a = (v or {}).get("added", [])
                 r = (v or {}).get("removed", [])
                 if a:
-                    lines.append(f"      groups +: {', '.join(a)}")
+                    lines.append(f"      groups +: {', '.join(s(x) for x in a)}")
                 if r:
-                    lines.append(f"      groups -: {', '.join(r)}")
+                    lines.append(f"      groups -: {', '.join(s(x) for x in r)}")
             else:
-                lines.append(f"      {k}: {v.get('old')} -> {v.get('new')}")
+                lines.append(f"      {s(k)}: {s(v.get('old'))} -> {s(v.get('new'))}")
 
     fl = report.get("files", {})
     lines.append("\nFiles")
     for e in fl.get("added", []) or []:
         lines.append(
-            f"  + {e.get('path')}  (role={e.get('role')}, reason={e.get('reason')})"
+            f"  + {s(e.get('path'))}  (role={s(e.get('role'))}, reason={s(e.get('reason'))})"
         )
     for e in fl.get("removed", []) or []:
         lines.append(
-            f"  - {e.get('path')}  (role={e.get('role')}, reason={e.get('reason')})"
+            f"  - {s(e.get('path'))}  (role={s(e.get('role'))}, reason={s(e.get('reason'))})"
         )
     for ch in fl.get("changed", []) or []:
         p = ch.get("path")
-        lines.append(f"  * {p} changed")
+        lines.append(f"  * {s(p)} changed")
         for k, v in (ch.get("changes") or {}).items():
             if k == "content":
                 if "old_sha256" in (v or {}):
                     lines.append("      content: sha256 changed")
                 else:
-                    lines.append(f"      content: {v.get('old')} -> {v.get('new')}")
+                    lines.append(
+                        f"      content: {s(v.get('old'))} -> {s(v.get('new'))}"
+                    )
             else:
-                lines.append(f"      {k}: {v.get('old')} -> {v.get('new')}")
+                lines.append(f"      {s(k)}: {s(v.get('old'))} -> {s(v.get('new'))}")
 
     if not any(
         [
@@ -773,14 +785,23 @@ def _report_text(report: Dict[str, Any]) -> str:
 
 
 def _report_markdown(report: Dict[str, Any]) -> str:
+    # Harvested, attacker-influenceable values (host names, file paths, owners,
+    # groups, link targets, metadata old/new values) are embedded in Markdown
+    # code spans below. Without neutralisation a value containing a backtick,
+    # newline, or control byte could break out of its code span / list item and
+    # inject misleading Markdown structure (a forged heading, a deceptive
+    # ``[link](...)``), exactly as the generated README guards against. ``m`` is
+    # the Markdown sanitiser used for the README; reuse it here so both
+    # documentation surfaces share one policy.
+    m = sanitize_markdown_text
     old = report.get("old", {})
     new = report.get("new", {})
     out: List[str] = []
     out.append("# enroll diff report\n")
-    out.append(f"Generated: `{report.get('generated_at')}`\n")
+    out.append(f"Generated: `{m(report.get('generated_at'))}`\n")
     out.append(
-        f"- **Old**: `{old.get('input')}` (host={old.get('host')}, state_mtime={old.get('state_mtime')})\n"
-        f"- **New**: `{new.get('input')}` (host={new.get('host')}, state_mtime={new.get('state_mtime')})\n"
+        f"- **Old**: `{m(old.get('input'))}` (host={m(old.get('host'))}, state_mtime={m(old.get('state_mtime'))})\n"
+        f"- **New**: `{m(new.get('input'))}` (host={m(new.get('host'))}, state_mtime={m(new.get('state_mtime'))})\n"
     )
 
     filt = report.get("filters", {}) or {}
@@ -788,7 +809,7 @@ def _report_markdown(report: Dict[str, Any]) -> str:
     if ex_paths:
         out.append(
             "- **File exclude patterns**: "
-            + ", ".join(f"`{p}`" for p in ex_paths)
+            + ", ".join(f"`{m(p)}`" for p in ex_paths)
             + "\n"
         )
 
@@ -805,10 +826,10 @@ def _report_markdown(report: Dict[str, Any]) -> str:
     out.append("## Packages\n")
     out.append(f"- Added: {len(pk.get('added', []) or [])}\n")
     for p in pk.get("added", []) or []:
-        out.append(f"  - `+ {p}`\n")
+        out.append(f"  - `+ {m(p)}`\n")
     out.append(f"- Removed: {len(pk.get('removed', []) or [])}\n")
     for p in pk.get("removed", []) or []:
-        out.append(f"  - `- {p}`\n")
+        out.append(f"  - `- {m(p)}`\n")
 
     ignored_v = int(pk.get("version_changed_ignored_count") or 0)
     vc = len(pk.get("version_changed", []) or [])
@@ -816,7 +837,7 @@ def _report_markdown(report: Dict[str, Any]) -> str:
     out.append(f"- Version changed: {vc}{suffix}\n")
     for ch in pk.get("version_changed", []) or []:
         out.append(
-            f"  - `~ {ch.get('package')}`: `{ch.get('old')}` → `{ch.get('new')}`\n"
+            f"  - `~ {m(ch.get('package'))}`: `{m(ch.get('old'))}` → `{m(ch.get('new'))}`\n"
         )
 
     sv = report.get("services", {})
@@ -824,60 +845,64 @@ def _report_markdown(report: Dict[str, Any]) -> str:
     if sv.get("enabled_added"):
         out.append("- Enabled added\n")
         for u in sv.get("enabled_added", []) or []:
-            out.append(f"  - `+ {u}`\n")
+            out.append(f"  - `+ {m(u)}`\n")
     if sv.get("enabled_removed"):
         out.append("- Enabled removed\n")
         for u in sv.get("enabled_removed", []) or []:
-            out.append(f"  - `- {u}`\n")
+            out.append(f"  - `- {m(u)}`\n")
     if sv.get("changed"):
         out.append("- Changed\n")
         for ch in sv.get("changed", []) or []:
             unit = ch.get("unit")
-            out.append(f"  - `{unit}`\n")
+            out.append(f"  - `{m(unit)}`\n")
             for k, v in (ch.get("changes") or {}).items():
                 if k == "packages":
                     a = (v or {}).get("added", [])
                     r = (v or {}).get("removed", [])
                     if a:
                         out.append(
-                            f"    - packages added: {', '.join('`'+x+'`' for x in a)}\n"
+                            f"    - packages added: {', '.join('`'+m(x)+'`' for x in a)}\n"
                         )
                     if r:
                         out.append(
-                            f"    - packages removed: {', '.join('`'+x+'`' for x in r)}\n"
+                            f"    - packages removed: {', '.join('`'+m(x)+'`' for x in r)}\n"
                         )
                 else:
-                    out.append(f"    - {k}: `{v.get('old')}` → `{v.get('new')}`\n")
+                    out.append(
+                        f"    - {m(k)}: `{m(v.get('old'))}` → `{m(v.get('new'))}`\n"
+                    )
 
     us = report.get("users", {})
     out.append("## Users\n")
     if us.get("added"):
         out.append("- Added\n")
         for u in us.get("added", []) or []:
-            out.append(f"  - `+ {u}`\n")
+            out.append(f"  - `+ {m(u)}`\n")
     if us.get("removed"):
         out.append("- Removed\n")
         for u in us.get("removed", []) or []:
-            out.append(f"  - `- {u}`\n")
+            out.append(f"  - `- {m(u)}`\n")
     if us.get("changed"):
         out.append("- Changed\n")
         for ch in us.get("changed", []) or []:
             name = ch.get("name")
-            out.append(f"  - `{name}`\n")
+            out.append(f"  - `{m(name)}`\n")
             for k, v in (ch.get("changes") or {}).items():
                 if k == "supplementary_groups":
                     a = (v or {}).get("added", [])
                     r = (v or {}).get("removed", [])
                     if a:
                         out.append(
-                            f"    - groups added: {', '.join('`'+x+'`' for x in a)}\n"
+                            f"    - groups added: {', '.join('`'+m(x)+'`' for x in a)}\n"
                         )
                     if r:
                         out.append(
-                            f"    - groups removed: {', '.join('`'+x+'`' for x in r)}\n"
+                            f"    - groups removed: {', '.join('`'+m(x)+'`' for x in r)}\n"
                         )
                 else:
-                    out.append(f"    - {k}: `{v.get('old')}` → `{v.get('new')}`\n")
+                    out.append(
+                        f"    - {m(k)}: `{m(v.get('old'))}` → `{m(v.get('new'))}`\n"
+                    )
 
     fl = report.get("files", {})
     out.append("## Files\n")
@@ -885,29 +910,31 @@ def _report_markdown(report: Dict[str, Any]) -> str:
         out.append("- Added\n")
         for e in fl.get("added", []) or []:
             out.append(
-                f"  - `+ {e.get('path')}` (role={e.get('role')}, reason={e.get('reason')})\n"
+                f"  - `+ {m(e.get('path'))}` (role={m(e.get('role'))}, reason={m(e.get('reason'))})\n"
             )
     if fl.get("removed"):
         out.append("- Removed\n")
         for e in fl.get("removed", []) or []:
             out.append(
-                f"  - `- {e.get('path')}` (role={e.get('role')}, reason={e.get('reason')})\n"
+                f"  - `- {m(e.get('path'))}` (role={m(e.get('role'))}, reason={m(e.get('reason'))})\n"
             )
     if fl.get("changed"):
         out.append("- Changed\n")
         for ch in fl.get("changed", []) or []:
             p = ch.get("path")
-            out.append(f"  - `{p}`\n")
+            out.append(f"  - `{m(p)}`\n")
             for k, v in (ch.get("changes") or {}).items():
                 if k == "content":
                     if "old_sha256" in (v or {}):
                         out.append("    - content: sha256 changed\n")
                     else:
                         out.append(
-                            f"    - content: `{v.get('old')}` → `{v.get('new')}`\n"
+                            f"    - content: `{m(v.get('old'))}` → `{m(v.get('new'))}`\n"
                         )
                 else:
-                    out.append(f"    - {k}: `{v.get('old')}` → `{v.get('new')}`\n")
+                    out.append(
+                        f"    - {m(k)}: `{m(v.get('old'))}` → `{m(v.get('new'))}`\n"
+                    )
 
     if not any(
         [

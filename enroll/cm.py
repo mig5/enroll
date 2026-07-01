@@ -751,6 +751,32 @@ def sanitize_markdown_text(value: Any) -> str:
     return text.strip()
 
 
+def sanitize_report_text(value: Any) -> str:
+    """Neutralise harvested text before it is spliced into a plaintext report.
+
+    The ``enroll diff`` text/markdown reports embed harvested, attacker-
+    influenceable values (file paths, owners, groups, link targets, host names,
+    metadata old/new values). Even in the non-Markdown text report a raw
+    newline or carriage return in such a value would let it forge additional
+    report lines (e.g. a fake "No differences detected." line or a spoofed
+    package/file entry), and other C0/C1 control bytes could smuggle terminal
+    escape sequences when the report is printed or piped to a notification
+    channel.
+
+    This collapses any whitespace run (including newlines and tabs) to a single
+    space and drops other control bytes. Unlike :func:`sanitize_markdown_text`
+    it does not rewrite backticks, since the plaintext report does not use
+    Markdown code spans. It is deliberately lossy: the report is a
+    human-readable summary, not a faithful byte-for-byte rendering of hostile
+    input.
+    """
+
+    text = str(value)
+    text = re.sub(r"\s+", " ", text)
+    text = _MARKDOWN_CONTROL_RE.sub("", text)
+    return text.strip()
+
+
 def markdown_list(items: Iterable[Any], *, empty: str = "None.") -> str:
     """Render already-composed Markdown list lines.
 

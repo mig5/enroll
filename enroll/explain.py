@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 from .diff import _bundle_from_input  # reuse existing bundle handling
 from .state import load_state
+from .cm import sanitize_report_text
 
 
 @dataclass(frozen=True)
@@ -527,15 +528,25 @@ def explain_state(
     if fmt == "json":
         return json.dumps(report, indent=2, sort_keys=True)
 
-    # Text rendering
+    # Text rendering.
+    #
+    # Harvested, attacker-influenceable values (host name, file paths used as
+    # examples, include/exclude patterns, snapshot notes) are interpolated into
+    # this human-readable text. Route each through ``sanitize_report_text`` (the
+    # same helper the diff text report uses) so a value containing a raw newline
+    # cannot forge an additional output line and a control byte cannot smuggle a
+    # terminal escape sequence when the explanation is printed or written with
+    # --out. The JSON branch above does not need this: json.dumps already escapes
+    # control characters and cannot have its structure altered by a string value.
+    s = sanitize_report_text
     out: List[str] = []
-    out.append(f"Enroll explained: {harvest}")
+    out.append(f"Enroll explained: {s(harvest)}")
     hn = host.get("hostname") or "(unknown host)"
     os_family = host.get("os") or "unknown"
     pkg_backend = host.get("pkg_backend") or "?"
     ver = enroll.get("version") or "?"
-    out.append(f"Host: {hn} (os: {os_family}, pkg: {pkg_backend})")
-    out.append(f"Enroll: {ver}")
+    out.append(f"Host: {s(hn)} (os: {s(os_family)}, pkg: {s(pkg_backend)})")
+    out.append(f"Enroll: {s(ver)}")
     out.append("")
 
     out.append("Inventory")
@@ -545,30 +556,30 @@ def explain_state(
         for ov in observed_via_summary:
             extra = ""
             if ov.get("top_refs"):
-                extra = f" (e.g. {', '.join(ov['top_refs'])})"
-            out.append(f"  - {ov['kind']}: {ov['count']} – {ov['why']}{extra}")
+                extra = f" (e.g. {', '.join(s(x) for x in ov['top_refs'])})"
+            out.append(f"  - {s(ov['kind'])}: {ov['count']} – {s(ov['why'])}{extra}")
     out.append("")
 
     out.append("Roles collected")
     for rs in role_summaries:
-        out.append(f"- {rs['role']}: {rs['summary']}")
+        out.append(f"- {s(rs['role'])}: {s(rs['summary'])}")
         if rs["role"] == "extra_paths":
             inc = rs.get("include_patterns") or []
             exc = rs.get("exclude_patterns") or []
             if inc:
                 suffix = "…" if len(inc) > max_examples else ""
                 out.append(
-                    f"    include_patterns: {', '.join(map(str, inc[:max_examples]))}{suffix}"
+                    f"    include_patterns: {', '.join(s(x) for x in inc[:max_examples])}{suffix}"
                 )
             if exc:
                 suffix = "…" if len(exc) > max_examples else ""
                 out.append(
-                    f"    exclude_patterns: {', '.join(map(str, exc[:max_examples]))}{suffix}"
+                    f"    exclude_patterns: {', '.join(s(x) for x in exc[:max_examples])}{suffix}"
                 )
         notes = rs.get("notes") or []
         if notes:
             for n in notes[:max_examples]:
-                out.append(f"    note: {n}")
+                out.append(f"    note: {s(n)}")
             if len(notes) > max_examples:
                 out.append(
                     f"    note: (+{len(notes) - max_examples} more. Use --format json to see them all)"
@@ -579,8 +590,8 @@ def explain_state(
     if managed_file_reasons:
         for r in managed_file_reasons[:15]:
             exs = r.get("examples") or []
-            ex_txt = f" Examples: {', '.join(exs)}" if exs else ""
-            out.append(f"- {r['reason']} ({r['count']}): {r['why']}.{ex_txt}")
+            ex_txt = f" Examples: {', '.join(s(x) for x in exs)}" if exs else ""
+            out.append(f"- {s(r['reason'])} ({r['count']}): {s(r['why'])}.{ex_txt}")
         if len(managed_file_reasons) > 15:
             out.append(
                 f"- (+{len(managed_file_reasons) - 15} more reasons. Use --format json to see them all)"
@@ -592,15 +603,15 @@ def explain_state(
         out.append("")
         out.append("Why directories were included (managed_dirs.reason)")
         for r in managed_dir_reasons:
-            out.append(f"- {r['reason']} ({r['count']}): {r['why']}")
+            out.append(f"- {s(r['reason'])} ({r['count']}): {s(r['why'])}")
 
     out.append("")
     out.append("Why paths were excluded")
     if excluded_reasons:
         for r in excluded_reasons:
             exs = r.get("examples") or []
-            ex_txt = f" Examples: {', '.join(exs)}" if exs else ""
-            out.append(f"- {r['reason']} ({r['count']}): {r['why']}.{ex_txt}")
+            ex_txt = f" Examples: {', '.join(s(x) for x in exs)}" if exs else ""
+            out.append(f"- {s(r['reason'])} ({r['count']}): {s(r['why'])}.{ex_txt}")
     else:
         out.append("- (no excluded paths)")
 
