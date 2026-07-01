@@ -13,6 +13,7 @@ import jsonschema
 from .diff import BundleRef, _bundle_from_input
 from .manifest_safety import ArtifactSafetyError, safe_artifact_file
 from .state import load_state
+from .cm import sanitize_report_text
 
 
 @dataclass
@@ -25,30 +26,41 @@ class ValidationResult:
         return not self.errors
 
     def to_dict(self) -> Dict[str, Any]:
+        # Error/warning messages embed harvested, attacker-influenceable values
+        # (a managed_file src_rel, a role name, artifact paths). A raw newline in
+        # such a value could forge an extra message line in the text output, and
+        # a control byte could smuggle a terminal escape sequence when the result
+        # is printed or piped. Neutralise every message centrally here (and in
+        # to_text) so all current and future append sites are covered by one
+        # chokepoint, mirroring how the rest of Enroll sanitises harvested values
+        # before they reach a report/README/explain surface.
         return {
             "ok": self.ok,
-            "errors": list(self.errors),
-            "warnings": list(self.warnings),
+            "errors": [sanitize_report_text(e) for e in self.errors],
+            "warnings": [sanitize_report_text(w) for w in self.warnings],
         }
 
     def to_text(self) -> str:
-        lines: List[str] = []
-        if not self.errors and not self.warnings:
-            lines.append("OK: harvest bundle validated")
-        elif not self.errors and self.warnings:
-            lines.append(f"WARN: {len(self.warnings)} warning(s)")
-        else:
-            lines.append(f"ERROR: {len(self.errors)} validation error(s)")
+        errors = [sanitize_report_text(e) for e in self.errors]
+        warnings = [sanitize_report_text(w) for w in self.warnings]
 
-        if self.errors:
+        lines: List[str] = []
+        if not errors and not warnings:
+            lines.append("OK: harvest bundle validated")
+        elif not errors and warnings:
+            lines.append(f"WARN: {len(warnings)} warning(s)")
+        else:
+            lines.append(f"ERROR: {len(errors)} validation error(s)")
+
+        if errors:
             lines.append("")
             lines.append("Errors:")
-            for e in self.errors:
+            for e in errors:
                 lines.append(f"- {e}")
-        if self.warnings:
+        if warnings:
             lines.append("")
             lines.append("Warnings:")
-            for w in self.warnings:
+            for w in warnings:
                 lines.append(f"- {w}")
         return "\n".join(lines) + "\n"
 
