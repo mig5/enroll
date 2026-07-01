@@ -180,8 +180,21 @@ HIGH_CONFIDENCE_SECRET_PATTERNS = [
     ),
     # HTTP(S) Authorization / Proxy-Authorization header values carrying a
     # bearer/basic/digest credential.
+    #
+    # This is high-confidence and therefore scanned against the RAW bytes so a
+    # *commented-out* populated header (a real credential that was merely
+    # disabled) is still refused in safe mode. For that to work the pattern must
+    # NOT anchor to the physical start of line with ``^\s*``: a single-line
+    # comment marker (``#``, ``;``, ``//``, ``*`` block-continuation, ``dnl``,
+    # ``--``, ``REM`` ...) sits between the line start and ``authorization`` and
+    # would defeat a ``^\s*`` anchor, letting the header slip past the raw scan
+    # (the soft/comment-aware tier never sees it, because that tier strips
+    # comment lines by design). Instead we require the header to be preceded by
+    # start-of-input or any non-identifier character, which is comment-marker
+    # agnostic and still avoids matching an identifier such as
+    # ``my_authorization:``.
     re.compile(
-        rb"(?im)^\s*(?:proxy-)?authorization\s*:\s*"
+        rb"(?im)(?:^|[^A-Za-z0-9_.-])(?:proxy-)?authorization\s*:\s*"
         rb"(?:bearer|basic|token|digest)\s+\S"
     ),
 ]

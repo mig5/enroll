@@ -30,6 +30,46 @@ def test_authorization_headers_denied():
         ), data
 
 
+def test_commented_authorization_headers_denied():
+    """A commented-out populated Authorization header is a real (disabled)
+    credential and must still be refused in safe mode, regardless of the
+    single-line comment marker used. This is high-confidence material, so it is
+    scanned against the raw bytes; the pattern must not anchor to the physical
+    start of line, or a leading comment marker defeats it (the soft/comment-aware
+    tier never sees it because that tier strips comment lines)."""
+
+    pol = IgnorePolicy(dangerous=False)
+    for data in [
+        b"# Authorization: Bearer eyJhbGciOiJIUzI1NiIs\n",
+        b"#Authorization: Bearer eyJhbGciOiJIUzI1NiIs\n",
+        b"; Authorization: Basic dXNlcjpwYXNzd29yZA==\n",
+        b"// Authorization: Digest abc123\n",
+        b"   //Authorization: Bearer abc123\n",
+        b"* Authorization: Bearer abc123\n",  # block-comment continuation line
+        b"\t# Authorization: Token abc123\n",
+        b"dnl Authorization: Bearer abc123\n",  # m4-style comment
+        b"-- Proxy-Authorization: Basic abc123\n",  # sql/lua-style comment
+        b"REM Authorization: Bearer abc123\n",  # bat-style comment
+        b"# Proxy-Authorization: Bearer xyz\n",
+    ]:
+        assert (
+            pol._content_deny_reason("/etc/svc/app.conf", data) == "sensitive_content"
+        ), data
+
+
+def test_authorization_header_word_not_false_positive():
+    """The Authorization-header pattern must not fire on benign prose mentions,
+    a non-scheme value, or an identifier that merely ends in 'authorization'."""
+
+    pol = IgnorePolicy(dangerous=False)
+    for data in [
+        b"# how to set the authorization header is documented elsewhere\n",
+        b"authorization: required\n",
+        b"my_authorization: bearer x\n",
+    ]:
+        assert pol._content_deny_reason("/etc/svc/app.conf", data) is None, data
+
+
 def test_benign_urls_not_false_positive():
     pol = IgnorePolicy(dangerous=False)
     for data in [
