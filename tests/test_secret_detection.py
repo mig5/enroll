@@ -221,3 +221,65 @@ def test_commented_out_credential_values_require_dangerous():
         ), data
         # ...but --dangerous still collects it (operator's explicit choice).
         assert dangerous._content_deny_reason("/etc/app/app.conf", data) is None, data
+
+
+def test_whitespace_separated_compound_credentials_denied():
+    """Security regression (audit finding): a populated credential assignment
+    that uses whitespace (space/tab) instead of ':'/'=' as the separator must
+    still be refused in safe mode when the key is a *compound* credential name.
+
+    The soft keyword tier cannot catch these because its ``\\b`` boundary is
+    defeated by the leading underscore in a compound key (e.g. the ``secret`` in
+    ``client_secret`` is preceded by ``_``, a word character), and the
+    assignment tier only recognised ``:``/``=`` separators. Some real config
+    styles (.netrc-like files, some daemon configs) use whitespace separators,
+    so a value such as ``aws_secret_access_key wJalr...`` would previously leak.
+    """
+    safe = IgnorePolicy(dangerous=False)
+    dangerous = IgnorePolicy(dangerous=True)
+    leaking = [
+        b"aws_secret_access_key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+        b"aws_access_key_id AKIAIOSFODNN7EXAMPLE\n",
+        b"client_secret hunter2deadbeef\n",
+        b"oauth_token ya29.A0ARrdaReALlOOkINgToKeN\n",
+        b"refresh_token 1//0longrefreshvalue\n",
+        b"my_token deadbeef1234\n",
+        b"app_password s3cr3tValue\n",
+        b"db_pw s3cr3tvalue\n",
+        b"private_key /etc/ssl/private/app.pem\n",
+        b"session_key 0xDEADBEEFCAFE\n",
+        b"\tapi_key   AKIA12345678\n",
+    ]
+    for data in leaking:
+        assert (
+            safe._content_deny_reason("/root/.netrc", data) == "sensitive_content"
+        ), data
+        # --dangerous remains the explicit opt-in to collect such material.
+        assert dangerous._content_deny_reason("/root/.netrc", data) is None, data
+
+
+def test_whitespace_separated_non_credentials_still_allowed():
+    """The whitespace-separated credential rule must not false-positive on
+    ordinary config or PAM directives. It is intentionally restricted to
+    *compound* credential keys with a value-like token, so standalone words and
+    common config lines are not affected by it.
+
+    (Standalone ``password``/``token``/``secret`` words on a non-comment line
+    are still caught by the comment-aware soft tier; that is unchanged. The
+    cases here are ones that must remain collectable: PAM stack directives, SSH
+    key-file path directives, and plain settings.)
+    """
+    pol = IgnorePolicy(dangerous=False)
+    allowed = [
+        # SSH key-file path directives (key material is denied by path globs,
+        # not by content here).
+        b"HostKey /etc/ssh/ssh_host_ed25519_key\n",
+        b"host_key /etc/ssh/known\n",
+        b"public_key /home/u/.ssh/id_rsa.pub\n",
+        # Plain numeric / boolean settings.
+        b"max_connections 1024\n",
+        b"PermitRootLogin no\n",
+        b"PasswordAuthentication yes\n",
+    ]
+    for data in allowed:
+        assert pol._content_deny_reason("/etc/app/app.conf", data) is None, data

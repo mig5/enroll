@@ -129,6 +129,55 @@ HIGH_CONFIDENCE_SECRET_PATTERNS = [
     # Credentials embedded in connection-string URIs, e.g.
     #   postgres://user:pass@host, redis://:pass@host, amqp://u:p@host
     re.compile(rb"(?i)[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s@]+@[^/\s]"),
+    # Whitespace-separated credential assignments for COMPOUND credential keys.
+    #
+    # The assignment pattern above only recognises a value when the key and value
+    # are joined by ':' or '='. Some real config styles (.netrc-like files, a
+    # number of daemon configs) instead separate a key from its value with one or
+    # more spaces/tabs, e.g.
+    #   aws_secret_access_key wJalrXUtnFEMI/K7MDENG...
+    #   client_secret  hunter2value
+    #   oauth_token ya29.aRealLookingToken
+    # The comment-aware soft tier below would not catch these because its keyword
+    # boundary (\b) is defeated by the leading underscore in a compound key
+    # (e.g. the 'secret' in 'client_secret' has a '_' -- a word char -- before it,
+    # so \bsecret\b does not match). This pattern closes that gap.
+    #
+    # It is deliberately restricted to *compound* keys -- a credential keyword that
+    # is joined to a prefix (case 1) or is itself a multi-word credential name
+    # (case 2). Standalone English words ('password', 'token', 'secret') are NOT
+    # matched here: they are already handled, comment-aware, by the soft tier, and
+    # matching them with a whitespace separator would false-positive on prose and
+    # on PAM 'password <verb> ...' stack directives. The trailing value test
+    # requires a value-like token (>=6 chars, or one containing a digit/secret-ish
+    # character) so a short config value such as 'yes'/'no' does not trip it.
+    re.compile(
+        rb"""(?ixm)
+        (?:^|[^A-Za-z0-9_.-])
+        [\"']?
+        (?:
+            (?:[A-Za-z0-9]+[_.-])+
+            (?:password|passwd|passphrase|pwd|pw|token|secret|credential|credentials)
+            |
+            (?:[A-Za-z0-9]+[_.-])*
+            (?:
+                auth[_.-]token|access[_.-]token|refresh[_.-]token|
+                client[_.-]secret|secret[_.-]key|
+                api[_.-]key|access[_.-]key|private[_.-]key|
+                aws[_.-]access[_.-]key[_.-]id|aws[_.-]secret[_.-]access[_.-]key|
+                azure[_.-]client[_.-]secret|
+                google[_.-]application[_.-]credentials|gcp[_.-]service[_.-]account|
+                service[_.-]account[_.-]key|
+                session[_.-]key
+            )
+        )
+        (?:[_.-][A-Za-z0-9]+)*
+        [\"']?
+        [ \t]+
+        (?=\S)
+        (?:\S{6,}|\S*[0-9/+=._-]\S*)
+        """
+    ),
     # HTTP(S) Authorization / Proxy-Authorization header values carrying a
     # bearer/basic/digest credential.
     re.compile(
