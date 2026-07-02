@@ -137,6 +137,13 @@ _JINJA_BUILTIN_GLOBAL_NAMES = frozenset(
         "config",
         "self",
         "cycle",
+        # Ansible global set
+        "lookup",
+        "q",
+        "query",
+        "now",
+        "omit",
+        "undef",
     }
 )
 
