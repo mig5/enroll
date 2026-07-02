@@ -112,7 +112,52 @@ _JINJA_EXPR_VAR_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\b")
 _JINJA_FOR_RE = re.compile(
     r"{%\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([A-Za-z_][A-Za-z0-9_]*)\b"
 )
+# Names that may appear as the *head* of a reference in generated templates
+# without being an Enroll/JinjaTurtle variable: the loop counter and literals.
 _JINJA_SPECIAL_VARS = {"loop", "true", "false", "none", "True", "False", "None"}
+
+# Jinja2's ``meta.find_undeclared_variables`` deliberately does NOT report the
+# environment's built-in globals (``range``, ``dict``, ``namespace``, ``cycler``,
+# ``lipsum``, ``joiner``, ...). JinjaTurtle never emits a reference to one of
+# these, so a template that references a built-in global is a signal that source
+# text leaked into a live construct (see the output-safety gate, which cannot
+# distinguish an injected bare global from a legitimate variable). Enroll must
+# therefore treat any referenced built-in global as "missing" and fall back to a
+# raw copy rather than emitting the template.
+_JINJA_BUILTIN_GLOBAL_NAMES = frozenset(
+    {
+        "range",
+        "dict",
+        "lipsum",
+        "cycler",
+        "joiner",
+        "namespace",
+        # Jinja/Ansible expose these as callables/globals in some environments;
+        # JinjaTurtle never emits them either, so treat them the same way.
+        "config",
+        "self",
+        "cycle",
+    }
+)
+
+
+def _referenced_head_names(template_text: str) -> Set[str]:
+    """Best-effort set of top-level names referenced in ``{{ ... }}`` heads.
+
+    Used to catch references to Jinja built-in globals that
+    ``meta.find_undeclared_variables`` omits. Loop-local variables introduced by
+    ``{% for x in ... %}`` are excluded so a legitimate loop body is not flagged.
+    """
+
+    locals_from_loops: Set[str] = set()
+    collection_vars: Set[str] = set()
+    for match in _JINJA_FOR_RE.finditer(template_text):
+        locals_from_loops.add(match.group(1))
+        collection_vars.add(match.group(2))
+    referenced = set(_JINJA_EXPR_VAR_RE.findall(template_text)) | collection_vars
+    referenced -= locals_from_loops
+    referenced -= _JINJA_SPECIAL_VARS
+    return referenced
 
 
 def _find_undeclared_jinja_vars(template_text: str) -> Set[str]:
@@ -121,7 +166,13 @@ def _find_undeclared_jinja_vars(template_text: str) -> Set[str]:
 
         env = Environment()  # nosec B701 - parsing config templates, not rendering HTML
         ast = env.parse(template_text)
-        return set(meta.find_undeclared_variables(ast))
+        undeclared = set(meta.find_undeclared_variables(ast))
+        # meta hides built-in globals; add back any that are actually referenced
+        # so the caller's "missing var" fallback treats them as unexpected.
+        referenced_globals = (
+            _referenced_head_names(template_text) & _JINJA_BUILTIN_GLOBAL_NAMES
+        )
+        return undeclared | referenced_globals
     except Exception:
         locals_from_loops: Set[str] = set()
         collection_vars: Set[str] = set()
