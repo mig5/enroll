@@ -348,29 +348,42 @@ class IgnorePolicy:
         return None
 
     def _content_deny_reason(self, path: str, data: bytes) -> Optional[str]:
-        if b"\x00" in data:
-            match_path = normalize_for_match(path)
-            for g in self.allow_binary_globs or []:
-                if fnmatch.fnmatch(match_path, g):
-                    # Binary is acceptable for explicitly-allowed paths.
-                    return None
-            return "binary_like"
-
+        # High-confidence secret *material* (private keys, age secret keys,
+        # populated credential assignments, credential URIs, Authorization
+        # headers) is scanned against the raw bytes FIRST, before any
+        # binary/allowlist decision. This runs even for binary payloads on the
+        # allow_binary_globs list: those globs exist to let genuinely-binary
+        # *public* keyring formats (e.g. APT/RPM GPG keyrings) through the
+        # "binary_like" denial, but they must NOT become a hole through which a
+        # keybox/keyring carrying *private* key material is captured unscanned
+        # in safe mode. The private-key markers are byte-oriented and match
+        # inside binary containers, so running them here closes that asymmetry
+        # while still allowing ordinary public keyrings.
         if not self.dangerous:
-            # High-confidence secret *material* (private keys, age secret keys)
-            # is scanned against the raw bytes and is NOT subject to comment
-            # stripping. A private key embedded in a file is sensitive regardless
-            # of comment framing, and this closes the bypass where opening a block
-            # comment (e.g. a leading "/*" line) hid key material from the
-            # line-oriented scanner.
             for pat in HIGH_CONFIDENCE_SECRET_PATTERNS:
                 if pat.search(data):
                     return "sensitive_content"
 
+        if b"\x00" in data:
+            match_path = normalize_for_match(path)
+            for g in self.allow_binary_globs or []:
+                if fnmatch.fnmatch(match_path, g):
+                    # Binary is acceptable for explicitly-allowed paths. The
+                    # high-confidence secret-material scan above has already run
+                    # on the raw bytes, so an allowed binary keyring that
+                    # actually embeds private-key material was refused before
+                    # reaching here; only genuinely non-secret binary keyrings
+                    # get this far.
+                    return None
+            return "binary_like"
+
+        if not self.dangerous:
             # Softer assignment/keyword/URI heuristics stay comment-aware so a
             # genuinely commented-out example does not make Enroll useless for
             # ordinary config files. iter_effective_lines() is hardened so an
             # unterminated/inline block comment cannot mask later real content.
+            # These line-oriented heuristics only make sense on text, so they
+            # run only after the NUL/binary check above has passed.
             for line in self.iter_effective_lines(data):
                 for pat in SENSITIVE_CONTENT_PATTERNS:
                     if pat.search(line):

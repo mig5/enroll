@@ -242,3 +242,125 @@ def test_freeze_directory_bundle_fails_loudly_on_unreadable_subdir(tmp_path: Pat
     finally:
         # Restore perms so tmp_path cleanup can remove the tree.
         os.chmod(locked, 0o755)
+
+
+class _FakeStat:
+    """Minimal stat_result stand-in so interior-dir tests can control uid/mode
+    independently of the CI runner's real uid and umask."""
+
+    def __init__(self, real_st, *, uid: int, mode_bits: int | None = None):
+        self.st_mode = real_st.st_mode if mode_bits is None else mode_bits
+        self.st_uid = uid
+        self.st_gid = getattr(real_st, "st_gid", 0)
+
+
+def _patch_lstat(monkeypatch, ms, *, uid_for, mode_for=None):
+    """Patch Path.lstat so directories report a chosen uid / mode.
+
+    ``uid_for(path) -> int`` and optional ``mode_for(path) -> int|None`` let a
+    test simulate a non-root-owned or writable interior directory without
+    needing real root privileges.
+    """
+    real_lstat = ms.Path.lstat
+
+    def fake_lstat(self):
+        st = real_lstat(self)
+        mode = None
+        if mode_for is not None:
+            mode = mode_for(self)
+        return _FakeStat(st, uid=uid_for(self), mode_bits=mode)
+
+    monkeypatch.setattr(ms.Path, "lstat", fake_lstat)
+
+
+def test_existing_site_tree_rejects_world_writable_interior_dir_as_root(
+    tmp_path: Path, monkeypatch
+):
+    """Root-run site merge must refuse an attacker-writable interior directory.
+
+    A symlink-only scan is insufficient: an unprivileged owner of a
+    group/other-writable directory inside the output tree can plant files or a
+    symlink after the scan and race the merge. Under root, such a directory is
+    rejected up front.
+    """
+    import enroll.manifest_safety as ms
+
+    out = tmp_path / "site"
+    out.mkdir()
+    (out / "roles").mkdir()
+
+    interior = (out / "roles").resolve()
+
+    monkeypatch.setattr(ms, "_effective_uid", lambda: 0)
+    # Everything root-owned; the interior "roles" dir is world-writable.
+    _patch_lstat(
+        monkeypatch,
+        ms,
+        uid_for=lambda p: 0,
+        mode_for=lambda p: (0o40777 if Path(p).resolve() == interior else 0o40700),
+    )
+    with pytest.raises(ManifestOutputError, match="group/other-writable"):
+        ms._assert_no_output_symlinks(out)
+
+
+def test_existing_site_tree_rejects_non_root_owned_interior_dir_as_root(
+    tmp_path: Path, monkeypatch
+):
+    """Root-run site merge must refuse an interior directory owned by another
+    (unprivileged) user, even if it is not itself writable by group/other."""
+    import enroll.manifest_safety as ms
+
+    out = tmp_path / "site"
+    out.mkdir()
+    (out / "roles").mkdir()
+
+    interior = (out / "roles").resolve()
+
+    monkeypatch.setattr(ms, "_effective_uid", lambda: 0)
+    _patch_lstat(
+        monkeypatch,
+        ms,
+        uid_for=lambda p: (1000 if Path(p).resolve() == interior else 0),
+        mode_for=lambda p: 0o40755,
+    )
+    with pytest.raises(ManifestOutputError, match="not owned by root"):
+        ms._assert_no_output_symlinks(out)
+
+
+def test_existing_site_tree_allows_clean_root_owned_interior_as_root(
+    tmp_path: Path, monkeypatch
+):
+    """A clean, root-owned, non-writable interior tree passes the merge check."""
+    import enroll.manifest_safety as ms
+
+    out = tmp_path / "site"
+    out.mkdir()
+    (out / "roles").mkdir()
+    (out / "roles" / "svc").mkdir()
+
+    monkeypatch.setattr(ms, "_effective_uid", lambda: 0)
+    _patch_lstat(
+        monkeypatch,
+        ms,
+        uid_for=lambda p: 0,
+        mode_for=lambda p: 0o40755,
+    )
+    # No exception: root-owned, not group/other-writable.
+    ms._assert_no_output_symlinks(out)
+
+
+def test_existing_site_tree_interior_check_is_noop_for_non_root(
+    tmp_path: Path, monkeypatch
+):
+    """Non-root runs keep the original symlink-only semantics (no ownership or
+    writability enforcement), so ordinary user workflows are unaffected."""
+    import enroll.manifest_safety as ms
+
+    out = tmp_path / "site"
+    out.mkdir()
+    (out / "roles").mkdir()
+    (out / "roles").chmod(0o777)
+
+    monkeypatch.setattr(ms, "_effective_uid", lambda: 1000)
+    # No exception: interior writability is irrelevant when not running as root.
+    ms._assert_no_output_symlinks(out)

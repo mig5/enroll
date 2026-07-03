@@ -323,3 +323,51 @@ def test_whitespace_separated_non_credentials_still_allowed():
     ]
     for data in allowed:
         assert pol._content_deny_reason("/etc/app/app.conf", data) is None, data
+
+
+def test_binary_keyring_allowlist_still_scans_for_private_key_material():
+    """A binary file on the keyring allow-list must still be refused in safe
+    mode if it embeds private-key material.
+
+    ``DEFAULT_ALLOW_BINARY_GLOBS`` exists so genuinely-binary *public* keyrings
+    (APT/RPM GPG keyrings) survive the ``binary_like`` denial. It must not
+    become a hole through which a keybox/keyring carrying *private* key material
+    is captured unscanned. The high-confidence secret-material scan therefore
+    runs on the raw bytes before the binary allow-list decision.
+    """
+    pol = IgnorePolicy(dangerous=False)
+
+    private_binary = (
+        b"\x99\x01\x0d\x04"
+        + b"\x00" * 20
+        + b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nsecret\n"
+        + b"-----END PGP PRIVATE KEY BLOCK-----"
+        + b"\x00" * 8
+    )
+    for path in (
+        "/etc/apt/trusted.gpg",
+        "/etc/apt/trusted.gpg.d/mykey.gpg",
+        "/etc/apt/keyrings/mykey.gpg",
+        "/etc/pki/rpm-gpg/RPM-GPG-KEY-mine",
+        "/usr/share/keyrings/mykey.gpg",
+    ):
+        assert (
+            pol._content_deny_reason(path, private_binary) == "sensitive_content"
+        ), path
+
+    # A genuinely non-secret binary keyring at those same paths is still allowed
+    # (the allow-list still exempts it from the binary_like denial).
+    public_binary = b"\x99\x01\x0d\x04" + b"\x00" * 40 + b"public key packet data"
+    for path in (
+        "/etc/apt/keyrings/pub.gpg",
+        "/usr/share/keyrings/pub.gpg",
+        "/etc/pki/rpm-gpg/RPM-GPG-KEY-pub",
+    ):
+        assert pol._content_deny_reason(path, public_binary) is None, path
+
+    # --dangerous still collects everything.
+    dangerous = IgnorePolicy(dangerous=True)
+    assert (
+        dangerous._content_deny_reason("/etc/apt/keyrings/mykey.gpg", private_binary)
+        is None
+    )

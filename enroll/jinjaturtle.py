@@ -15,6 +15,44 @@ from .manifest_safety import ArtifactSafetyError, safe_artifact_file
 from .yamlutil import yaml_dump_mapping, yaml_load_mapping
 
 
+# Bound the external JinjaTurtle subprocess. These are defence-in-depth limits
+# for running a separate binary over harvested (possibly attacker-influenced)
+# config: a hang or a runaway-size output must not stall or exhaust the manifest
+# process. Both limits convert to an ordinary failure that jinjify_artifact()
+# turns into a safe raw-file-copy fallback. The timeout can be overridden via
+# ENROLL_JINJATURTLE_TIMEOUT (seconds) for unusually large legitimate configs.
+_DEFAULT_JINJATURTLE_TIMEOUT_S = 30
+_MAX_JT_OUTPUT_BYTES = 16 * 1024 * 1024
+
+
+def _resolve_jt_timeout() -> float:
+    raw = os.environ.get("ENROLL_JINJATURTLE_TIMEOUT")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return float(_DEFAULT_JINJATURTLE_TIMEOUT_S)
+
+
+JINJATURTLE_SUBPROCESS_TIMEOUT_S = _resolve_jt_timeout()
+
+
+def _reject_oversized_jt_output(path: Path, label: str) -> None:
+    """Raise if a JinjaTurtle output file exceeds the ingest size cap."""
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        raise RuntimeError(f"jinjaturtle {label} output is unreadable: {path}") from e
+    if size > _MAX_JT_OUTPUT_BYTES:
+        raise RuntimeError(
+            "jinjaturtle %s output is too large to ingest (%d bytes > %d)"
+            % (label, size, _MAX_JT_OUTPUT_BYTES)
+        )
+
+
 SYSTEMD_SUFFIXES = {
     ".service",
     ".socket",
@@ -479,12 +517,36 @@ def run_jinjaturtle(
         if force_format:
             cmd.extend(["-f", force_format])
 
-        p = subprocess.run(cmd, text=True, capture_output=True)  # nosec
+        # JinjaTurtle is an external binary run over harvested, potentially
+        # attacker-influenced config. Bound its runtime so a pathological or
+        # hostile input (e.g. a config that makes the converter loop or hang)
+        # cannot stall a manifest run indefinitely. A timeout is surfaced as an
+        # ordinary failure; jinjify_artifact() catches it and falls back to
+        # copying the raw file, which is the safe default.
+        try:
+            p = subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                timeout=JINJATURTLE_SUBPROCESS_TIMEOUT_S,
+            )  # nosec
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(
+                "jinjaturtle timed out after %ss for %s (role=%s)"
+                % (JINJATURTLE_SUBPROCESS_TIMEOUT_S, src_path, role_name)
+            ) from e
         if p.returncode != 0:
             raise RuntimeError(
                 "jinjaturtle failed for %s (role=%s)\ncmd=%r\nstdout=%s\nstderr=%s"
                 % (src_path, role_name, cmd, p.stdout, p.stderr)
             )
+
+        # Cap how much generated output Enroll will ingest. A converter that
+        # emits an enormous template/vars file (accidentally or maliciously)
+        # should not be able to exhaust memory in the manifest process; refuse
+        # oversized output and fall back to a raw copy.
+        _reject_oversized_jt_output(defaults_out, "defaults")
+        _reject_oversized_jt_output(template_out, "template")
 
         vars_text = defaults_out.read_text(encoding="utf-8").strip()
         template_text = template_out.read_text(encoding="utf-8")

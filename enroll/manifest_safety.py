@@ -12,6 +12,7 @@ from typing import Iterator, Optional, Tuple
 from .fsutil import open_no_follow_path
 from .harvest_safety import (
     OutputSafetyError,
+    _effective_uid,
     ensure_safe_output_parent,
     prepare_new_private_dir,
 )
@@ -55,17 +56,66 @@ def validate_site_fqdn(value: str | None) -> str | None:
     return text
 
 
+def _assert_root_safe_output_dir(path: Path, st: os.stat_result) -> None:
+    """Reject an existing output directory that is unsafe for a root-run merge.
+
+    Only enforced when Enroll runs as root. Site/FQDN mode intentionally merges
+    generated files into an existing tree, and the individual writers re-open
+    files by path. A directory inside that tree that is owned by an unprivileged
+    user, or writable by group/other, lets that user pre-create or swap files
+    (including planting a symlink after this scan) that a later root-run write
+    would follow or clobber. A symlink-only scan cannot catch that race, so the
+    interior of a root-run output tree must additionally be root-owned and not
+    group/world-writable.
+
+    The sticky-bit exception that ``harvest_safety`` allows for a shared *parent*
+    boundary such as ``/tmp`` is deliberately NOT honoured here: this is the
+    interior of Enroll's own output tree, not a shared staging root, so a
+    world-writable directory is never acceptable even if sticky.
+    """
+
+    if _effective_uid() != 0:
+        return
+    if st.st_uid != 0:
+        raise ManifestOutputError(
+            "manifest output tree contains a directory not owned by root; "
+            f"refusing root-run merge: {path}"
+        )
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ManifestOutputError(
+            "manifest output tree contains a group/other-writable directory; "
+            f"refusing root-run merge: {path}"
+        )
+
+
 def _assert_no_output_symlinks(root: Path) -> None:
-    """Reject pre-existing symlinks in an output tree we are about to merge into.
+    """Reject unsafe pre-existing entries in an output tree we merge into.
 
     Non-site mode refuses existing output directories entirely.  Site/FQDN modes
-    intentionally accumulate multiple nodes into one tree, so reject symlinks in
-    the tree before merging to avoid writes being redirected outside *root*.
+    intentionally accumulate multiple nodes into one tree, so before merging we
+    reject:
+
+      * symlinks anywhere in the tree (a write could be redirected outside
+        *root*), and
+      * when running as root, any directory in the tree that is not root-owned
+        or is group/other-writable (an unprivileged owner could race the merge
+        by planting files/symlinks after this scan -- see
+        :func:`_assert_root_safe_output_dir`).
+
     Version-control metadata can contain implementation-specific entries and is
     not part of Enroll's generated layout, so it is pruned from this check.
     """
 
     skip_dirs = {".git", ".hg", ".svn"}
+
+    # Check the root of the merge target itself, not only its descendants.
+    try:
+        root_st = root.lstat()
+    except FileNotFoundError:
+        root_st = None
+    if root_st is not None and not stat.S_ISLNK(root_st.st_mode):
+        _assert_root_safe_output_dir(root, root_st)
+
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirpath_p = Path(dirpath)
 
@@ -82,6 +132,7 @@ def _assert_no_output_symlinks(root: Path) -> None:
                 raise ManifestOutputError(
                     f"manifest output tree contains a symlink; refusing to merge: {p}"
                 )
+            _assert_root_safe_output_dir(p, st)
 
         for filename in filenames:
             if filename in skip_dirs:
