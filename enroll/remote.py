@@ -189,13 +189,34 @@ def remote_harvest(
             )
 
 
+# Resource caps for untrusted tar extraction. These mirror the directory-bundle
+# freeze limits (see manifest_safety._FREEZE_MAX_FILES / _FREEZE_MAX_FILE_BYTES)
+# so a harvest delivered as a tarball is bounded the same way as one delivered as
+# a directory. The total-size cap additionally guards against a decompression
+# bomb whose members are each individually under the per-file cap.
+_TAR_MAX_MEMBERS = 200_000
+_TAR_MAX_FILE_BYTES = 64 * 1024 * 1024
+_TAR_MAX_TOTAL_BYTES = 10 * 1024 * 1024 * 1024
+_TAR_MAX_PATH_DEPTH = 64
+
+
 def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
     """Safely extract a tar archive into dest.
 
-    Protects against path traversal (e.g. entries containing ../).
+    Protects against path traversal (e.g. entries containing ../) and, as
+    availability defence-in-depth, against resource-exhaustion by a structurally
+    valid but abusive archive (a decompression bomb, a huge member, or millions
+    of tiny members). The caps mirror the directory-bundle freeze limits so a
+    tar bundle and a directory bundle are bounded the same way. A remote or
+    user-supplied harvest tarball is untrusted input, so these limits keep a
+    malicious archive from exhausting disk, inodes, memory, or time during local
+    extraction/validation.
     """
     # Note: tar member names use POSIX separators regardless of platform.
     dest = dest.resolve()
+
+    member_count = 0
+    total_size = 0
 
     for m in tar.getmembers():
         name = m.name
@@ -205,15 +226,34 @@ def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
         if name in {".", "./"}:
             continue
 
+        member_count += 1
+        if member_count > _TAR_MAX_MEMBERS:
+            raise RuntimeError(
+                f"tar archive has too many members (> {_TAR_MAX_MEMBERS})"
+            )
+
         # Reject absolute paths and any '..' components up front.
         p = PurePosixPath(name)
         if p.is_absolute() or ".." in p.parts:
             raise RuntimeError(f"Unsafe tar member path: {name}")
 
+        if len(p.parts) > _TAR_MAX_PATH_DEPTH:
+            raise RuntimeError(f"tar member path is too deeply nested: {name}")
+
         # Refuse to extract links or device nodes from an untrusted archive.
         # (A symlink can be used to redirect subsequent writes outside dest.)
         if m.issym() or m.islnk() or m.isdev():
             raise RuntimeError(f"Refusing to extract special tar member: {name}")
+
+        if m.isfile():
+            if m.size > _TAR_MAX_FILE_BYTES:
+                raise RuntimeError(f"tar member is too large: {name}")
+            total_size += int(m.size)
+            if total_size > _TAR_MAX_TOTAL_BYTES:
+                raise RuntimeError(
+                    "tar archive uncompressed size exceeds limit "
+                    f"(> {_TAR_MAX_TOTAL_BYTES} bytes)"
+                )
 
         member_path = (dest / Path(*p.parts)).resolve()
         if member_path != dest and not str(member_path).startswith(str(dest) + os.sep):

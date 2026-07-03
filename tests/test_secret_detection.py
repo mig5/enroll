@@ -371,3 +371,74 @@ def test_binary_keyring_allowlist_still_scans_for_private_key_material():
         dangerous._content_deny_reason("/etc/apt/keyrings/mykey.gpg", private_binary)
         is None
     )
+
+
+def test_authorization_assignment_form_is_denied():
+    """A populated Authorization/Proxy-Authorization credential is refused
+    whether written HTTP-style with ':' or config-style with '='.
+
+    The header scanner previously only anchored on ':', so a config assignment
+    such as ``Authorization = Bearer <token>`` (and ``proxy_authorization``/
+    ``http_authorization`` spellings) slipped through safe mode.
+    """
+    pol = IgnorePolicy(dangerous=False)
+    leaking = [
+        b"Authorization = Bearer supersecretvalue\n",
+        b"Authorization: Bearer supersecretvalue\n",
+        b"authorization=Bearer abcdef123456\n",
+        b"proxy_authorization = Basic abcdef123456\n",
+        b"Proxy-Authorization: Bearer abcdef123456\n",
+        b"http_authorization = Bearer abcdef123456\n",
+    ]
+    for data in leaking:
+        assert (
+            pol._content_deny_reason("/etc/example.conf", data) == "sensitive_content"
+        ), data
+
+
+def test_underscore_and_camelcase_token_keys_are_denied():
+    """Token keys the general assignment pattern misses -- a leading-underscore
+    npm token, a camelCase ``authToken``, or a ``bearerToken`` spelling -- are
+    refused when they carry a populated value."""
+    pol = IgnorePolicy(dangerous=False)
+    leaking = [
+        b"_authToken=npm_abcdefghijklmnopqrstuvwxyz\n",
+        b"//registry.npmjs.org/:_authToken=npm_abcdefghijklmnop\n",
+        b"authToken=abcdefghijklmnopqrstuvwxyz\n",
+        b"bearerToken=abcdefghijklmnopqrstuvwxyz\n",
+        b"bearer_token = abcdef123456\n",
+        b"auth_token: ya29.aRealLookingToken\n",
+    ]
+    for data in leaking:
+        assert (
+            pol._content_deny_reason("/etc/app/app.conf", data) == "sensitive_content"
+        ), data
+
+
+def test_authorization_and_token_keys_no_false_positives():
+    """The broadened Authorization/token-key rules must not fire on ordinary
+    config: a scheme keyword + value is required for the header form, and a
+    populated value is required for the token-key form, so boolean/numeric
+    settings and value-less mentions stay collectable."""
+    pol = IgnorePolicy(dangerous=False)
+    allowed = [
+        # Authorization-ish keys with no bearer/basic/... scheme + value.
+        b"AuthorizationEnabled = true\n",
+        b"authorization = true\n",
+        b"my_authorization: somevalue\n",
+        # Token-ish keys that are not populated credentials.
+        b"authTokenEnabled = true\n",
+        b"authTokenTimeout = 30\n",
+        b"AuthorizedKeysFile .ssh/authorized_keys\n",
+    ]
+    for data in allowed:
+        assert pol._content_deny_reason("/etc/app/app.conf", data) is None, data
+
+    # --dangerous still collects everything.
+    dangerous = IgnorePolicy(dangerous=True)
+    assert (
+        dangerous._content_deny_reason(
+            "/etc/example.conf", b"Authorization = Bearer secret\n"
+        )
+        is None
+    )

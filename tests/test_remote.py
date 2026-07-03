@@ -1183,3 +1183,99 @@ def test_build_enroll_pyz_excludes_tests_and_caches_and_returns_sha(tmp_path: Pa
         assert "/tests/" not in n
         assert not leaf.startswith("test_")
         assert leaf != "conftest.py"
+
+
+def test_safe_extract_tar_rejects_too_many_members(tmp_path: Path, monkeypatch):
+    import enroll.remote as r
+
+    monkeypatch.setattr(r, "_TAR_MAX_MEMBERS", 3)
+
+    bio = io.BytesIO()
+    with tarfile.open(fileobj=bio, mode="w:gz") as tf:
+        for i in range(10):
+            ti = tarfile.TarInfo(name=f"f{i}")
+            ti.size = 1
+            tf.addfile(ti, io.BytesIO(b"x"))
+
+    bio.seek(0)
+    with tarfile.open(fileobj=bio, mode="r:gz") as tf:
+        with pytest.raises(RuntimeError, match="too many members"):
+            r._safe_extract_tar(tf, tmp_path)
+
+
+def test_safe_extract_tar_rejects_oversized_member(tmp_path: Path, monkeypatch):
+    import enroll.remote as r
+
+    monkeypatch.setattr(r, "_TAR_MAX_FILE_BYTES", 100)
+
+    bio = io.BytesIO()
+    with tarfile.open(fileobj=bio, mode="w:gz") as tf:
+        ti = tarfile.TarInfo(name="big")
+        payload = b"x" * 500
+        ti.size = len(payload)
+        tf.addfile(ti, io.BytesIO(payload))
+
+    bio.seek(0)
+    with tarfile.open(fileobj=bio, mode="r:gz") as tf:
+        with pytest.raises(RuntimeError, match="too large"):
+            r._safe_extract_tar(tf, tmp_path)
+
+
+def test_safe_extract_tar_rejects_aggregate_size_bomb(tmp_path: Path, monkeypatch):
+    import enroll.remote as r
+
+    # Each member is under the per-file cap, but the sum exceeds the total cap.
+    monkeypatch.setattr(r, "_TAR_MAX_TOTAL_BYTES", 1000)
+
+    bio = io.BytesIO()
+    with tarfile.open(fileobj=bio, mode="w:gz") as tf:
+        for i in range(10):
+            ti = tarfile.TarInfo(name=f"f{i}")
+            payload = b"x" * 300
+            ti.size = len(payload)
+            tf.addfile(ti, io.BytesIO(payload))
+
+    bio.seek(0)
+    with tarfile.open(fileobj=bio, mode="r:gz") as tf:
+        with pytest.raises(RuntimeError, match="uncompressed size exceeds"):
+            r._safe_extract_tar(tf, tmp_path)
+
+
+def test_safe_extract_tar_rejects_excessive_path_depth(tmp_path: Path, monkeypatch):
+    import enroll.remote as r
+
+    monkeypatch.setattr(r, "_TAR_MAX_PATH_DEPTH", 4)
+
+    deep = "/".join(f"d{i}" for i in range(10)) + "/file"
+    bio = io.BytesIO()
+    with tarfile.open(fileobj=bio, mode="w:gz") as tf:
+        ti = tarfile.TarInfo(name=deep)
+        ti.size = 1
+        tf.addfile(ti, io.BytesIO(b"x"))
+
+    bio.seek(0)
+    with tarfile.open(fileobj=bio, mode="r:gz") as tf:
+        with pytest.raises(RuntimeError, match="too deeply nested"):
+            r._safe_extract_tar(tf, tmp_path)
+
+
+def test_safe_extract_tar_allows_normal_bundle(tmp_path: Path):
+    """A normal, modestly-sized bundle still extracts cleanly under the caps."""
+    import enroll.remote as r
+
+    bio = io.BytesIO()
+    with tarfile.open(fileobj=bio, mode="w:gz") as tf:
+        for name, data in (
+            ("state.json", b"{}"),
+            ("artifacts/etc_custom/etc/app.conf", b"k=1\n"),
+        ):
+            ti = tarfile.TarInfo(name=name)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+
+    bio.seek(0)
+    with tarfile.open(fileobj=bio, mode="r:gz") as tf:
+        r._safe_extract_tar(tf, tmp_path)
+
+    assert (tmp_path / "state.json").is_file()
+    assert (tmp_path / "artifacts" / "etc_custom" / "etc" / "app.conf").is_file()

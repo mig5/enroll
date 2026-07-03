@@ -193,9 +193,51 @@ HIGH_CONFIDENCE_SECRET_PATTERNS = [
     # start-of-input or any non-identifier character, which is comment-marker
     # agnostic and still avoids matching an identifier such as
     # ``my_authorization:``.
+    #
+    # Both the header form (``Authorization: Bearer ...``) and the config
+    # assignment form (``authorization = Bearer ...`` / ``http_authorization=...``)
+    # are matched: a populated Authorization header is an obvious credential
+    # whether it is written HTTP-style with ``:`` or config-style with ``=``. The
+    # ``(?:proxy|http)`` prefix accepts ``proxy-``/``proxy_``/``http_`` spellings
+    # (e.g. ``proxy_authorization``) that appear in real client/daemon configs.
+    # A scheme keyword (bearer/basic/token/digest) plus a value is still required,
+    # so ordinary keys such as ``AuthorizationEnabled = true`` do not match.
     re.compile(
-        rb"(?im)(?:^|[^A-Za-z0-9_.-])(?:proxy-)?authorization\s*:\s*"
+        rb"(?im)(?:^|[^A-Za-z0-9_.-])(?:(?:proxy|http)[-_])?authorization\s*[:=]\s*"
         rb"(?:bearer|basic|token|digest)\s+\S"
+    ),
+    # Token-key credential assignments that the general assignment pattern above
+    # misses because of a leading underscore or a camelCase/prefix spelling.
+    #
+    #   _authToken=npm_xxxxxxxx
+    #   //registry.npmjs.org/:_authToken=npm_xxxxxxxx      (npm .npmrc form)
+    #   authToken=xxxxxxxx
+    #   bearerToken=xxxxxxxx / bearer_token=xxxxxxxx
+    #
+    # The general assignment pattern requires a non-key boundary
+    # (``[^A-Za-z0-9_.-]``) immediately before the credential keyword, which a
+    # leading ``_`` (a word char) defeats -- so ``_authToken`` slips past it --
+    # and its keyword list does not include a ``bearer[_-]?token`` spelling. This
+    # dedicated pattern covers exactly those ``auth``/``bearer`` token keys and,
+    # like the general one, requires a *populated, value-like* right-hand side
+    # (>= 8 non-space chars, or a value containing a digit / token-ish
+    # character), so a bare mention or a short boolean/number such as
+    # ``authTokenEnabled = true`` does not trip it. It is intentionally scoped to
+    # ``auth``/``bearer`` token keys only; broadening the general boundary to
+    # accept a leading underscore everywhere would risk false positives on
+    # value-less identifiers in ordinary config.
+    re.compile(
+        rb"""(?ix)
+        (?:^|[^A-Za-z0-9.-])
+        _?
+        (?:auth|bearer)[_-]?token
+        (?:[_.-][A-Za-z0-9]+)*
+        [\"']?
+        \s*[:=]\s*
+        [\"']?
+        (?=\S)
+        (?:\S{8,}|\S*[0-9/+=._-]\S*)
+        """
     ),
 ]
 
