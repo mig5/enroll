@@ -95,7 +95,7 @@ version = "2026.6.17"
 description = "Python package for providing Mozilla's CA Bundle."
 optional = false
 python-versions = ">=3.7"
-groups = ["appimage"]
+groups = ["dev"]
 files = [
     {file = "certifi-2026.6.17-py3-none-any.whl", hash = "sha256:2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db"},
     {file = "certifi-2026.6.17.tar.gz", hash = "sha256:024c88eeec92ca068db80f02b8b07c9cef7b9fe261d1d535abfd5abd6f6af432"},
@@ -205,7 +205,7 @@ version = "3.4.7"
 description = "The Real First Universal Charset Detector. Open, modern and actively maintained alternative to Chardet."
 optional = false
 python-versions = ">=3.7"
-groups = ["appimage"]
+groups = ["dev"]
 files = [
     {file = "charset_normalizer-3.4.7-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:cdd68a1fb318e290a2077696b7eb7a21a49163c455979c639bf5a5dcdc46617d"},
     {file = "charset_normalizer-3.4.7-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e17b8d5d6a8c47c85e68ca8379def1303fd360c3e22093a807cd34a71cd082b8"},
@@ -527,7 +527,7 @@ version = "5.0"
 description = "A library for working with .desktop files"
 optional = false
 python-versions = ">=3.10"
-groups = ["appimage"]
+groups = ["dev"]
 files = [
     {file = "desktop_entry_lib-5.0-py3-none-any.whl", hash = "sha256:e60a0c2c5e42492dbe5378e596b1de87d1b1c4dc74d1f41998a164ee27a1226f"},
     {file = "desktop_entry_lib-5.0.tar.gz", hash = "sha256:9a621bac1819fe21021356e41fec0ac096ed56e6eb5dcfe0639cd8654914b864"},
@@ -561,7 +561,7 @@ version = "3.18"
 description = "Internationalized Domain Names in Applications (IDNA)"
 optional = false
 python-versions = ">=3.9"
-groups = ["appimage"]
+groups = ["dev"]
 files = [
     {file = "idna-3.18-py3-none-any.whl", hash = "sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2"},
     {file = "idna-3.18.tar.gz", hash = "sha256:ffb385a7e039654cef1ab9ef32c6fafe283c0c0467bba1d9029738ce4a14a848"},
@@ -753,7 +753,7 @@ version = "4.2"
 description = "Generate AppImages from your Python projects"
 optional = false
 python-versions = ">=3.9"
-groups = ["appimage"]
+groups = ["dev"]
 files = [
     {file = "pyproject_appimage-4.2-py3-none-any.whl", hash = "sha256:d6892643db5759dc06531a4546bdab404a519c63814c060f8749979a8625d9cc"},
     {file = "pyproject_appimage-4.2.tar.gz", hash = "sha256:6b6387250cb1e6ecbb08a13f5810749396ebe8637f2f35bf2296bfdd5e65cd6e"},
@@ -913,7 +913,7 @@ version = "2.34.2"
 description = "Python HTTP for Humans."
 optional = false
 python-versions = ">=3.10"
-groups = ["appimage"]
+groups = ["dev"]
 files = [
     {file = "requests-2.34.2-py3-none-any.whl", hash = "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0"},
     {file = "requests-2.34.2.tar.gz", hash = "sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed"},
@@ -1060,7 +1060,8 @@ version = "2.4.1"
 description = "A lil' TOML parser"
 optional = false
 python-versions = ">=3.8"
-groups = ["appimage", "dev"]
+groups = ["dev"]
+markers = "python_full_version <= \"3.11.0a6\""
 files = [
     {file = "tomli-2.4.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:f8f0fc26ec2cc2b965b7a3b87cd19c5c6b8c5e5f436b984e85f486d652285c30"},
     {file = "tomli-2.4.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:4ab97e64ccda8756376892c53a72bd1f964e519c77236368527f758fbc36a53a"},
@@ -1110,7 +1111,6 @@ files = [
     {file = "tomli-2.4.1-py3-none-any.whl", hash = "sha256:0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe"},
     {file = "tomli-2.4.1.tar.gz", hash = "sha256:7c7e1a961a0b2f2472c1ac5b69affa0ae1132c39adcb67aba98568702b9cc23f"},
 ]
-markers = {appimage = "python_version == \"3.10\"", dev = "python_full_version <= \"3.11.0a6\""}
 
 [[package]]
 name = "typing-extensions"
@@ -1131,7 +1131,7 @@ version = "2.7.0"
 description = "HTTP library with thread-safe connection pooling, file post, and more."
 optional = false
 python-versions = ">=3.10"
-groups = ["appimage"]
+groups = ["dev"]
 files = [
     {file = "urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897"},
     {file = "urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c"},
@@ -1146,4 +1146,4 @@ zstd = ["backports-zstd (>=1.0.0) ; python_version < \"3.14\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "9521b6d1f5ae97f8fb4ae4ffb96c54acdb82b3e2c305cc2b1e912a0665896462"
+content-hash = "27715162ce02b1a3b773d85e83c2d612bf94e89ec23228b7d5f4719772baafa2"
