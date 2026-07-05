@@ -1,4 +1,4 @@
-# 0.7.0 (unreleased)
+# 0.7.0
 
  * BREAKING CHANGE: Remove the `enroll diff --enforce` option. Enroll no longer applies the old harvest state locally to repair drift; this avoids the risk of enforcing a potentially malicious or tampered harvest. To restore baseline state, regenerate a manifest from the trusted harvest and apply it yourself, or compare two `enroll diff` runs and act on the result.
  * BREAKING CHANGE: Group all package and systemd-unit roles into Debian Section/RPM Group roles by default, including managed config files and unit state. This mode is not used if `--fqdn` or `--no-common-roles` is set, in which case, the traditional behaviour of preserving one role per package/unit is used instead.
