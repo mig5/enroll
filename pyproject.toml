@@ -1,5 +1,5 @@
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core>=1.4.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [project]
@@ -25,11 +25,31 @@ Repository = "https://git.mig5.net/mig5/enroll"
 enroll = "enroll.cli:main"
 
 [tool.poetry]
+# Keep this legacy Poetry metadata as a compatibility shim for distro
+# build backends such as Debian Bookworm's python3-poetry-core 1.4.x.
+# The canonical modern metadata remains in [project] above.
 requires-poetry = ">=2.0"
+name = "enroll"
+version = "0.7.0"
+description = "Enroll a server's running state retrospectively into Ansible"
+authors = ["Miguel Jacq <mig@mig5.net>"]
+readme = "README.md"
+license = "GPL-3.0-or-later"
+homepage = "https://git.mig5.net/mig5/enroll"
+repository = "https://git.mig5.net/mig5/enroll"
 packages = [{ include = "enroll" }]
 include = [
   { path = "enroll/schema/state.schema.json", format = ["sdist", "wheel"] },
 ]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+PyYAML = ">=6,<7"
+paramiko = ">=3.5"
+jsonschema = ">=4.23,<5"
+
+[tool.poetry.scripts]
+enroll = "enroll.cli:main"
 
 [tool.poetry.group.dev]
 optional = true
