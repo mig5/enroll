@@ -46,7 +46,7 @@ sudo apt-get -y install createrepo-c rpm
 BUILD_OUTPUT="${HOME}/git/enroll/dist"
 KEYID="54A91143AE0AB4F7743B01FE888ED1B423A3BC99"
 REPO_ROOT="${HOME}/git/repo_rpm"
-REMOTE="letessier.mig5.net:/opt/repo_rpm"
+REMOTE="ashpool.mig5.net:/opt/repo_rpm"
 
 DISTS=(
   fedora:43
