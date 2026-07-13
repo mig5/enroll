@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import tarfile
 import warnings
@@ -30,6 +31,18 @@ def _fake_build_enroll_pyz(td) -> tuple[Path, str]:
 def _is_pyz_verify_cmd(cmd: str) -> bool:
     """True if *cmd* is the remote pyz SHA-256 integrity check."""
     return "hashlib.sha256" in cmd and "enroll.pyz" in cmd
+
+
+def _is_remote_uid_cmd(cmd: str) -> bool:
+    return "os.getuid" in cmd
+
+
+def _is_archive_hash_cmd(cmd: str) -> bool:
+    return "hashlib.sha256" in cmd and "bundle.tgz" in cmd
+
+
+def _archive_sha256(payload: bytes) -> bytes:
+    return hashlib.sha256(payload).hexdigest().encode()
 
 
 def _make_tgz_bytes(files: dict[str, bytes]) -> bytes:
@@ -154,6 +167,11 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
         def put(self, local: str, remote: str) -> None:
             self.put_calls.append((local, remote))
 
+        def get(self, _remote: str, local: str, callback=None) -> None:
+            Path(local).write_bytes(tgz)
+            if callback is not None:
+                callback(len(tgz), len(tgz))
+
         def close(self) -> None:
             return
 
@@ -179,13 +197,16 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
             if _is_pyz_verify_cmd(cmd):
                 return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             calls.append((cmd, bool(get_pty)))
+            if _is_remote_uid_cmd(cmd):
+                return (None, _Stdout(b"1000"), _Stderr())
+            if _is_archive_hash_cmd(cmd):
+                return (None, _Stdout(_archive_sha256(tgz)), _Stderr())
             # The tar stream uses exec_command directly.
             if cmd.startswith("tar -cz -C"):
                 return (None, _Stdout(tgz, rc=0), _Stderr(b""))
 
-            # _ssh_run path: id -un, mktemp -d, chmod, sudo harvest, sudo chown, rm -rf
-            if cmd == "id -un":
-                return (None, _Stdout(b"alice\n"), _Stderr())
+            # _ssh_run path: mktemp -d, chmod, sudo harvest,
+            # root tar creation/permissions, rm -rf
             if cmd == "mktemp -d":
                 return (None, _Stdout(b"/tmp/enroll-remote-123\n"), _Stderr())
             if cmd.startswith("sudo -n") and " mktemp -d" in cmd:
@@ -206,7 +227,7 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
                 return (None, _Stdout(b""), _Stderr())
             if " harvest " in cmd:
                 return (None, _Stdout(b""), _Stderr())
-            if cmd.startswith("sudo -n") and " chown -R" in cmd:
+            if cmd.startswith("sudo -n") and " tar -czf " in cmd:
                 if not get_pty:
                     msg = b"sudo: sorry, you must have a tty to run sudo\n"
                     return (None, _Stdout(b"", rc=1, err=msg), _Stderr(msg))
@@ -248,7 +269,7 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     assert state_path.exists()
     assert b"ok" in state_path.read_bytes()
 
-    # Ensure we attempted remote harvest with sudo and passed include/exclude and dangerous.
+    # Ensure remote harvest used sudo and passed include/exclude/dangerous.
     joined = "\n".join([c for c, _pty in calls])
     assert "sudo" in joined
     assert "--dangerous" in joined
@@ -257,25 +278,35 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     assert "sudo -n -p '' -- mktemp -d" in joined
     assert "--out /tmp/enroll-root-123/bundle" in joined
     assert "--out /tmp/enroll-remote-123/bundle" not in joined
-    assert "chown -R -- alice /tmp/enroll-root-123" in joined
-    assert "tar -cz -C /tmp/enroll-root-123/bundle ." in joined
+    assert "chown -R" not in joined
+    assert (
+        "tar -czf /tmp/enroll-root-123/bundle.tgz " "-C /tmp/enroll-root-123/bundle ."
+    ) in joined
+    assert "chmod 0400 -- /tmp/enroll-root-123/bundle.tgz" in joined
+    assert "chown -- 1000 /tmp/enroll-root-123/bundle.tgz" in joined
+    assert "chmod 0711 -- /tmp/enroll-root-123" in joined
+
+    # The trusted digest must be obtained while the archive is still private,
+    # before ownership/read access is handed to the SSH account.
+    archive_hash_i = next(
+        i for i, (c, _pty) in enumerate(calls) if _is_archive_hash_cmd(c)
+    )
+    chown_i = next(i for i, (c, _pty) in enumerate(calls) if "chown -- 1000" in c)
+    expose_i = next(i for i, (c, _pty) in enumerate(calls) if "chmod 0711" in c)
+    assert archive_hash_i < chown_i < expose_i
 
     # Ensure we fall back to PTY only when sudo reports it is required.
-    assert any(c == "id -un" and pty is False for c, pty in calls)
-
     sudo_harvest = [
         (c, pty) for c, pty in calls if c.startswith("sudo -n") and " harvest " in c
     ]
     assert any(pty is False for _c, pty in sudo_harvest)
     assert any(pty is True for _c, pty in sudo_harvest)
 
-    sudo_chown = [
-        (c, pty) for c, pty in calls if c.startswith("sudo -n") and " chown -R" in c
+    sudo_tar = [
+        (c, pty) for c, pty in calls if c.startswith("sudo -n") and " tar -czf " in c
     ]
-    assert any(pty is False for _c, pty in sudo_chown)
-    assert any(pty is True for _c, pty in sudo_chown)
-
-    assert any(c.startswith("tar -cz -C") and pty is False for c, pty in calls)
+    assert any(pty is False for _c, pty in sudo_tar)
+    assert any(pty is True for _c, pty in sudo_tar)
 
 
 def test_remote_harvest_no_sudo_does_not_request_pty_or_chown(
@@ -353,6 +384,11 @@ def test_remote_harvest_no_sudo_does_not_request_pty_or_chown(
     class _SFTP:
         def put(self, _local: str, _remote: str) -> None:
             return
+
+        def get(self, _remote: str, local: str, callback=None) -> None:
+            Path(local).write_bytes(tgz)
+            if callback is not None:
+                callback(len(tgz), len(tgz))
 
         def close(self) -> None:
             return
@@ -509,6 +545,11 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
         def put(self, _local: str, _remote: str) -> None:
             return
 
+        def get(self, _remote: str, local: str, callback=None) -> None:
+            Path(local).write_bytes(tgz)
+            if callback is not None:
+                callback(len(tgz), len(tgz))
+
         def close(self) -> None:
             return
 
@@ -533,6 +574,10 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
             if _is_pyz_verify_cmd(cmd):
                 return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             calls.append((cmd, bool(get_pty)))
+            if _is_remote_uid_cmd(cmd):
+                return (None, _Stdout(b"1000"), _Stderr())
+            if _is_archive_hash_cmd(cmd):
+                return (None, _Stdout(_archive_sha256(tgz)), _Stderr())
 
             # Tar stream
             if cmd.startswith("tar -cz -C"):
@@ -560,10 +605,6 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
 
             # Retry: sudo -S succeeds and should have been fed the password via stdin.
             if cmd.startswith("sudo -S") and " harvest " in cmd:
-                return (_Stdin(cmd), _Stdout(b"", rc=0), _Stderr(b""))
-
-            # chown succeeds passwordlessly (e.g., sudo timestamp is warm).
-            if cmd.startswith("sudo -n") and " chown -R" in cmd:
                 return (_Stdin(cmd), _Stdout(b"", rc=0), _Stderr(b""))
 
             if cmd.startswith("sudo -n") and " rm -rf -- /tmp/enroll-root-789" in cmd:
@@ -894,6 +935,11 @@ def test_remote_harvest_ssh_key_passphrase_retry(monkeypatch, tmp_path: Path):
         def put(self, _local: str, _remote: str) -> None:
             return
 
+        def get(self, _remote: str, local: str, callback=None) -> None:
+            Path(local).write_bytes(tgz)
+            if callback is not None:
+                callback(len(tgz), len(tgz))
+
         def close(self) -> None:
             return
 
@@ -1012,6 +1058,11 @@ def test_remote_harvest_ssh_key_passphrase_raises_when_not_interactive(
     class _SFTP:
         def put(self, _local: str, _remote: str) -> None:
             return
+
+        def get(self, _remote: str, local: str, callback=None) -> None:
+            Path(local).write_bytes(b"")
+            if callback is not None:
+                callback(0, 0)
 
         def close(self) -> None:
             return
@@ -1196,6 +1247,73 @@ def test_safe_extract_tar_rejects_too_many_members(tmp_path: Path, monkeypatch):
             ti = tarfile.TarInfo(name=f"f{i}")
             ti.size = 1
             tf.addfile(ti, io.BytesIO(b"x"))
+
+    bio.seek(0)
+    with tarfile.open(fileobj=bio, mode="r:gz") as tf:
+        with pytest.raises(RuntimeError, match="too many members"):
+            r._safe_extract_tar(tf, tmp_path)
+
+
+def test_downloaded_remote_archive_digest_mismatch_is_rejected(
+    tmp_path: Path,
+):
+    import enroll.remote as r
+
+    archive = tmp_path / "bundle.tgz"
+    archive.write_bytes(b"tampered")
+    with pytest.raises(RuntimeError, match="integrity check failed"):
+        r._verify_downloaded_archive_sha256(archive, "0" * 64)
+
+
+def test_downloaded_remote_archive_digest_match_is_accepted(tmp_path: Path):
+    import enroll.remote as r
+
+    archive = tmp_path / "bundle.tgz"
+    archive.write_bytes(b"original")
+    expected = hashlib.sha256(b"original").hexdigest()
+    r._verify_downloaded_archive_sha256(archive, expected)
+
+
+def test_remote_archive_download_size_is_bounded(monkeypatch):
+    import enroll.remote as r
+
+    monkeypatch.setattr(r, "_TAR_MAX_COMPRESSED_BYTES", 10)
+    r._check_tar_download_size(10)
+    with pytest.raises(RuntimeError, match="compressed download limit"):
+        r._check_tar_download_size(11)
+
+
+def test_safe_extract_tar_does_not_eagerly_index_archive(tmp_path: Path):
+    """The safety caps must apply while parsing, before getmembers() can
+    materialise an attacker-sized member list in memory."""
+    import enroll.remote as r
+
+    bio = io.BytesIO()
+    with tarfile.open(fileobj=bio, mode="w:gz") as tf:
+        ti = tarfile.TarInfo(name="state.json")
+        ti.size = 2
+        tf.addfile(ti, io.BytesIO(b"{}"))
+
+    bio.seek(0)
+    with tarfile.open(fileobj=bio, mode="r:gz") as tf:
+        tf.getmembers = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
+            AssertionError("getmembers() must not be used for untrusted archives")
+        )
+        r._safe_extract_tar(tf, tmp_path)
+
+    assert (tmp_path / "state.json").read_bytes() == b"{}"
+
+
+def test_safe_extract_tar_counts_dot_entries_against_member_cap(
+    tmp_path: Path, monkeypatch
+):
+    import enroll.remote as r
+
+    monkeypatch.setattr(r, "_TAR_MAX_MEMBERS", 2)
+    bio = io.BytesIO()
+    with tarfile.open(fileobj=bio, mode="w:gz") as tf:
+        for _ in range(3):
+            tf.addfile(tarfile.TarInfo(name="."))
 
     bio.seek(0)
     with tarfile.open(fileobj=bio, mode="r:gz") as tf:

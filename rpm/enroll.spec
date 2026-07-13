@@ -1,4 +1,4 @@
-%global upstream_version 0.7.0
+%global upstream_version 0.8.0
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,10 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Mon Jul 13 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Security: keep sudo-created remote harvest bundles root-owned while root packages and hashes them, expose only the archive to the authenticated SSH uid, and verify the root-computed digest after download. This removes the post-harvest tampering window created by recursively chowning the bundle before packaging without making the plaintext archive world-readable.
+- Security: enforce tar member limits while lazily parsing untrusted archives rather than after `TarFile.getmembers()` has already indexed the entire archive; count repeated `.` entries and cap remote compressed downloads as well.
+- Security: apply aggregate byte and total filesystem-entry limits when freezing directory harvest bundles, reject symlinked bundle roots, and abort when files or discovered directories change during the copy, so direct directory inputs remain bounded and fail closed under mutation.
 * Sun Jul 05 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - BREAKING CHANGE: Remove the `enroll diff --enforce` option. Enroll no longer applies the old harvest state locally to repair drift; this avoids the risk of enforcing a potentially malicious or tampered harvest. To restore baseline state, regenerate a manifest from the trusted harvest and apply it yourself, or compare two `enroll diff` runs and act on the result.
 - BREAKING CHANGE: Group all package and systemd-unit roles into Debian Section/RPM Group roles by default, including managed config files and unit state. This mode is not used if `--fqdn` or `--no-common-roles` is set, in which case, the traditional behaviour of preserving one role per package/unit is used instead.

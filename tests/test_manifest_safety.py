@@ -212,6 +212,59 @@ def test_freeze_directory_bundle_rejects_symlinked_subdir(tmp_path: Path):
         freeze_directory_bundle(bundle)
 
 
+def test_freeze_directory_bundle_rejects_symlinked_root(tmp_path: Path):
+    bundle = _write_bundle(tmp_path)
+    link = tmp_path / "bundle-link"
+    link.symlink_to(bundle, target_is_directory=True)
+
+    with pytest.raises(ArtifactSafetyError, match="root is a symlink"):
+        freeze_directory_bundle(link)
+
+
+def test_freeze_directory_bundle_fails_if_discovered_dir_disappears(
+    tmp_path: Path, monkeypatch
+):
+    import enroll.manifest_safety as ms
+
+    bundle = _write_bundle(tmp_path)
+    unstable = bundle / "unstable"
+    unstable.mkdir()
+    real_lstat = ms.Path.lstat
+
+    def fake_lstat(self):
+        if self == unstable:
+            raise FileNotFoundError(str(self))
+        return real_lstat(self)
+
+    monkeypatch.setattr(ms.Path, "lstat", fake_lstat)
+    with pytest.raises(ArtifactSafetyError, match="changed while being frozen"):
+        freeze_directory_bundle(bundle)
+
+
+def test_freeze_directory_bundle_fails_if_file_changes_during_read(
+    tmp_path: Path, monkeypatch
+):
+    import enroll.manifest_safety as ms
+
+    bundle = _write_bundle(tmp_path)
+    changing = bundle / "state.json"
+    real_read = ms.os.read
+    changed = False
+
+    def mutating_read(fd: int, size: int) -> bytes:
+        nonlocal changed
+        data = real_read(fd, size)
+        if not changed and data:
+            changed = True
+            # Same length: size-only checking would miss this in-place rewrite.
+            changing.write_bytes(b'{"tampered":1}')
+        return data
+
+    monkeypatch.setattr(ms.os, "read", mutating_read)
+    with pytest.raises(ArtifactSafetyError, match="changed while being frozen"):
+        freeze_directory_bundle(bundle)
+
+
 def test_freeze_directory_bundle_rejects_hardlinked_file(tmp_path: Path):
     bundle = _write_bundle(tmp_path)
     secret = tmp_path / "secret"
@@ -219,6 +272,37 @@ def test_freeze_directory_bundle_rejects_hardlinked_file(tmp_path: Path):
     hard = bundle / "artifacts" / "app" / "etc" / "app" / "hard.conf"
     os.link(secret, hard)
     with pytest.raises(ArtifactSafetyError, match="hardlink"):
+        freeze_directory_bundle(bundle)
+
+
+def test_freeze_directory_bundle_rejects_aggregate_size_bomb(
+    tmp_path: Path, monkeypatch
+):
+    import enroll.manifest_safety as ms
+
+    bundle = _write_bundle(tmp_path)
+    extra = bundle / "artifacts" / "app" / "etc" / "app" / "extra.conf"
+    extra.write_bytes(b"x" * 32)
+
+    # Each file is individually small, but the aggregate must still be bounded.
+    monkeypatch.setattr(ms, "_FREEZE_MAX_TOTAL_BYTES", 32)
+    with pytest.raises(ArtifactSafetyError, match="total file size exceeds"):
+        freeze_directory_bundle(bundle)
+
+
+def test_freeze_directory_bundle_counts_directories_against_entry_cap(
+    tmp_path: Path, monkeypatch
+):
+    import enroll.manifest_safety as ms
+
+    bundle = _write_bundle(tmp_path)
+    (bundle / "empty-a").mkdir()
+    (bundle / "empty-b").mkdir()
+
+    # Directory-only trees consume inodes and traversal time too. The old
+    # file-only limit allowed an unbounded number of empty directories.
+    monkeypatch.setattr(ms, "_FREEZE_MAX_ENTRIES", 2)
+    with pytest.raises(ArtifactSafetyError, match="too many filesystem entries"):
         freeze_directory_bundle(bundle)
 
 

@@ -314,9 +314,13 @@ def copy_safe_artifact_file(src: str | Path, dst: str | Path) -> None:
 
 _FREEZE_MAX_FILE_BYTES = 64 * 1024 * 1024
 _FREEZE_MAX_FILES = 200_000
+_FREEZE_MAX_ENTRIES = 200_000
+_FREEZE_MAX_TOTAL_BYTES = 10 * 1024 * 1024 * 1024
 
 
-def _read_all_no_follow(abs_path: str) -> bytes:
+def _read_all_no_follow(
+    abs_path: str, *, max_total_remaining: int | None = None
+) -> tuple[bytes, int]:
     """Read a regular file's bytes via a no-follow, non-hardlinked open.
 
     Mirrors the harvest-side capture discipline: open every path component
@@ -348,6 +352,11 @@ def _read_all_no_follow(abs_path: str) -> bytes:
             raise ArtifactSafetyError(f"bundle file is hardlinked: {abs_path}")
         if st.st_size > _FREEZE_MAX_FILE_BYTES:
             raise ArtifactSafetyError(f"bundle file is too large to freeze: {abs_path}")
+        if max_total_remaining is not None and st.st_size > max_total_remaining:
+            raise ArtifactSafetyError(
+                "bundle total file size exceeds the safe freeze limit "
+                f"({_FREEZE_MAX_TOTAL_BYTES} bytes)"
+            )
 
         chunks: list[bytes] = []
         remaining = int(st.st_size)
@@ -357,7 +366,35 @@ def _read_all_no_follow(abs_path: str) -> bytes:
                 break
             chunks.append(chunk)
             remaining -= len(chunk)
-        return b"".join(chunks)
+
+        # A no-follow descriptor prevents path substitution, but an owner of
+        # the source file can still modify the same inode while it is being
+        # copied. Fail closed if the file was truncated, extended, relinked, or
+        # written during the read instead of returning a mixed/partial snapshot.
+        after = os.fstat(fd)
+        before_identity = (
+            st.st_dev,
+            st.st_ino,
+            st.st_mode,
+            st.st_nlink,
+            st.st_size,
+            st.st_mtime_ns,
+            st.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if remaining != 0 or before_identity != after_identity:
+            raise ArtifactSafetyError(
+                f"bundle file changed while being frozen: {abs_path}"
+            )
+        return b"".join(chunks), int(st.st_size)
     finally:
         if fd is not None:
             try:
@@ -392,7 +429,13 @@ def freeze_directory_bundle(
     """
 
     src_root = Path(bundle_dir).expanduser()
-    if not src_root.is_dir():
+    try:
+        root_st = src_root.lstat()
+    except FileNotFoundError as e:
+        raise ArtifactSafetyError(f"{label} is not a directory: {src_root}") from e
+    if stat.S_ISLNK(root_st.st_mode):
+        raise ArtifactSafetyError(f"{label} root is a symlink: {src_root}")
+    if not stat.S_ISDIR(root_st.st_mode):
         raise ArtifactSafetyError(f"{label} is not a directory: {src_root}")
 
     td = tempfile.TemporaryDirectory(prefix="enroll-frozen-bundle-")
@@ -405,6 +448,8 @@ def freeze_directory_bundle(
             pass
 
         file_count = 0
+        entry_count = 0
+        total_bytes = 0
 
         def _on_walk_error(exc: OSError) -> None:
             # os.walk() defaults to *silently swallowing* directory-listing
@@ -440,12 +485,24 @@ def freeze_directory_bundle(
                 dp = cur_p / dname
                 try:
                     dst = dp.lstat()
-                except FileNotFoundError:
-                    dirs.remove(dname)
-                    continue
+                except FileNotFoundError as e:
+                    raise ArtifactSafetyError(
+                        f"{label} changed while being frozen; discovered "
+                        f"directory disappeared: {dp}"
+                    ) from e
                 if stat.S_ISLNK(dst.st_mode):
                     raise ArtifactSafetyError(
                         f"{label} contains a symlinked directory: {dp}"
+                    )
+                if not stat.S_ISDIR(dst.st_mode):
+                    raise ArtifactSafetyError(
+                        f"{label} changed while being frozen; discovered "
+                        f"directory is no longer a directory: {dp}"
+                    )
+                entry_count += 1
+                if entry_count > _FREEZE_MAX_ENTRIES:
+                    raise ArtifactSafetyError(
+                        f"{label} has too many filesystem entries to freeze safely"
                     )
 
             rel_dir = cur_p.relative_to(src_root)
@@ -453,13 +510,22 @@ def freeze_directory_bundle(
             target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
             for fname in files:
+                entry_count += 1
+                if entry_count > _FREEZE_MAX_ENTRIES:
+                    raise ArtifactSafetyError(
+                        f"{label} has too many filesystem entries to freeze safely"
+                    )
                 file_count += 1
                 if file_count > _FREEZE_MAX_FILES:
                     raise ArtifactSafetyError(
                         f"{label} has too many files to freeze safely"
                     )
                 src_file = cur_p / fname
-                data = _read_all_no_follow(str(src_file))
+                data, source_size = _read_all_no_follow(
+                    str(src_file),
+                    max_total_remaining=_FREEZE_MAX_TOTAL_BYTES - total_bytes,
+                )
+                total_bytes += source_size
                 dst_file = target_dir / fname
                 fd = open_no_follow_path(str(dst_file), write=True, mode=0o600)
                 with os.fdopen(fd, "wb") as fh:

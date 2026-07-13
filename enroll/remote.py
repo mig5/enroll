@@ -190,14 +190,25 @@ def remote_harvest(
 
 
 # Resource caps for untrusted tar extraction. These mirror the directory-bundle
-# freeze limits (see manifest_safety._FREEZE_MAX_FILES / _FREEZE_MAX_FILE_BYTES)
+# freeze limits (see manifest_safety._FREEZE_MAX_ENTRIES /
+# _FREEZE_MAX_FILE_BYTES)
 # so a harvest delivered as a tarball is bounded the same way as one delivered as
 # a directory. The total-size cap additionally guards against a decompression
 # bomb whose members are each individually under the per-file cap.
 _TAR_MAX_MEMBERS = 200_000
 _TAR_MAX_FILE_BYTES = 64 * 1024 * 1024
 _TAR_MAX_TOTAL_BYTES = 10 * 1024 * 1024 * 1024
+_TAR_MAX_COMPRESSED_BYTES = 12 * 1024 * 1024 * 1024
 _TAR_MAX_PATH_DEPTH = 64
+
+
+def _check_tar_download_size(size: int) -> None:
+    """Reject a remote tar stream before it can exhaust local disk."""
+    if size > _TAR_MAX_COMPRESSED_BYTES:
+        raise RuntimeError(
+            "remote harvest archive exceeds compressed download "
+            f"limit ({_TAR_MAX_COMPRESSED_BYTES} bytes)"
+        )
 
 
 def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
@@ -217,20 +228,28 @@ def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
 
     member_count = 0
     total_size = 0
+    safe_members: list[tarfile.TarInfo] = []
 
-    for m in tar.getmembers():
-        name = m.name
-
-        # Some tar implementations include a top-level '.' entry when created
-        # with `tar -C <dir> .`. That's harmless and should be allowed.
-        if name in {".", "./"}:
-            continue
-
+    # Iterate lazily. TarFile.getmembers() first scans and materialises the
+    # *entire* archive, which lets an abusive archive consume memory/CPU before
+    # our member-count or size limits are checked. Keeping only the already
+    # validated, bounded prefix means the limits take effect while the archive
+    # is being parsed rather than after it has all been indexed.
+    for m in tar:
         member_count += 1
         if member_count > _TAR_MAX_MEMBERS:
             raise RuntimeError(
                 f"tar archive has too many members (> {_TAR_MAX_MEMBERS})"
             )
+
+        name = m.name
+
+        # Some tar implementations include a top-level '.' entry when created
+        # with `tar -C <dir> .`. That's harmless and should be allowed, but it
+        # still counts against the member cap so repeated '.' entries cannot be
+        # used to bypass the archive-work limit.
+        if name in {".", "./"}:
+            continue
 
         # Reject absolute paths and any '..' components up front.
         p = PurePosixPath(name)
@@ -259,14 +278,14 @@ def _safe_extract_tar(tar: tarfile.TarFile, dest: Path) -> None:
         if member_path != dest and not str(member_path).startswith(str(dest) + os.sep):
             raise RuntimeError(f"Unsafe tar member path: {name}")
 
+        safe_members.append(m)
+
     # Extract members one-by-one after validation.  Pass an explicit tarfile
     # extraction filter on Python versions that support it so Python 3.12/3.13
     # do not warn about the Python 3.14 default changing.  Keep the older call
     # path for Python 3.10/3.11, where the filter argument is unavailable.
     supports_filter = hasattr(tarfile, "data_filter")
-    for m in tar.getmembers():
-        if m.name in {".", "./"}:
-            continue
+    for m in safe_members:
         if supports_filter:
             tar.extract(m, path=dest, filter="data")
         else:
@@ -366,6 +385,80 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _remote_current_uid(ssh, *, remote_python: str) -> str:
+    """Return the authenticated SSH account's numeric uid.
+
+    Use the same explicitly selected Python interpreter as the remote zipapp
+    instead of relying on a shell ``id`` binary resolved through the remote
+    account's PATH. The uid is used only to grant that exact account temporary
+    read access to a root-created harvest archive.
+    """
+
+    script = "import os,sys;sys.stdout.write(str(os.getuid()))"
+    cmd = " ".join(shlex.quote(tok) for tok in (remote_python, "-I", "-c", script))
+    rc, out, err = _ssh_run(ssh, cmd, get_pty=False)
+    uid = out.strip()
+    if rc != 0 or not uid.isascii() or not uid.isdigit():
+        raise RuntimeError(
+            "Unable to determine the numeric uid of the authenticated SSH "
+            "account before exposing the remote harvest archive.\n"
+            f"Command: {cmd}\nExit code: {rc}\nStderr: {err.strip()}"
+        )
+    value = int(uid)
+    if value < 0 or value > 2**32 - 1:
+        raise RuntimeError(f"Remote SSH account returned an invalid uid: {uid}")
+    return uid
+
+
+def _verify_downloaded_archive_sha256(path: Path, expected_sha256: str) -> None:
+    """Fail closed if a downloaded remote archive changed after root hashed it."""
+
+    downloaded_sha256 = _sha256_file(path)
+    if downloaded_sha256 != expected_sha256:
+        raise RuntimeError(
+            "Remote harvest archive integrity check failed after download: "
+            "the archive changed after root packaged it. Refusing to extract "
+            "potentially tampered state.\n"
+            f"  expected: {expected_sha256}\n"
+            f"  received: {downloaded_sha256}"
+        )
+
+
+def _remote_file_sha256_sudo(
+    ssh,
+    remote_path: str,
+    *,
+    remote_python: str,
+    sudo_password: Optional[str],
+) -> str:
+    """Hash a root-owned remote file before granting the SSH user access."""
+
+    hash_script = (
+        "import hashlib,sys;"
+        "h=hashlib.sha256();"
+        "f=open(sys.argv[1],'rb');"
+        "[h.update(c) for c in iter(lambda:f.read(1048576),b'')];"
+        "sys.stdout.write(h.hexdigest())"
+    )
+    cmd = " ".join(
+        shlex.quote(tok)
+        for tok in (remote_python, "-I", "-c", hash_script, remote_path)
+    )
+    rc, out, err = _ssh_run_sudo(ssh, cmd, sudo_password=sudo_password, get_pty=True)
+    digest = out.strip().lower()
+    if rc != 0:
+        raise RuntimeError(
+            "Failed to hash the root-created remote harvest archive.\n"
+            f"Command: sudo {cmd}\nExit code: {rc}\nStderr: {err.strip()}"
+        )
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise RuntimeError(
+            "Remote harvest archive integrity check returned an invalid "
+            f"SHA-256 digest: {digest!r}"
+        )
+    return digest
 
 
 def _remote_verify_pyz_sha256(
@@ -738,14 +831,6 @@ def _remote_harvest(
                 "SSH private key is encrypted and no passphrase was provided."
             ) from e
 
-        # If no username was explicitly provided, SSH may have selected a default.
-        # We need a concrete username for the (sudo) chown step below.
-        resolved_user = remote_user
-        if not resolved_user:
-            rc, out, err = _ssh_run(ssh, "id -un")
-            if rc == 0 and out.strip():
-                resolved_user = out.strip()
-
         sftp = ssh.open_sftp()
         rtmp: Optional[str] = None
         remote_root_tmp: Optional[str] = None
@@ -837,50 +922,131 @@ def _remote_harvest(
                 )
 
             if not no_sudo:
-                # Ensure user can read the files, before we tar it.
-                if not resolved_user:
+                # Keep the root-created bundle root-owned until after it has
+                # been packaged. The old flow recursively chowned the bundle to
+                # the SSH user and then ran tar as that user, creating a window
+                # in which the just-harvested state/artifacts could be modified
+                # before Enroll downloaded them. Instead, root creates and
+                # hashes the archive while it is still private. Only that one
+                # archive is then made readable by the authenticated SSH uid.
+                # The SSH user owns the temporary archive and could chmod/edit
+                # it, so the locally downloaded bytes are required to match the
+                # root-computed digest before extraction. The root-owned parent
+                # remains non-writable, preventing path replacement.
+                if remote_root_tmp is None:
                     raise RuntimeError(
-                        "Unable to determine remote username for chown. "
-                        "Pass --remote-user explicitly or use --no-sudo."
+                        "Internal error: remote root staging directory was not initialised"
                     )
-                chown_target = remote_root_tmp or rbundle
-                chown_cmd = (
-                    "chown -R -- "
-                    f"{shlex.quote(resolved_user)} {shlex.quote(chown_target)}"
+
+                remote_tgz = f"{remote_root_tmp}/bundle.tgz"
+                remote_uid = _remote_current_uid(ssh, remote_python=remote_python)
+                tar_cmd = (
+                    f"tar -czf {shlex.quote(remote_tgz)} "
+                    f"-C {shlex.quote(rbundle)} ."
                 )
                 rc, out, err = _ssh_run_sudo(
                     ssh,
-                    chown_cmd,
+                    tar_cmd,
                     sudo_password=sudo_password,
                     get_pty=True,
                 )
                 if rc != 0:
                     raise RuntimeError(
-                        "chown of harvest failed.\n"
-                        f"Command: sudo {chown_cmd}\n"
+                        "Remote root tar creation failed.\n"
+                        f"Command: sudo {tar_cmd}\n"
                         f"Exit code: {rc}\n"
                         f"Stdout: {out.strip()}\n"
                         f"Stderr: {err.strip()}"
                     )
 
-            # Stream a tarball back to the local machine (avoid creating a tar file on the remote).
-            cmd = f"tar -cz -C {shlex.quote(rbundle)} ."
-            _stdin, stdout, stderr = ssh.exec_command(cmd)  # nosec
-            with open(local_tgz, "wb") as f:
-                while True:
-                    chunk = stdout.read(1024 * 128)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-            rc = stdout.channel.recv_exit_status()
-            err_text = stderr.read().decode("utf-8", errors="replace")
-            if rc != 0:
-                raise RuntimeError(
-                    "Remote tar stream failed.\n"
-                    f"Command: {cmd}\n"
-                    f"Exit code: {rc}\n"
-                    f"Stderr: {err_text.strip()}"
+                # Set a private mode while the archive is still root-owned,
+                # then hash it. Only after the trusted digest has been captured
+                # do we transfer ownership of this one file to the SSH uid and
+                # make the root-owned parent traversable. Unlike mode 0444, this
+                # does not expose the harvest to every local account.
+                secure_cmd = f"chmod 0400 -- {shlex.quote(remote_tgz)}"
+                rc, out, err = _ssh_run_sudo(
+                    ssh,
+                    secure_cmd,
+                    sudo_password=sudo_password,
+                    get_pty=True,
                 )
+                if rc != 0:
+                    raise RuntimeError(
+                        "Unable to secure the root-created harvest archive.\n"
+                        f"Command: sudo {secure_cmd}\n"
+                        f"Exit code: {rc}\n"
+                        f"Stdout: {out.strip()}\n"
+                        f"Stderr: {err.strip()}"
+                    )
+
+                expected_archive_sha256 = _remote_file_sha256_sudo(
+                    ssh,
+                    remote_tgz,
+                    remote_python=remote_python,
+                    sudo_password=sudo_password,
+                )
+
+                for expose_cmd in (
+                    f"chown -- {shlex.quote(remote_uid)} {shlex.quote(remote_tgz)}",
+                    f"chmod 0711 -- {shlex.quote(remote_root_tmp)}",
+                ):
+                    rc, out, err = _ssh_run_sudo(
+                        ssh,
+                        expose_cmd,
+                        sudo_password=sudo_password,
+                        get_pty=True,
+                    )
+                    if rc != 0:
+                        raise RuntimeError(
+                            "Unable to expose the integrity-protected harvest "
+                            "archive to the authenticated SSH account.\n"
+                            f"Command: sudo {expose_cmd}\n"
+                            f"Exit code: {rc}\n"
+                            f"Stdout: {out.strip()}\n"
+                            f"Stderr: {err.strip()}"
+                        )
+
+                def _download_progress(transferred: int, _total: int) -> None:
+                    _check_tar_download_size(transferred)
+
+                sftp.get(
+                    remote_tgz,
+                    str(local_tgz),
+                    callback=_download_progress,
+                )
+                _verify_downloaded_archive_sha256(local_tgz, expected_archive_sha256)
+            else:
+                # Without sudo there is no privilege boundary between the SSH
+                # user and the harvested bundle, so stream it directly as
+                # before.
+                cmd = f"tar -cz -C {shlex.quote(rbundle)} ."
+                _stdin, stdout, stderr = ssh.exec_command(cmd)  # nosec
+                downloaded = 0
+                with open(local_tgz, "wb") as f:
+                    while True:
+                        chunk = stdout.read(1024 * 128)
+                        if not chunk:
+                            break
+                        downloaded += len(chunk)
+                        try:
+                            _check_tar_download_size(downloaded)
+                        except RuntimeError:
+                            try:
+                                stdout.channel.close()
+                            except Exception:
+                                pass  # nosec - best-effort remote stream abort
+                            raise
+                        f.write(chunk)
+                rc = stdout.channel.recv_exit_status()
+                err_text = stderr.read().decode("utf-8", errors="replace")
+                if rc != 0:
+                    raise RuntimeError(
+                        "Remote tar stream failed.\n"
+                        f"Command: {cmd}\n"
+                        f"Exit code: {rc}\n"
+                        f"Stderr: {err_text.strip()}"
+                    )
 
             # Extract into the destination.
             with tarfile.open(local_tgz, mode="r:gz") as tf:
@@ -888,7 +1054,7 @@ def _remote_harvest(
 
         finally:
             # Cleanup remote tmpdirs even on failure.  The sudo-owned harvest
-            # tempdir may still be root-owned if harvest/chown failed, so remove
+            # tempdir remains root-owned throughout the sudo flow, so remove
             # it via sudo and avoid masking the original error if cleanup fails.
             if remote_root_tmp:
                 try:
