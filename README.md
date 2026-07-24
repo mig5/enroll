@@ -364,9 +364,7 @@ poetry run enroll --help
 
 My Forgejo doesn't currently support federation, so I haven't opened registration/login for issues.
 
-Instead, email me (see `pyproject.toml`) or contact me on the Fediverse:
-
-https://goto.mig5.net/@mig5
+Instead, email me (see `pyproject.toml`).
 
 ---
 
