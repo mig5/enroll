@@ -45,7 +45,6 @@ Enroll a server's running state retrospectively into Ansible.
 %changelog
 * Mon Aug 03 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Make remote harvest zipapp stdlib-only
-* Mon Aug 03 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Security: fix a TOCTOU in remote harvest.
 * Mon Jul 13 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Security: keep sudo-created remote harvest bundles root-owned while root packages and hashes them, expose only the archive to the authenticated SSH uid, and verify the root-computed digest after download. This removes the post-harvest tampering window created by recursively chowning the bundle before packaging without making the plaintext archive world-readable.
@@ -71,7 +70,7 @@ Enroll a server's running state retrospectively into Ansible.
 - Add support for generating ipset and iptables configuration files from runtime, if the former weren't present ('firewall_runtime' role)
 * Tue May 12 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Add ssh config support where JinjaTurtle is used
-* Tue Feb 16 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+* Mon Feb 16 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Add capability to handle passphrases on encrypted SSH private keys. Prompting can be forced with `--ask-key-passphrase` or automated (e.g for CI) with `--ssh-key-passphrase env SOMEVAR`
 * Fri Jan 16 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Add support for AddressFamily and ConnectTimeout in the .ssh/config when using `--remote-ssh-config`.
