@@ -1126,6 +1126,8 @@ def _remote_harvest(
             # Run remote harvest.
             argv: list[str] = [
                 remote_python,
+                "-I",
+                "-S",
                 rapp,
                 "harvest",
                 "--out",

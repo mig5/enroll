@@ -18,18 +18,36 @@ from .diff import (
     post_webhook,
     send_email,
 )
-from .explain import explain_state
 from .harvest import harvest
 from .harvest_safety import ensure_safe_output_parent, write_text_output_file
-from .manifest import manifest
 from .remote import (
     remote_harvest,
     RemoteSudoPasswordRequired,
     RemoteSSHKeyPassphraseRequired,
 )
 from .sopsutil import SopsError, encrypt_file_binary
-from .validate import validate_harvest
 from .version import get_enroll_version
+
+
+def explain_state(*args, **kwargs):
+    """Load the explain implementation only when that command is used."""
+    from .explain import explain_state as _explain_state
+
+    return _explain_state(*args, **kwargs)
+
+
+def manifest(*args, **kwargs):
+    """Load manifest dependencies only when rendering a manifest."""
+    from .manifest import manifest as _manifest
+
+    return _manifest(*args, **kwargs)
+
+
+def validate_harvest(*args, **kwargs):
+    """Load jsonschema only when validation is requested."""
+    from .validate import validate_harvest as _validate_harvest
+
+    return _validate_harvest(*args, **kwargs)
 
 
 def _discover_config_path(argv: list[str]) -> Optional[Path]:

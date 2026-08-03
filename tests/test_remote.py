@@ -313,6 +313,9 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     assert promote_argv.count("enroll.pyz") >= 2
     assert "/tmp/enroll-root-123/enroll.pyz" in harvest_cmd
     assert "/tmp/enroll-remote-123/enroll.pyz" not in harvest_cmd
+    harvest_argv = shlex.split(harvest_cmd)
+    pyz_i = harvest_argv.index("/tmp/enroll-root-123/enroll.pyz")
+    assert harvest_argv[pyz_i - 2 : pyz_i] == ["-I", "-S"]
     assert not any(_is_pyz_verify_cmd(c) for c, _pty in calls)
 
     # The trusted digest must be obtained while the archive is still private,
@@ -1249,6 +1252,74 @@ def test_remote_verify_pyz_sha256_rejects_nonzero_rc():
         r._remote_verify_pyz_sha256(
             ssh, "/tmp/x/enroll.pyz", "a" * 64, remote_python="python3"
         )
+
+
+def test_build_enroll_pyz_harvest_starts_without_site_packages(tmp_path: Path):
+    """The remote payload must not depend on packages installed on the target.
+
+    ``-S`` disables site-packages, reproducing a target that has Python but no
+    jsonschema/PyYAML. ``-I`` also ignores PYTHON* environment variables and
+    the current directory. The old eager CLI imports failed here before
+    argparse could dispatch to ``harvest``.
+    """
+    import subprocess
+    import sys
+
+    import enroll.remote as r
+
+    pyz, _sha = r._build_enroll_pyz(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, "-I", "-S", str(pyz), "harvest", "--help"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=15,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "usage: enroll harvest" in proc.stdout
+    assert "ModuleNotFoundError" not in proc.stderr
+    assert "jsonschema" not in proc.stderr
+    assert "yaml" not in proc.stderr.lower()
+
+
+def test_build_enroll_pyz_runs_harvest_without_site_packages(tmp_path: Path):
+    """Exercise command dispatch and the actual harvest implementation under -S."""
+    import subprocess
+    import sys
+
+    import enroll.remote as r
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    pyz, _sha = r._build_enroll_pyz(build_dir)
+    out_dir = tmp_path / "bundle"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            str(pyz),
+            "harvest",
+            "--out",
+            str(out_dir),
+            "--exclude-path",
+            "/**",
+            "--assume-safe-path",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert (out_dir / "state.json").is_file()
+    assert "ModuleNotFoundError" not in proc.stderr
+    assert "jsonschema" not in proc.stderr
+    assert "yaml" not in proc.stderr.lower()
 
 
 def test_build_enroll_pyz_excludes_tests_and_caches_and_returns_sha(tmp_path: Path):
