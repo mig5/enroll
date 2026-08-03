@@ -1,3 +1,9 @@
+enroll (0.8.2) unstable; urgency=medium
+
+  * Make remote harvest zipapp stdlib-only
+
+ -- Miguel Jacq <mig@mig5.net>  Mon, 03 Aug 2026 16:00:00 +1000
+
 enroll (0.8.1) unstable; urgency=medium
 
   * Security: fix a TOCTOU in remote harvest.

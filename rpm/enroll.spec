@@ -1,4 +1,4 @@
-%global upstream_version 0.8.1
+%global upstream_version 0.8.2
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,8 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Mon Aug 03 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Make remote harvest zipapp stdlib-only
 * Mon Aug 03 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Security: fix a TOCTOU in remote harvest.
 * Mon Jul 13 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}

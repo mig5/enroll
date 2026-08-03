@@ -1,6 +1,7 @@
 # 0.8.2
 
  * Bump dependencies
+ * Make remote harvest zipapp stdlib-only
 
 # 0.8.1
 
