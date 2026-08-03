@@ -300,8 +300,9 @@ def _build_enroll_pyz(tmpdir: Path) -> tuple[Path, str]:
 
     Returns ``(pyz_path, sha256_hex)``. The digest is computed on the exact
     bytes written locally so the caller can verify, on the remote side, that the
-    file that is about to be executed as root is byte-for-byte the one we built
-    (see ``_remote_verify_pyz_sha256``). This is transport/staging integrity
+    file that is executed is byte-for-byte the one we built (see
+    ``_remote_promote_verified_pyz`` and ``_remote_verify_pyz_sha256``). This is
+    transport/staging integrity
     defence-in-depth: it detects a swap of the staged file between upload and
     execution by anyone who gained write access to the staging directory. It is
     NOT a defence against a remote host that is already root-compromised -- such
@@ -461,6 +462,243 @@ def _remote_file_sha256_sudo(
     return digest
 
 
+_REMOTE_PROMOTE_PYZ_SCRIPT = r"""import hashlib
+import os
+import stat
+import sys
+
+def _promote(argv):
+    (
+        stage_dir,
+        source_name,
+        root_dir,
+        destination_name,
+        expected,
+        size_text,
+        owner_uid_text,
+    ) = argv
+    expected_size = int(size_text)
+    expected_owner_uid = int(owner_uid_text)
+
+    for required_flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
+        if not hasattr(os, required_flag):
+            raise RuntimeError(
+                "remote platform lacks required safe-open flag " + required_flag
+            )
+
+    if os.geteuid() != expected_owner_uid:
+        raise RuntimeError("promotion helper is not running as the expected user")
+    if not source_name or source_name in {".", ".."} or "/" in source_name:
+        raise RuntimeError("uploaded enroll.pyz name is not a single path component")
+
+    no_follow = os.O_NOFOLLOW
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | no_follow | cloexec
+    stage_fd = None
+    root_fd = None
+    source_fd = None
+    destination_fd = None
+    temporary_name = ".enroll.pyz.tmp"
+    temporary_created = False
+    destination_published = False
+    promotion_complete = False
+
+    try:
+        stage_fd = os.open(stage_dir, dir_flags)
+        root_fd = os.open(root_dir, dir_flags)
+
+        root_stat = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise RuntimeError("destination path is not a directory")
+        if root_stat.st_uid != expected_owner_uid:
+            raise RuntimeError("destination directory has an unexpected owner")
+        if stat.S_IMODE(root_stat.st_mode) != 0o700:
+            raise RuntimeError("destination directory is not mode 0700")
+
+        source_fd = os.open(
+            source_name,
+            os.O_RDONLY | no_follow | os.O_NONBLOCK | cloexec,
+            dir_fd=stage_fd,
+        )
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise RuntimeError("uploaded enroll.pyz is not a regular file")
+        if source_stat.st_nlink != 1:
+            raise RuntimeError("uploaded enroll.pyz must not be hard-linked")
+        if source_stat.st_size != expected_size:
+            raise RuntimeError("uploaded enroll.pyz has an unexpected size")
+
+        # The directory was freshly created by root, so neither name should exist.
+        # O_EXCL protects the temporary name. Publishing with link() instead of
+        # rename() also fails rather than replacing an unexpected final path.
+        destination_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow | cloexec,
+            0o500,
+            dir_fd=root_fd,
+        )
+        temporary_created = True
+
+        digest = hashlib.sha256()
+        copied = 0
+        while True:
+            # Read one byte beyond the expected length so concurrent growth cannot
+            # be hidden by stopping exactly at expected_size.
+            chunk = os.read(source_fd, min(1048576, expected_size - copied + 1))
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > expected_size:
+                raise RuntimeError("uploaded enroll.pyz grew while being copied")
+            digest.update(chunk)
+
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_fd, view)
+                if written <= 0:
+                    raise RuntimeError("short write while promoting enroll.pyz")
+                view = view[written:]
+
+        if copied != expected_size:
+            raise RuntimeError("uploaded enroll.pyz changed size while being copied")
+
+        actual = digest.hexdigest()
+        if actual != expected:
+            raise RuntimeError(
+                "uploaded enroll.pyz SHA-256 mismatch: expected "
+                + expected
+                + ", received "
+                + actual
+            )
+
+        os.fchmod(destination_fd, 0o500)
+        os.fsync(destination_fd)
+        os.close(destination_fd)
+        destination_fd = None
+
+        os.link(
+            temporary_name,
+            destination_name,
+            src_dir_fd=root_fd,
+            dst_dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        destination_published = True
+        os.unlink(temporary_name, dir_fd=root_fd)
+        temporary_created = False
+        os.fsync(root_fd)
+        promotion_complete = True
+    finally:
+        for fd in (destination_fd, source_fd, stage_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+        # On every failed path, remove anything this invocation created before the
+        # directory descriptor is closed. This leaves no executable partial copy.
+        if root_fd is not None and not promotion_complete:
+            if destination_published:
+                try:
+                    os.unlink(destination_name, dir_fd=root_fd)
+                except OSError:
+                    pass
+            if temporary_created:
+                try:
+                    os.unlink(temporary_name, dir_fd=root_fd)
+                except OSError:
+                    pass
+
+        if root_fd is not None:
+            try:
+                os.close(root_fd)
+            except OSError:
+                pass
+
+
+if __name__ == "__main__":
+    _promote(sys.argv[1:])
+"""
+
+
+def _remote_promote_verified_pyz(
+    ssh,
+    uploaded_pyz_path: str,
+    root_tmp_dir: str,
+    expected_sha256: str,
+    expected_size: int,
+    *,
+    remote_python: str,
+    sudo_password: Optional[str],
+) -> str:
+    """Copy an uploaded zipapp into root-private storage and verify it there.
+
+    The SFTP upload initially lives in a directory controlled by the
+    authenticated SSH account. Hashing that path and later executing it with
+    sudo leaves a verify/use race: the account can replace the path after the
+    hash check. Instead, one privileged process opens the source safely, copies
+    and hashes the bytes into a private root-owned directory, and atomically
+    publishes the destination only after the digest and size match.
+
+    The returned root-owned path is the only path the caller may execute with
+    sudo. Racing or replacing the source can therefore cause only a verified
+    copy of the locally built payload to be published, or a closed failure.
+    """
+
+    expected = expected_sha256.strip().lower()
+    if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+        raise ValueError("expected_sha256 must be a valid SHA-256 digest")
+    if expected_size < 0:
+        raise ValueError("expected_size must not be negative")
+
+    uploaded = PurePosixPath(uploaded_pyz_path)
+    root_dir = PurePosixPath(root_tmp_dir)
+    if not uploaded.is_absolute() or not root_dir.is_absolute():
+        raise ValueError("remote promotion paths must be absolute")
+
+    stage_dir = str(uploaded.parent)
+    source_name = uploaded.name
+    if stage_dir in {"", ".", "/"} or source_name in {"", ".", ".."}:
+        raise ValueError("uploaded_pyz_path must name a file inside a directory")
+
+    destination_name = "enroll.pyz"
+    destination_path = str(root_dir / destination_name)
+
+    cmd = " ".join(
+        shlex.quote(tok)
+        for tok in (
+            remote_python,
+            "-I",
+            "-c",
+            _REMOTE_PROMOTE_PYZ_SCRIPT,
+            stage_dir,
+            source_name,
+            str(root_dir),
+            destination_name,
+            expected,
+            str(expected_size),
+            "0",
+        )
+    )
+    rc, out, err = _ssh_run_sudo(
+        ssh,
+        cmd,
+        sudo_password=sudo_password,
+        get_pty=True,
+    )
+    if rc != 0:
+        raise RuntimeError(
+            "Unable to promote and verify the uploaded enroll.pyz into "
+            "root-private storage. Refusing to execute it.\n"
+            f"Command: sudo {cmd}\n"
+            f"Exit code: {rc}\n"
+            f"Stdout: {out.strip()}\n"
+            f"Stderr: {err.strip()}"
+        )
+    return destination_path
+
+
 def _remote_verify_pyz_sha256(
     ssh,
     remote_pyz_path: str,
@@ -468,23 +706,13 @@ def _remote_verify_pyz_sha256(
     *,
     remote_python: str,
 ) -> None:
-    """Verify the uploaded zipapp's SHA-256 on the remote before executing it.
+    """Verify the uploaded zipapp before same-user ``--no-sudo`` execution.
 
-    This is transport/staging integrity defence-in-depth. The check runs on the
-    remote, immediately before the (root) execution of the zipapp, and fails
-    closed if the digest does not match the bytes we built locally. It shrinks
-    the window in which a *non-root* tamperer who somehow gained write access to
-    the staging directory could swap the file between upload and execution.
-
-    It deliberately does NOT establish trust in a root-compromised remote: a
-    host that is already root can forge any check it runs about itself. Per
-    SECURITY.md, such a host is outside Enroll's threat model. The value here is
-    catching accidental corruption and unprivileged-local-user staging races,
-    not defeating a compromised root.
-
-    The hashing is done with Python's hashlib (already required to run the
-    zipapp) rather than a ``sha256sum`` binary, so it does not depend on
-    coreutils being present or on PATH resolution of a hashing tool.
+    The privileged path uses :func:`_remote_promote_verified_pyz` instead,
+    because hashing a user-writable pathname and later executing that pathname
+    as root would leave a verify/use race. This simpler check remains useful in
+    ``--no-sudo`` mode for detecting transfer corruption; there is no privilege
+    transition in that mode.
     """
 
     # Hash the staged file using the same interpreter that will execute it.
@@ -850,16 +1078,6 @@ def _remote_harvest(
             rapp = f"{rtmp}/enroll.pyz"
             sftp.put(str(pyz), rapp)
 
-            # Before executing the uploaded zipapp (as root, under sudo), verify
-            # on the remote that the staged bytes match what we built locally.
-            # This is staging/transport integrity defence-in-depth: it fails
-            # closed if the file was swapped or corrupted between upload and
-            # execution. It does not (and cannot) defend against a remote that
-            # is already root-compromised; see _remote_verify_pyz_sha256.
-            _remote_verify_pyz_sha256(
-                ssh, rapp, pyz_sha256, remote_python=remote_python
-            )
-
             if not no_sudo:
                 # The remote zipapp is staged as the SSH user, but the harvest
                 # itself runs as root.  Root must not write its bundle under the
@@ -883,8 +1101,26 @@ def _remote_harvest(
                 )
                 if rc != 0:
                     raise RuntimeError(f"Remote sudo chmod failed: {err.strip()}")
+                # Promote the uploaded payload into the root-private directory
+                # and verify the bytes during that privileged copy. From this point
+                # onward, execute only the immutable root-owned copy; never return
+                # to the SSH-user-controlled staging path.
+                rapp = _remote_promote_verified_pyz(
+                    ssh,
+                    rapp,
+                    remote_root_tmp,
+                    pyz_sha256,
+                    pyz.stat().st_size,
+                    remote_python=remote_python,
+                    sudo_password=sudo_password,
+                )
                 rbundle = f"{remote_root_tmp}/bundle"
             else:
+                # There is no privilege transition in --no-sudo mode, but retain
+                # the transport/corruption check before executing as the SSH user.
+                _remote_verify_pyz_sha256(
+                    ssh, rapp, pyz_sha256, remote_python=remote_python
+                )
                 rbundle = f"{rtmp}/bundle"
 
             # Run remote harvest.

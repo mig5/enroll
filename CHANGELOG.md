@@ -1,3 +1,7 @@
+# 0.8.1
+
+ * Security: fix a TOCTOU in remote harvest.
+
 # 0.8.0
 
  * Security: keep sudo-created remote harvest bundles root-owned while root packages and hashes them, expose only the archive to the authenticated SSH uid, and verify the root-computed digest after download. This removes the post-harvest tampering window created by recursively chowning the bundle before packaging without making the plaintext archive world-readable.

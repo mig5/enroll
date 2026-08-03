@@ -1,3 +1,9 @@
+enroll (0.8.1) unstable; urgency=medium
+
+  * Security: fix a TOCTOU in remote harvest.
+
+ -- Miguel Jacq <mig@mig5.net>  Mon, 03 Aug 2026 15:20:00 +1000
+
 enroll (0.8.0) unstable; urgency=medium
 
   * Security: keep sudo-created remote harvest bundles root-owned while root packages and hashes them, expose only the archive to the authenticated SSH uid, and verify the root-computed digest after download. This removes the post-harvest tampering window created by recursively chowning the bundle before packaging without making the plaintext archive world-readable.

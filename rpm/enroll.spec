@@ -1,4 +1,4 @@
-%global upstream_version 0.8.0
+%global upstream_version 0.8.1
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,8 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Mon Aug 03 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
+- Security: fix a TOCTOU in remote harvest.
 * Mon Jul 13 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Security: keep sudo-created remote harvest bundles root-owned while root packages and hashes them, expose only the archive to the authenticated SSH uid, and verify the root-computed digest after download. This removes the post-harvest tampering window created by recursively chowning the bundle before packaging without making the plaintext archive world-readable.
 - Security: enforce tar member limits while lazily parsing untrusted archives rather than after `TarFile.getmembers()` has already indexed the entire archive; count repeated `.` entries and cap remote compressed downloads as well.

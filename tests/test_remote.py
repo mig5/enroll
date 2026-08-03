@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import shlex
 import tarfile
 import warnings
 from pathlib import Path
@@ -9,10 +10,9 @@ from pathlib import Path
 import pytest
 
 
-# The remote harvest now SHA-256-verifies the uploaded zipapp on the remote
-# before executing it. Tests mock _build_enroll_pyz to write these fixed bytes
-# and return (path, _FAKE_PYZ_SHA256); the fake SSH routers below answer the
-# verification command with the same digest so the happy paths proceed.
+# Sudo harvests promote and verify the upload into a root-private directory;
+# no-sudo harvests retain the direct remote digest check. Tests mock the local
+# builder with these fixed bytes and digest so both paths can be exercised.
 _FAKE_PYZ_BYTES = b"PYZ"
 _FAKE_PYZ_SHA256 = "d6f4e1dbf7ba69af6c798c6f6f67383c978e68f4201bf31902275ef37e6263e1"
 
@@ -28,9 +28,16 @@ def _fake_build_enroll_pyz(td) -> tuple[Path, str]:
     return p, _FAKE_PYZ_SHA256
 
 
+def _is_pyz_promote_cmd(cmd: str) -> bool:
+    """True if *cmd* is the privileged copy-and-verify operation."""
+    return ".enroll.pyz.tmp" in cmd and "os.link" in cmd
+
+
 def _is_pyz_verify_cmd(cmd: str) -> bool:
-    """True if *cmd* is the remote pyz SHA-256 integrity check."""
-    return "hashlib.sha256" in cmd and "enroll.pyz" in cmd
+    """True if *cmd* is the no-sudo remote pyz SHA-256 check."""
+    return (
+        "hashlib.sha256" in cmd and "enroll.pyz" in cmd and not _is_pyz_promote_cmd(cmd)
+    )
 
 
 def _is_remote_uid_cmd(cmd: str) -> bool:
@@ -193,7 +200,9 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
             return self._sftp
 
         def exec_command(self, cmd: str, *, get_pty: bool = False, **_kwargs):
-            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_promote_cmd(cmd):
+                calls.append((cmd, bool(get_pty)))
+                return (None, _Stdout(b""), _Stderr())
             if _is_pyz_verify_cmd(cmd):
                 return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             calls.append((cmd, bool(get_pty)))
@@ -285,6 +294,26 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     assert "chmod 0400 -- /tmp/enroll-root-123/bundle.tgz" in joined
     assert "chown -- 1000 /tmp/enroll-root-123/bundle.tgz" in joined
     assert "chmod 0711 -- /tmp/enroll-root-123" in joined
+
+    # The upload is promoted and verified before harvest, and sudo executes
+    # only the root-owned copy. A later replacement of the SSH-user path can no
+    # longer alter the bytes that Python opens as root.
+    promote_i, promote_cmd = next(
+        (i, c) for i, (c, _pty) in enumerate(calls) if _is_pyz_promote_cmd(c)
+    )
+    harvest_i, harvest_cmd = next(
+        (i, c)
+        for i, (c, _pty) in enumerate(calls)
+        if c.startswith("sudo -n") and " harvest " in c
+    )
+    assert promote_i < harvest_i
+    promote_argv = shlex.split(promote_cmd)
+    assert "/tmp/enroll-remote-123" in promote_argv
+    assert "/tmp/enroll-root-123" in promote_argv
+    assert promote_argv.count("enroll.pyz") >= 2
+    assert "/tmp/enroll-root-123/enroll.pyz" in harvest_cmd
+    assert "/tmp/enroll-remote-123/enroll.pyz" not in harvest_cmd
+    assert not any(_is_pyz_verify_cmd(c) for c, _pty in calls)
 
     # The trusted digest must be obtained while the archive is still private,
     # before ownership/read access is handed to the SSH account.
@@ -410,7 +439,9 @@ def test_remote_harvest_no_sudo_does_not_request_pty_or_chown(
             return self._sftp
 
         def exec_command(self, cmd: str, *, get_pty: bool = False, **_kwargs):
-            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_promote_cmd(cmd):
+                calls.append((cmd, bool(get_pty)))
+                return (None, _Stdout(b""), _Stderr())
             if _is_pyz_verify_cmd(cmd):
                 return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             calls.append((cmd, bool(get_pty)))
@@ -570,7 +601,9 @@ def test_remote_harvest_sudo_password_retry_uses_sudo_s_and_writes_password(
             return self._sftp
 
         def exec_command(self, cmd: str, *, get_pty: bool = False, **_kwargs):
-            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_promote_cmd(cmd):
+                calls.append((cmd, bool(get_pty)))
+                return (None, _Stdout(b""), _Stderr())
             if _is_pyz_verify_cmd(cmd):
                 return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             calls.append((cmd, bool(get_pty)))
@@ -960,7 +993,8 @@ def test_remote_harvest_ssh_key_passphrase_retry(monkeypatch, tmp_path: Path):
             return self._sftp
 
         def exec_command(self, cmd: str, *, get_pty: bool = False, **_kwargs):
-            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_promote_cmd(cmd):
+                return (None, _Stdout(b""), _Stderr())
             if _is_pyz_verify_cmd(cmd):
                 return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             if cmd.startswith("tar -cz -C"):
@@ -1084,7 +1118,8 @@ def test_remote_harvest_ssh_key_passphrase_raises_when_not_interactive(
             return self._sftp
 
         def exec_command(self, cmd: str, **_kwargs):
-            # Integrity check of the uploaded pyz (added with SHA-256 verify).
+            if _is_pyz_promote_cmd(cmd):
+                return (None, _Stdout(b""), _Stderr())
             if _is_pyz_verify_cmd(cmd):
                 return (None, _Stdout(_FAKE_PYZ_SHA256.encode()), _Stderr())
             return (_Stdout(), _Stdout(), _Stderr())
