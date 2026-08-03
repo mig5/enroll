@@ -1,3 +1,7 @@
+# 0.8.2
+
+ * Bump dependencies
+
 # 0.8.1
 
  * Security: fix a TOCTOU in remote harvest.
