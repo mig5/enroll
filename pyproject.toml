@@ -51,7 +51,7 @@ jsonschema = ">=4.23,<5"
 enroll = "enroll.cli:main"
 
 [tool.poetry.dev-dependencies]
-pytest = ">=8,<9"
+pytest = ">=9.0.3,<10"
 pytest-cov = ">=5,<6"
 pyproject-appimage = ">=4.2,<5"
 
