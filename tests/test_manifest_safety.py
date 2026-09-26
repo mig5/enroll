@@ -13,49 +13,7 @@ from enroll.manifest_safety import (
     iter_safe_artifact_files,
     prepare_manifest_output_dir,
     safe_artifact_file,
-    validate_site_fqdn,
 )
-
-
-def test_validate_site_fqdn_accepts_and_normalises_simple_values():
-    assert validate_site_fqdn(None) is None
-    assert validate_site_fqdn("  ") is None
-    assert validate_site_fqdn("host_1.example") == "host_1.example"
-
-
-@pytest.mark.parametrize(
-    "value", ["../host", "host/name", "host\\name", "host\nname", "-bad", ".", ".."]
-)
-def test_validate_site_fqdn_rejects_path_or_inventory_injection(value: str):
-    with pytest.raises(ManifestOutputError):
-        validate_site_fqdn(value)
-
-
-def test_prepare_manifest_output_dir_allows_existing_clean_tree_in_site_mode(
-    tmp_path: Path,
-):
-    out = tmp_path / "site"
-    out.mkdir()
-    # Match Enroll's root-run output safety expectations regardless of the
-    # ambient CI/container umask.
-    out.chmod(0o700)
-    (out / ".git").mkdir()
-    (out / ".git").chmod(0o700)
-    (out / ".git" / "ignored-link").symlink_to(tmp_path, target_is_directory=True)
-
-    assert prepare_manifest_output_dir(out, allow_existing=True) == out
-
-
-def test_prepare_manifest_output_dir_rejects_existing_tree_symlink(tmp_path: Path):
-    out = tmp_path / "site"
-    out.mkdir()
-    # Keep the root-safety check from masking the specific symlink assertion on
-    # Forgejo/Docker hosts that run with umask 0002.
-    out.chmod(0o700)
-    (out / "bad-link").symlink_to(tmp_path, target_is_directory=True)
-
-    with pytest.raises(ManifestOutputError, match="contains a symlink"):
-        prepare_manifest_output_dir(out, allow_existing=True)
 
 
 def test_safe_artifact_file_accepts_regular_file_and_copy(tmp_path: Path):
@@ -338,113 +296,14 @@ class _FakeStat:
         self.st_gid = getattr(real_st, "st_gid", 0)
 
 
-def _patch_lstat(monkeypatch, ms, *, uid_for, mode_for=None):
-    """Patch Path.lstat so directories report a chosen uid / mode.
-
-    ``uid_for(path) -> int`` and optional ``mode_for(path) -> int|None`` let a
-    test simulate a non-root-owned or writable interior directory without
-    needing real root privileges.
-    """
-    real_lstat = ms.Path.lstat
-
-    def fake_lstat(self):
-        st = real_lstat(self)
-        mode = None
-        if mode_for is not None:
-            mode = mode_for(self)
-        return _FakeStat(st, uid=uid_for(self), mode_bits=mode)
-
-    monkeypatch.setattr(ms.Path, "lstat", fake_lstat)
-
-
-def test_existing_site_tree_rejects_world_writable_interior_dir_as_root(
-    tmp_path: Path, monkeypatch
-):
-    """Root-run site merge must refuse an attacker-writable interior directory.
-
-    A symlink-only scan is insufficient: an unprivileged owner of a
-    group/other-writable directory inside the output tree can plant files or a
-    symlink after the scan and race the merge. Under root, such a directory is
-    rejected up front.
-    """
-    import enroll.manifest_safety as ms
-
-    out = tmp_path / "site"
-    out.mkdir()
-    (out / "roles").mkdir()
-
-    interior = (out / "roles").resolve()
-
-    monkeypatch.setattr(ms, "_effective_uid", lambda: 0)
-    # Everything root-owned; the interior "roles" dir is world-writable.
-    _patch_lstat(
-        monkeypatch,
-        ms,
-        uid_for=lambda p: 0,
-        mode_for=lambda p: (0o40777 if Path(p).resolve() == interior else 0o40700),
-    )
-    with pytest.raises(ManifestOutputError, match="group/other-writable"):
-        ms._assert_no_output_symlinks(out)
-
-
-def test_existing_site_tree_rejects_non_root_owned_interior_dir_as_root(
-    tmp_path: Path, monkeypatch
-):
-    """Root-run site merge must refuse an interior directory owned by another
-    (unprivileged) user, even if it is not itself writable by group/other."""
-    import enroll.manifest_safety as ms
-
-    out = tmp_path / "site"
-    out.mkdir()
-    (out / "roles").mkdir()
-
-    interior = (out / "roles").resolve()
-
-    monkeypatch.setattr(ms, "_effective_uid", lambda: 0)
-    _patch_lstat(
-        monkeypatch,
-        ms,
-        uid_for=lambda p: (1000 if Path(p).resolve() == interior else 0),
-        mode_for=lambda p: 0o40755,
-    )
-    with pytest.raises(ManifestOutputError, match="not owned by root"):
-        ms._assert_no_output_symlinks(out)
-
-
-def test_existing_site_tree_allows_clean_root_owned_interior_as_root(
-    tmp_path: Path, monkeypatch
-):
-    """A clean, root-owned, non-writable interior tree passes the merge check."""
-    import enroll.manifest_safety as ms
-
-    out = tmp_path / "site"
-    out.mkdir()
-    (out / "roles").mkdir()
-    (out / "roles" / "svc").mkdir()
-
-    monkeypatch.setattr(ms, "_effective_uid", lambda: 0)
-    _patch_lstat(
-        monkeypatch,
-        ms,
-        uid_for=lambda p: 0,
-        mode_for=lambda p: 0o40755,
-    )
-    # No exception: root-owned, not group/other-writable.
-    ms._assert_no_output_symlinks(out)
-
-
-def test_existing_site_tree_interior_check_is_noop_for_non_root(
-    tmp_path: Path, monkeypatch
-):
-    """Non-root runs keep the original symlink-only semantics (no ownership or
-    writability enforcement), so ordinary user workflows are unaffected."""
-    import enroll.manifest_safety as ms
-
-    out = tmp_path / "site"
-    out.mkdir()
-    (out / "roles").mkdir()
-    (out / "roles").chmod(0o777)
-
-    monkeypatch.setattr(ms, "_effective_uid", lambda: 1000)
-    # No exception: interior writability is irrelevant when not running as root.
-    ms._assert_no_output_symlinks(out)
+@pytest.mark.parametrize("kind", ["directory", "file", "symlink"])
+def test_manifest_output_refuses_all_existing_paths(tmp_path, kind):
+    out = tmp_path / "output"
+    if kind == "directory":
+        out.mkdir()
+    elif kind == "file":
+        out.write_text("keep me")
+    else:
+        out.symlink_to(tmp_path)
+    with pytest.raises(ManifestOutputError, match="already exists"):
+        prepare_manifest_output_dir(out)

@@ -459,7 +459,7 @@ Several safety helpers protect privileged runs from following attacker-controlle
 - `harvest_safety.ensure_private_dir()` is used for persistent internal directories such as Enroll's cache root. Existing directories are allowed, but symlink components and unsafe root-run parents are refused.
 - `cache.new_harvest_cache_dir()` creates unpredictable per-harvest cache directories beneath the hardened cache root with `mkdtemp()` and private permissions.
 - `manifest_safety.safe_artifact_file()` validates referenced harvested artifacts before renderers copy them. It rejects absolute or `..` paths, symlinks, non-regular files, hardlinks, and paths that resolve outside the artifact root.
-- `manifest_safety.prepare_manifest_output_dir()` refuses unsafe manifest output paths. In `--fqdn` site mode, where an existing tree is intentionally reused, it walks the existing output tree and refuses symlinks before merging generated files.
+- `manifest_safety.prepare_manifest_output_dir()` refuses unsafe manifest output paths. Existing output paths are always refused; generated trees are never merged.
 - `manifest_safety.freeze_directory_bundle()` copies a *directory* harvest bundle into a fresh private `0700` temp tree before it is validated and consumed. Validation is point-in-time, but `manifest`/`diff` later re-open artifacts by path (to copy, hash, or feed to JinjaTurtle), so a still-writable source directory could be raced by its unprivileged owner — a validated regular file swapped for a symlink or different file after the check. Freezing uses no-follow traversal and takes each file's bytes from a validated descriptor (regular files only, no symlinks, no hardlinks), so a later mutation of the original directory cannot affect the consumed copy. Tar and SOPS inputs are already extracted into a private temp directory and are inherently frozen; this helper gives plain directory inputs the same guarantee. See sections 11 and 15.1 for where it is wired in.
 - `render_safety.scaffold_token()` / `render_safety.ansible_unsafe_data()` keep harvested data out of generated playbook *structure*: the former is a strict allowlist for the only values ever spliced into raw task/handler YAML (already-sanitized role/var-prefix identifiers), and the latter recursively tags template-looking harvested strings as Ansible `!unsafe` data so they cannot be re-evaluated as Jinja at apply time. See section 13.6.
 
@@ -776,7 +776,6 @@ Entry point:
 manifest(
     bundle_dir,
     out,
-    fqdn=None,
     jinjaturtle=None,
     sops_fingerprints=None,
     no_common_roles=False,
@@ -857,11 +856,8 @@ Default behaviour:
 
 ```text
 normal manifest, no --no-common-roles: group package/service roles
---fqdn mode: no common grouping
 --no-common-roles: no common grouping
 ```
-
-`--fqdn` implies no common roles because host-specific output should preserve per-host state rather than merging unrelated resources into shared roles.
 
 ---
 
@@ -875,7 +871,6 @@ Entry point:
 ansible.manifest_from_bundle_dir(
     bundle_dir,
     out_dir,
-    fqdn=None,
     jinjaturtle=None,
     no_common_roles=False,
 )
@@ -909,39 +904,10 @@ flowchart TD
 
 ### 13.2 Output layout
 
-Default single-site output:
-
-```text
-<out>/
-  ansible.cfg
-  playbook.yml
-  README.md
-  requirements.yml
-  roles/
-    <role>/
-      tasks/main.yml
-      handlers/main.yml
-      defaults/main.yml
-      meta/main.yml
-      files/...
-      templates/...
-```
-
-`--fqdn` site-mode output adds inventory and host vars:
-
-```text
-<out>/
-  inventory/
-    hosts.yml
-    host_vars/<fqdn>/<role>/
-      main.yml
-      .files/...
-  roles/<role>/...
-```
-
-In default mode, variables normally live in `roles/<role>/defaults/main.yml` and raw files live under `roles/<role>/files/`.
-
-In `--fqdn` mode, host-specific values and artifacts live under `inventory/host_vars/<fqdn>/<role>/`, while reusable role scaffolding remains under `roles/`.
+Every manifest uses a new self-contained output directory, with `ansible.cfg`,
+`requirements.yml`, `playbook.yml`, `README.md`, and `roles/`. Each role owns its
+`tasks`, `handlers`, `defaults`, `meta`, `files`, and `templates` directories.
+Existing output directories are refused. Shared site mode was removed in 0.9.0.
 
 ### 13.3 Role ordering
 
@@ -969,7 +935,7 @@ Ansible uses `jinjaturtle.jinjify_managed_files()`.
 When JinjaTurtle is enabled and supports a harvested config file, the renderer can write:
 
 - a Jinja2 template under `templates/`,
-- variables in `defaults/main.yml` or `inventory/host_vars/<fqdn>/<role>/main.yml`.
+- variables in `defaults/main.yml`.
 
 If JinjaTurtle is unavailable in `auto` mode, fails, emits missing variables, or does not support the path, Ansible falls back to copying the raw harvested file.
 
@@ -1033,7 +999,7 @@ jinjify_artifact(
 )
 ```
 
-Ansible uses `jinjify_managed_files()` because it merges variables into role defaults or host vars.
+Ansible uses `jinjify_managed_files()` because it merges variables into role defaults.
 
 Safety checks:
 
@@ -1270,14 +1236,6 @@ The translation is argparse-driven, so new flags often gain config-file support 
 ---
 
 ## 20. CLI flags that affect multiple layers
-
-### 20.1 `--fqdn`
-
-`--fqdn` changes output semantics, not just filenames:
-
-- Ansible: uses inventory/host_vars and host-specific artifacts.
-
-`--fqdn` implies no common role grouping.
 
 ### 20.2 `--no-common-roles`
 

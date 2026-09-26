@@ -39,8 +39,6 @@ class AnsibleManifestContext:
     bundle_dir: str
     out_dir: str
     roles_root: str
-    fqdn: Optional[str]
-    site_mode: bool
     jt_exe: Optional[str]
     jt_enabled: bool
 
@@ -259,7 +257,6 @@ class AnsibleRole(CMModule):
   vars:
     _enroll_ff:
       files:
-        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ {var_prefix}_ipset_save }}}}"
         - "{{{{ role_path }}}}/files/{{{{ {var_prefix}_ipset_save }}}}"
   ansible.builtin.copy:
     src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
@@ -274,7 +271,6 @@ class AnsibleRole(CMModule):
   vars:
     _enroll_ff:
       files:
-        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ {var_prefix}_iptables_v4_save }}}}"
         - "{{{{ role_path }}}}/files/{{{{ {var_prefix}_iptables_v4_save }}}}"
   ansible.builtin.copy:
     src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
@@ -289,7 +285,6 @@ class AnsibleRole(CMModule):
   vars:
     _enroll_ff:
       files:
-        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ {var_prefix}_iptables_v6_save }}}}"
         - "{{{{ role_path }}}}/files/{{{{ {var_prefix}_iptables_v6_save }}}}"
   ansible.builtin.copy:
     src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
@@ -417,13 +412,11 @@ def _prepare_ansible_context(
     bundle_dir: str,
     out_dir: str,
     *,
-    fqdn: Optional[str],
     jinjaturtle: Optional[bool],
 ) -> AnsibleManifestContext:
-    site_mode = fqdn is not None and fqdn != ""
     jt_exe, jt_enabled = resolve_jinjaturtle_mode(jinjaturtle)
 
-    out = prepare_manifest_output_dir(out_dir, allow_existing=site_mode)
+    out = prepare_manifest_output_dir(out_dir)
     out_dir = str(out)
     roles_root = os.path.join(out_dir, "roles")
     os.makedirs(roles_root, exist_ok=True)
@@ -432,8 +425,6 @@ def _prepare_ansible_context(
         bundle_dir=bundle_dir,
         out_dir=out_dir,
         roles_root=roles_root,
-        fqdn=fqdn,
-        site_mode=site_mode,
         jt_exe=jt_exe,
         jt_enabled=jt_enabled,
     )
@@ -487,9 +478,7 @@ def _copy_artifacts(
 ) -> None:
     """Copy harvested artifacts for a role into a destination *files* directory.
 
-    In non --fqdn mode, this is usually <role_dir>/files.
-    In --fqdn site mode, this is usually:
-      inventory/host_vars/<fqdn>/<role>/.files
+    Artifacts are stored in <role_dir>/files.
     """
     for src, rel in iter_safe_artifact_files(bundle_dir, role):
         dst = os.path.join(dst_files_dir, rel)
@@ -559,32 +548,14 @@ def _write_playbook_all(path: str, roles: List[str]) -> None:
     _write_generated_task_yaml(path, text, label="playbook.yml")
 
 
-def _write_playbook_host(path: str, fqdn: str, roles: List[str]) -> None:
-    fqdn = scaffold_token(fqdn, field="site fqdn")
-    pb_lines = [
-        "---",
-        f"- name: Apply all roles on {fqdn}",
-        f"  hosts: {fqdn}",
-        "  gather_facts: true",
-        "  become: true",
-        "  roles:",
-    ]
-    for r in roles:
-        safe = scaffold_token(r, field="role name")
-        pb_lines.append(f"    - role: {safe}")
-        pb_lines.append(f"      tags: [{_role_tag(safe)}]")
-    text = "\n".join(pb_lines) + "\n"
-    _write_generated_task_yaml(path, text, label="host playbook")
-
-
 def _ensure_ansible_cfg(cfg_path: str) -> None:
     if not os.path.exists(cfg_path):
         with open(cfg_path, "w", encoding="utf-8") as f:
             f.write("[defaults]\n")
             f.write("roles_path = roles\n")
-            f.write("interpreter_python=/usr/bin/python3\n")
-            f.write("inventory = inventory\n")
-            f.write("stdout_callback = unixy\n")
+            f.write("interpreter_python=auto_silent\n")
+            f.write("# Supply inventory with ansible-playbook -i\n")
+            f.write("stdout_callback = default\n")
             f.write("force_color = 1\n")
             f.write("vars_plugins_enabled = host_group_vars\n")
             f.write("fact_caching = jsonfile\n")
@@ -656,69 +627,6 @@ def _ensure_requirements_yaml(
     )
 
 
-def _ensure_inventory_host(inv_path: str, fqdn: str) -> None:
-    os.makedirs(os.path.dirname(inv_path), exist_ok=True)
-    if not os.path.exists(inv_path):
-        with open(inv_path, "w", encoding="utf-8") as f:
-            f.write("[all]\n")
-            f.write(fqdn + "\n")
-        return
-
-    with open(inv_path, "r", encoding="utf-8") as f:
-        lines = [ln.rstrip("\n") for ln in f.readlines()]
-
-    # ensure there is an [all] group; if not, create it at top
-    if not any(ln.strip() == "[all]" for ln in lines):
-        lines = ["[all]"] + lines
-
-    # check if fqdn already present (exact match, ignoring whitespace)
-    if any(ln.strip() == fqdn for ln in lines):
-        return
-
-    # append at end
-    lines.append(fqdn)
-    with open(inv_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-
-def _hostvars_path(site_root: str, fqdn: str, role: str) -> str:
-    return os.path.join(site_root, "inventory", "host_vars", fqdn, f"{role}.yml")
-
-
-def _host_role_files_dir(site_root: str, fqdn: str, role: str) -> str:
-    """Host-specific files dir for a given role.
-
-    Layout:
-      inventory/host_vars/<fqdn>/<role>/.files/
-    """
-    return os.path.join(site_root, "inventory", "host_vars", fqdn, role, ".files")
-
-
-def _write_hostvars(site_root: str, fqdn: str, role: str, data: Dict[str, Any]) -> None:
-    """Write host_vars YAML for a role for a specific host.
-
-    This is host-specific state and should track the current harvest output.
-    Existing keys not mentioned in `data` are preserved, but keys in `data`
-    are overwritten (including list values).
-    """
-    path = _hostvars_path(site_root, fqdn, role)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    existing_map: Dict[str, Any] = {}
-    if os.path.exists(path):
-        try:
-            existing_text = Path(path).read_text(encoding="utf-8")
-            existing_map = yaml_load_mapping(existing_text)
-        except Exception:
-            existing_map = {}
-
-    merged = _merge_mappings_overwrite(existing_map, ansible_unsafe_data(data))
-
-    out = "---\n" + yaml_dump_mapping(merged, sort_keys=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(out)
-
-
 def _write_role_defaults(role_dir: str, mapping: Dict[str, Any]) -> None:
     """Overwrite role defaults/main.yml with the provided mapping."""
     defaults_path = os.path.join(role_dir, "defaults", "main.yml")
@@ -744,16 +652,10 @@ def _write_ansible_role_vars(
     role_dir: str,
     role: str,
     vars_map: Dict[str, Any],
-    *,
-    site_defaults: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Write role variables using the single-site/site-mode split."""
+    """Write overridable role defaults."""
 
-    if ctx.site_mode:
-        _write_role_defaults(role_dir, site_defaults or {})
-        _write_hostvars(ctx.out_dir, ctx.fqdn or "", role, vars_map)
-    else:
-        _write_role_defaults(role_dir, vars_map)
+    _write_role_defaults(role_dir, vars_map)
 
 
 def _write_ansible_role(
@@ -761,7 +663,6 @@ def _write_ansible_role(
     role: str,
     *,
     vars_map: Optional[Dict[str, Any]] = None,
-    site_defaults: Optional[Dict[str, Any]] = None,
     tasks: str = "---\n",
     handlers: str = "---\n",
     collections: Optional[List[str]] = None,
@@ -769,14 +670,17 @@ def _write_ansible_role(
     """Write an Ansible role through one common logistical path.
 
     The CM-specific rendering remains target-specific, but role directory layout,
-    defaults/host_vars splitting and metadata writing are no longer repeated
+    defaults and metadata writing are no longer repeated
     in every feature renderer.
     """
 
     role_dir = os.path.join(ctx.roles_root, role)
     _write_role_scaffold(role_dir)
     _write_ansible_role_vars(
-        ctx, role_dir, role, vars_map or {}, site_defaults=site_defaults
+        ctx,
+        role_dir,
+        role,
+        vars_map or {},
     )
 
     # Backstop guardrail: never write a tasks/handlers document whose *structure*
@@ -809,11 +713,7 @@ def _copy_role_artifacts(
     preserve_existing: bool = False,
 ) -> None:
     role_dir = os.path.join(ctx.roles_root, role)
-    dst_files_dir = (
-        _host_role_files_dir(ctx.out_dir, ctx.fqdn or "", role)
-        if ctx.site_mode
-        else os.path.join(role_dir, "files")
-    )
+    dst_files_dir = os.path.join(role_dir, "files")
     _copy_artifacts(
         ctx.bundle_dir,
         artifact_role,
@@ -826,8 +726,6 @@ def _copy_role_artifacts(
 def _render_readme(
     state: Dict[str, Any],
     rendered_roles: List[str],
-    *,
-    fqdn: Optional[str] = None,
 ) -> str:
     host = state.get("host", {}) if isinstance(state.get("host"), dict) else {}
     hostname = sanitize_markdown_text(host.get("hostname") or "unknown") or "unknown"
@@ -838,24 +736,12 @@ def _render_readme(
     excluded_text = markdown_list(excluded)
     notes_text = markdown_list(notes)
 
-    if fqdn:
-        layout = f"""- `playbooks/{fqdn}.yml` applies the generated roles to `{fqdn}`.
-- `inventory/hosts.ini` defines the target host.
-- `inventory/host_vars/{fqdn}/<role>/main.yml` contains host-specific role variables.
-- `inventory/host_vars/{fqdn}/<role>/.files/...` contains host-specific harvested file artifacts.
-- `roles/<role>/tasks/main.yml` contains reusable Ansible tasks.
-- `roles/<role>/files/...` and `roles/<role>/templates/...` contain reusable role artifacts where applicable."""
-        apply = f"""```bash
-ansible-galaxy collection install -r requirements.yml
-ansible-playbook -i inventory/hosts.ini playbooks/{fqdn}.yml --check --diff
-```"""
-    else:
-        layout = """- `playbook.yml` applies the generated roles to the current inventory.
+    layout = """- `playbook.yml` applies the generated roles to the current inventory.
 - `roles/<role>/tasks/main.yml` contains reusable Ansible tasks.
 - `roles/<role>/defaults/main.yml` contains harvested/default role variables.
 - `roles/<role>/files/...` and `roles/<role>/templates/...` contain harvested role artifacts where applicable.
 - `roles/<role>/handlers/main.yml` contains any restore/restart/apply handlers."""
-        apply = """```bash
+    apply = """```bash
 ansible-galaxy collection install -r requirements.yml
 ansible-playbook -i localhost, -c local playbook.yml --check --diff
 ```"""
@@ -886,35 +772,19 @@ Generated from harvested state for `{hostname}`.
 """
 
 
-def _write_site_scaffold(ctx: AnsibleManifestContext) -> None:
-    if not ctx.site_mode:
-        return
-    os.makedirs(os.path.join(ctx.out_dir, "inventory"), exist_ok=True)
-    os.makedirs(os.path.join(ctx.out_dir, "inventory", "host_vars"), exist_ok=True)
-    os.makedirs(os.path.join(ctx.out_dir, "playbooks"), exist_ok=True)
-    _ensure_inventory_host(
-        os.path.join(ctx.out_dir, "inventory", "hosts.ini"), ctx.fqdn or ""
-    )
+def _write_scaffold(ctx: AnsibleManifestContext) -> None:
     _ensure_ansible_cfg(os.path.join(ctx.out_dir, "ansible.cfg"))
     _ensure_requirements_yaml(os.path.join(ctx.out_dir, "requirements.yml"))
 
 
 def _write_manifest_playbook(ctx: AnsibleManifestContext, roles: List[str]) -> None:
-    if ctx.site_mode:
-        _write_playbook_host(
-            os.path.join(ctx.out_dir, "playbooks", f"{ctx.fqdn}.yml"),
-            ctx.fqdn or "",
-            roles,
-        )
-    else:
-        _write_playbook_all(os.path.join(ctx.out_dir, "playbook.yml"), roles)
+    _write_playbook_all(os.path.join(ctx.out_dir, "playbook.yml"), roles)
 
 
 # --- Ansible task snippets ---
 def _render_generic_files_tasks(var_prefix: str) -> str:
     """Render generic tasks to deploy <var_prefix>_managed_files safely."""
     # Using first_found makes roles work in both modes:
-    # - site-mode: inventory/host_vars/<host>/<role>/.files/...
     # - non-site: roles/<role>/files/...
     return f"""- name: Ensure managed directories exist (preserve owner/group/mode)
   ansible.builtin.file:
@@ -943,7 +813,6 @@ def _render_generic_files_tasks(var_prefix: str) -> str:
   vars:
     _enroll_ff:
       files:
-        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ item.src_rel }}}}"
         - "{{{{ role_path }}}}/files/{{{{ item.src_rel }}}}"
   ansible.builtin.copy:
     src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
@@ -984,7 +853,6 @@ def _render_generic_files_tasks(var_prefix: str) -> str:
   vars:
     _enroll_ff:
       files:
-        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ item.src_rel }}}}"
         - "{{{{ role_path }}}}/files/{{{{ item.src_rel }}}}"
   ansible.builtin.copy:
     src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
@@ -1076,7 +944,6 @@ def _render_sysctl_tasks(var_prefix: str) -> str:
   vars:
     _enroll_ff:
       files:
-        - "{{{{ inventory_dir }}}}/host_vars/{{{{ inventory_hostname }}}}/{{{{ role_name }}}}/.files/{{{{ {var_prefix}_conf_src_rel }}}}"
         - "{{{{ role_path }}}}/files/{{{{ {var_prefix}_conf_src_rel }}}}"
   ansible.builtin.copy:
     src: "{{{{ lookup('ansible.builtin.first_found', _enroll_ff) }}}}"
@@ -1491,7 +1358,6 @@ def _render_container_images_role(
         ctx,
         arole.role_name,
         vars_map=vars_map,
-        site_defaults={"container_images": []},
         tasks=_render_role_tasks(arole, extra_tasks=tasks),
         collections=["community.docker", "containers.podman"],
     )
@@ -1550,7 +1416,6 @@ def _render_flatpak_role(
         ctx,
         arole.role_name,
         vars_map=vars_map,
-        site_defaults={"flatpak_system_flatpaks": [], "flatpak_remotes": []},
         tasks=_render_role_tasks(arole, extra_tasks=tasks),
         collections=["community.general"],
     )
@@ -1626,7 +1491,6 @@ def _render_snap_role(
         ctx,
         arole.role_name,
         vars_map=vars_map,
-        site_defaults={"snap_system_snaps": []},
         tasks=_render_role_tasks(arole, extra_tasks=tasks),
         collections=["community.general"],
     )
@@ -1707,8 +1571,6 @@ def _write_managed_files_role_from_spec(
         bundle_dir=ctx.bundle_dir,
         roles_root=ctx.roles_root,
         out_dir=ctx.out_dir,
-        fqdn=ctx.fqdn,
-        site_mode=ctx.site_mode,
         jt_exe=ctx.jt_exe,
         jt_enabled=ctx.jt_enabled,
         notify_systemd=spec.notify_systemd,
@@ -1724,8 +1586,6 @@ def _write_managed_files_role(
     bundle_dir: str,
     roles_root: str,
     out_dir: str,
-    fqdn: Optional[str],
-    site_mode: bool,
     jt_exe: Optional[str],
     jt_enabled: bool,
     notify_systemd: Optional[str],
@@ -1752,23 +1612,15 @@ def _write_managed_files_role(
         managed_files,
         jt_exe=jt_exe,
         jt_enabled=jt_enabled,
-        overwrite_templates=not site_mode,
+        overwrite_templates=True,
     )
 
-    if site_mode:
-        _copy_artifacts(
-            bundle_dir,
-            role,
-            _host_role_files_dir(out_dir, fqdn or "", role),
-            exclude_rels=templated,
-        )
-    else:
-        _copy_artifacts(
-            bundle_dir,
-            role,
-            os.path.join(role_dir, "files"),
-            exclude_rels=templated,
-        )
+    _copy_artifacts(
+        bundle_dir,
+        role,
+        os.path.join(role_dir, "files"),
+        exclude_rels=templated,
+    )
 
     files_var = _build_managed_files_var(
         managed_files,
@@ -1785,14 +1637,7 @@ def _write_managed_files_role(
     }
     vars_map = _merge_mappings_overwrite(vars_map, jt_map)
 
-    if site_mode:
-        _write_role_defaults(
-            role_dir,
-            {f"{var_prefix}_managed_files": [], f"{var_prefix}_managed_dirs": []},
-        )
-        _write_hostvars(out_dir, fqdn or "", role, vars_map)
-    else:
-        _write_role_defaults(role_dir, vars_map)
+    _write_role_defaults(role_dir, vars_map)
 
     tasks = _render_role_tasks(AnsibleRole(role), managed_content=True)
     _write_generated_task_yaml(
@@ -1956,22 +1801,6 @@ def _resource_role_vars(
     return _merge_mappings_overwrite(vars_map, jt_vars or {})
 
 
-def _resource_role_site_defaults(
-    var_prefix: str,
-    *,
-    extra_defaults: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    defaults: Dict[str, Any] = {
-        f"{var_prefix}_packages": [],
-        f"{var_prefix}_managed_files": [],
-        f"{var_prefix}_managed_dirs": [],
-        f"{var_prefix}_managed_links": [],
-    }
-    if extra_defaults:
-        defaults.update(extra_defaults)
-    return defaults
-
-
 def _single_service_extra_vars(role: AnsibleRole) -> Dict[str, Any]:
     var_prefix = role.var_prefix
     unit = next(iter(role.services), "")
@@ -1984,15 +1813,6 @@ def _single_service_extra_vars(role: AnsibleRole) -> Dict[str, Any]:
     }
 
 
-def _single_service_site_defaults(var_prefix: str, unit: str) -> Dict[str, Any]:
-    return {
-        f"{var_prefix}_unit_name": unit,
-        f"{var_prefix}_manage_unit": False,
-        f"{var_prefix}_systemd_enabled": False,
-        f"{var_prefix}_systemd_state": "stopped",
-    }
-
-
 def _write_resource_ansible_role(
     ctx: AnsibleManifestContext,
     role: AnsibleRole,
@@ -2000,7 +1820,6 @@ def _write_resource_ansible_role(
     notify_by_kind: Dict[str, Optional[str]],
     overwrite_templates: bool,
     extra_vars: Optional[Dict[str, Any]] = None,
-    site_defaults: Optional[Dict[str, Any]] = None,
     single_service: bool = False,
     grouped_services: bool = False,
     restart_grouped_services: bool = False,
@@ -2027,7 +1846,6 @@ def _write_resource_ansible_role(
         ctx,
         role.role_name,
         vars_map=vars_map,
-        site_defaults=site_defaults,
         tasks=_render_role_tasks(
             role,
             packages=True,
@@ -2055,18 +1873,12 @@ def _render_service_roles(
         role_name = avoid_reserved_role_name(source_role, prefix="service")
         role = AnsibleRole(role_name)
         role.add_service_snapshot(svc)
-        var_prefix = role.var_prefix
-        unit = next(iter(role.services), str(svc.get("unit") or ""))
         _write_resource_ansible_role(
             ctx,
             role,
             notify_by_kind={"service": "Restart service"},
-            overwrite_templates=not ctx.site_mode,
+            overwrite_templates=True,
             extra_vars=_single_service_extra_vars(role),
-            site_defaults=_resource_role_site_defaults(
-                var_prefix,
-                extra_defaults=_single_service_site_defaults(var_prefix, unit),
-            ),
             single_service=True,
         )
         _add_role(rendered_roles, role.role_name)
@@ -2138,8 +1950,7 @@ def _render_package_roles(
             ctx,
             role,
             notify_by_kind={"package": None},
-            overwrite_templates=not ctx.site_mode,
-            site_defaults=_resource_role_site_defaults(role.var_prefix),
+            overwrite_templates=True,
             systemd_reload=True,
         )
         _add_role(rendered_roles, role.role_name)
@@ -2177,11 +1988,6 @@ def _render_sysctl_role(
         ctx,
         role,
         vars_map=vars_map,
-        site_defaults={
-            f"{var_prefix}_conf_src_rel": "",
-            f"{var_prefix}_apply": True,
-            f"{var_prefix}_ignore_apply_errors": True,
-        },
         tasks=_render_role_tasks(AnsibleRole(role), sysctl=True),
         handlers=_render_role_handlers(AnsibleRole(role), sysctl=True),
     )
@@ -2236,15 +2042,6 @@ def _render_firewall_runtime_role(
         ctx,
         role,
         vars_map=vars_map,
-        site_defaults={
-            f"{var_prefix}_packages": [],
-            f"{var_prefix}_ipset_save": "",
-            f"{var_prefix}_ipset_sets": [],
-            f"{var_prefix}_iptables_v4_save": "",
-            f"{var_prefix}_iptables_v6_save": "",
-            f"{var_prefix}_sync_ipsets_exact": True,
-            f"{var_prefix}_restore_iptables": True,
-        },
         tasks=_render_role_tasks(arole, packages=True, firewall_runtime=True),
         handlers=_render_role_handlers(arole, firewall_runtime=True),
     )
@@ -2319,7 +2116,6 @@ def _render_users_role(
   vars:
     _enroll_ff:
       files:
-        - "{{ inventory_dir }}/host_vars/{{ inventory_hostname }}/{{ role_name }}/.files/{{ item.src_rel }}"
         - "{{ role_path }}/files/{{ item.src_rel }}"
   ansible.builtin.copy:
     src: "{{ lookup('ansible.builtin.first_found', _enroll_ff) }}"
@@ -2378,14 +2174,6 @@ def _render_users_role(
         ctx,
         role,
         vars_map=vars_map,
-        site_defaults={
-            "users_groups": [],
-            "users_users": [],
-            "users_ssh_dirs": [],
-            "users_ssh_files": [],
-            "users_flatpaks": [],
-            "users_flatpak_remotes": [],
-        },
         tasks=_render_role_tasks(arole, extra_tasks=users_tasks),
         collections=["community.general"] if users_needs_community else None,
     )
@@ -2399,13 +2187,11 @@ class AnsibleManifestRenderer:
         bundle_dir: str,
         out_dir: str,
         *,
-        fqdn: Optional[str] = None,
         jinjaturtle: Optional[bool] = None,
         no_common_roles: bool = False,
     ) -> None:
         self.bundle_dir = bundle_dir
         self.out_dir = out_dir
-        self.fqdn = fqdn
         self.jinjaturtle = jinjaturtle
         self.no_common_roles = no_common_roles
 
@@ -2417,12 +2203,11 @@ class AnsibleManifestRenderer:
         ctx = _prepare_ansible_context(
             self.bundle_dir,
             self.out_dir,
-            fqdn=self.fqdn,
             jinjaturtle=self.jinjaturtle,
         )
-        _write_site_scaffold(ctx)
+        _write_scaffold(ctx)
 
-        use_common_roles = (not ctx.site_mode) and (not self.no_common_roles)
+        use_common_roles = not self.no_common_roles
         services_to_manifest, package_roles, common_role_groups = (
             _collect_ansible_roles(
                 roles,
@@ -2489,7 +2274,7 @@ class AnsibleManifestRenderer:
 
         _write_manifest_playbook(ctx, ordered_roles)
         Path(ctx.out_dir, "README.md").write_text(
-            _render_readme(state, ordered_roles, fqdn=ctx.fqdn),
+            _render_readme(state, ordered_roles),
             encoding="utf-8",
         )
 
@@ -2498,14 +2283,12 @@ def manifest_from_bundle_dir(
     bundle_dir: str,
     out_dir: str,
     *,
-    fqdn: Optional[str] = None,
     jinjaturtle: Optional[bool] = None,
     no_common_roles: bool = False,
 ) -> None:
     AnsibleManifestRenderer(
         bundle_dir,
         out_dir,
-        fqdn=fqdn,
         jinjaturtle=jinjaturtle,
         no_common_roles=no_common_roles,
     ).render()

@@ -475,15 +475,11 @@ def _encrypt_harvest_dir_to_sops(
 
 def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
-        "--fqdn",
-        help="Host FQDN/name for site-mode output (creates Ansible host_vars for that host).",
-    )
-    p.add_argument(
         "--no-common-roles",
         action="store_true",
         help=(
             "Do not group package and systemd-unit roles into common section/group roles. "
-            "This preserves one generated role per package/unit. --fqdn implies this."
+            "This preserves one generated role per package/unit."
         ),
     )
     g = p.add_mutually_exclusive_group()
@@ -1117,7 +1113,6 @@ def main() -> None:
             out_enc = manifest(
                 args.harvest,
                 args.out,
-                fqdn=args.fqdn,
                 jinjaturtle=_jt_mode(args),
                 sops_fingerprints=getattr(args, "sops", None),
                 no_common_roles=bool(getattr(args, "no_common_roles", False)),
@@ -1219,7 +1214,6 @@ def main() -> None:
                     manifest(
                         str(out_file),
                         args.out,
-                        fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
@@ -1252,7 +1246,6 @@ def main() -> None:
                     manifest(
                         str(harvest_dir),
                         args.out,
-                        fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
                     )
@@ -1283,7 +1276,6 @@ def main() -> None:
                     manifest(
                         str(out_file),
                         args.out,
-                        fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
@@ -1304,7 +1296,6 @@ def main() -> None:
                     manifest(
                         args.harvest,
                         args.out,
-                        fqdn=args.fqdn,
                         jinjaturtle=_jt_mode(args),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
                     )

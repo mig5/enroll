@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import errno
 import os
-import re
 import shutil
 import stat
 import tempfile
@@ -12,8 +11,6 @@ from typing import Iterator, Optional, Tuple
 from .fsutil import open_no_follow_path
 from .harvest_safety import (
     OutputSafetyError,
-    _effective_uid,
-    ensure_safe_output_parent,
     prepare_new_private_dir,
 )
 
@@ -24,128 +21,6 @@ class ArtifactSafetyError(RuntimeError):
 
 class ManifestOutputError(RuntimeError):
     """Raised when a manifest output path is unsafe to use."""
-
-
-_SITE_FQDN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,252}$")
-
-
-def validate_site_fqdn(value: str | None) -> str | None:
-    """Validate the optional site-mode host name/FQDN.
-
-    Renderers use this value in inventory data and, for Ansible, in output
-    paths.  Keep it deliberately conservative so it cannot become a path
-    separator, absolute path, YAML/INI newline injection, or shell-ish text in
-    generated documentation/commands.
-    """
-
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if any(ch in text for ch in ("/", "\\", "\x00", "\n", "\r")):
-        raise ManifestOutputError(
-            "--fqdn contains unsafe path or newline characters; use a simple "
-            "host/inventory name"
-        )
-    if text in {".", ".."} or not _SITE_FQDN_RE.fullmatch(text):
-        raise ManifestOutputError(
-            "--fqdn must start with a letter or digit and contain only "
-            "letters, digits, dot, underscore, or hyphen"
-        )
-    return text
-
-
-def _assert_root_safe_output_dir(path: Path, st: os.stat_result) -> None:
-    """Reject an existing output directory that is unsafe for a root-run merge.
-
-    Only enforced when Enroll runs as root. Site/FQDN mode intentionally merges
-    generated files into an existing tree, and the individual writers re-open
-    files by path. A directory inside that tree that is owned by an unprivileged
-    user, or writable by group/other, lets that user pre-create or swap files
-    (including planting a symlink after this scan) that a later root-run write
-    would follow or clobber. A symlink-only scan cannot catch that race, so the
-    interior of a root-run output tree must additionally be root-owned and not
-    group/world-writable.
-
-    The sticky-bit exception that ``harvest_safety`` allows for a shared *parent*
-    boundary such as ``/tmp`` is deliberately NOT honoured here: this is the
-    interior of Enroll's own output tree, not a shared staging root, so a
-    world-writable directory is never acceptable even if sticky.
-    """
-
-    if _effective_uid() != 0:
-        return
-    if st.st_uid != 0:
-        raise ManifestOutputError(
-            "manifest output tree contains a directory not owned by root; "
-            f"refusing root-run merge: {path}"
-        )
-    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        raise ManifestOutputError(
-            "manifest output tree contains a group/other-writable directory; "
-            f"refusing root-run merge: {path}"
-        )
-
-
-def _assert_no_output_symlinks(root: Path) -> None:
-    """Reject unsafe pre-existing entries in an output tree we merge into.
-
-    Non-site mode refuses existing output directories entirely.  Site/FQDN modes
-    intentionally accumulate multiple nodes into one tree, so before merging we
-    reject:
-
-      * symlinks anywhere in the tree (a write could be redirected outside
-        *root*), and
-      * when running as root, any directory in the tree that is not root-owned
-        or is group/other-writable (an unprivileged owner could race the merge
-        by planting files/symlinks after this scan -- see
-        :func:`_assert_root_safe_output_dir`).
-
-    Version-control metadata can contain implementation-specific entries and is
-    not part of Enroll's generated layout, so it is pruned from this check.
-    """
-
-    skip_dirs = {".git", ".hg", ".svn"}
-
-    # Check the root of the merge target itself, not only its descendants.
-    try:
-        root_st = root.lstat()
-    except FileNotFoundError:
-        root_st = None
-    if root_st is not None and not stat.S_ISLNK(root_st.st_mode):
-        _assert_root_safe_output_dir(root, root_st)
-
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirpath_p = Path(dirpath)
-
-        for dirname in list(dirnames):
-            if dirname in skip_dirs:
-                dirnames.remove(dirname)
-                continue
-            p = dirpath_p / dirname
-            try:
-                st = p.lstat()
-            except FileNotFoundError:
-                continue
-            if stat.S_ISLNK(st.st_mode):
-                raise ManifestOutputError(
-                    f"manifest output tree contains a symlink; refusing to merge: {p}"
-                )
-            _assert_root_safe_output_dir(p, st)
-
-        for filename in filenames:
-            if filename in skip_dirs:
-                continue
-            p = dirpath_p / filename
-            try:
-                st = p.lstat()
-            except FileNotFoundError:
-                continue
-            if stat.S_ISLNK(st.st_mode):
-                raise ManifestOutputError(
-                    f"manifest output tree contains a symlink; refusing to merge: {p}"
-                )
 
 
 def _safe_relative_path(value: str, *, field: str) -> Path:
@@ -162,41 +37,13 @@ def _safe_relative_path(value: str, *, field: str) -> Path:
     return p
 
 
-def prepare_manifest_output_dir(
-    out_dir: str | Path, *, allow_existing: bool = False
-) -> Path:
-    """Create a manifest output directory, refusing unsafe root output paths.
-
-    Rendering a manifest may be run by root and may target configuration-
-    management trees. Refuse an existing path rather than deleting or merging
-    with it by default; callers that intentionally support accumulation, such
-    as --fqdn site mode, may allow an existing directory but never a symlink,
-    non-directory path, symlinked parent, or root-unsafe parent.
-    """
-
+def prepare_manifest_output_dir(out_dir: str | Path) -> Path:
+    """Create a private output directory; never merge or overwrite a tree."""
     out = Path(out_dir).expanduser()
     if os.path.lexists(out):
-        if not allow_existing:
-            raise ManifestOutputError(
-                "manifest output path already exists; refusing to overwrite: " f"{out}"
-            )
-        try:
-            ensure_safe_output_parent(
-                out / ".enroll-manifest-output-check", label="manifest output"
-            )
-        except OutputSafetyError as e:
-            raise ManifestOutputError(str(e)) from e
-        st = out.lstat()
-        if stat.S_ISLNK(st.st_mode):
-            raise ManifestOutputError(
-                f"manifest output path is a symlink; refusing to use: {out}"
-            )
-        if not out.is_dir():
-            raise ManifestOutputError(
-                f"manifest output path exists but is not a directory: {out}"
-            )
-        _assert_no_output_symlinks(out)
-        return out
+        raise ManifestOutputError(
+            f"manifest output path already exists; refusing to overwrite: {out}"
+        )
     try:
         return prepare_new_private_dir(out, label="manifest output")
     except OutputSafetyError as e:

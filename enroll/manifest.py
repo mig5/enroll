@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from .ansible import manifest_from_bundle_dir as manifest_ansible_from_bundle_dir
 from .harvest_safety import ensure_safe_output_parent
-from .manifest_safety import freeze_directory_bundle, validate_site_fqdn
+from .manifest_safety import freeze_directory_bundle
 from .remote import _safe_extract_tar
 from .sopsutil import (
     decrypt_file_binary_to,
@@ -18,7 +18,6 @@ from .sopsutil import (
     require_sops_cmd,
 )
 from .validate import validate_harvest
-
 
 _SEMANTIC_SAFETY_WARNING = (
     "This harvest is structurally valid, but Enroll cannot prove it is semantically safe.\n"
@@ -188,7 +187,6 @@ def manifest(
     bundle_dir: str,
     out: str,
     *,
-    fqdn: Optional[str] = None,
     jinjaturtle: Optional[bool] = None,
     sops_fingerprints: Optional[List[str]] = None,
     no_common_roles: bool = False,
@@ -209,7 +207,6 @@ def manifest(
       - In SOPS mode: the path to the encrypted manifest bundle (.sops)
       - In plain mode: None
     """
-    fqdn = validate_site_fqdn(fqdn)
 
     sops_mode = bool(sops_fingerprints)
 
@@ -234,7 +231,6 @@ def manifest(
             manifest_ansible_from_bundle_dir(
                 resolved_bundle_dir,
                 out,
-                fqdn=fqdn,
                 jinjaturtle=jinjaturtle,
                 no_common_roles=no_common_roles,
             )
@@ -249,7 +245,6 @@ def manifest(
         manifest_ansible_from_bundle_dir(
             resolved_bundle_dir,
             str(tmp_out),
-            fqdn=fqdn,
             jinjaturtle=jinjaturtle,
             no_common_roles=no_common_roles,
         )

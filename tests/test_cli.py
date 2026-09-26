@@ -338,8 +338,6 @@ def test_cli_single_shot_remote_without_harvest_prints_state_path(
             "alice",
             "--out",
             str(ansible_dir),
-            "--fqdn",
-            "example.test",
         ],
     )
 
@@ -351,7 +349,7 @@ def test_cli_single_shot_remote_without_harvest_prints_state_path(
     assert str(cache_dir / "state.json") in out
 
     # And it should manifest using the cache dir.
-    assert ("manifest", str(cache_dir), str(ansible_dir), "example.test") in calls
+    assert ("manifest", str(cache_dir), str(ansible_dir), None) in calls
 
 
 def test_cli_harvest_remote_ask_become_pass_prompts_and_passes_password(
@@ -462,7 +460,7 @@ def test_cli_harvest_remote_password_required_noninteractive_errors(
 
 
 def test_cli_manifest_common_args(monkeypatch, tmp_path):
-    """Ensure --fqdn and jinjaturtle mode flags are forwarded correctly."""
+    """Ensure jinjaturtle mode flags are forwarded correctly."""
 
     called = {}
 
@@ -483,14 +481,12 @@ def test_cli_manifest_common_args(monkeypatch, tmp_path):
             str(tmp_path / "bundle"),
             "--out",
             str(tmp_path / "ansible"),
-            "--fqdn",
-            "example.test",
             "--no-jinjaturtle",
         ],
     )
 
     cli.main()
-    assert called["fqdn"] == "example.test"
+    assert called["fqdn"] is None
     assert called["jinjaturtle"] is False
 
 
@@ -779,3 +775,14 @@ def test_cli_diff_webhook_http_error_raises_system_exit(monkeypatch):
     with pytest.raises(SystemExit) as e:
         cli.main()
     assert "HTTP 500" in str(e.value)
+
+
+def test_cli_rejects_removed_site_mode(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["enroll", "manifest", "--harvest", "x", "--out", "y", "--fqdn", "host"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2

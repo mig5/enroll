@@ -144,19 +144,3 @@ def test_ansible_static_marks_harvested_jinja_values_unsafe(tmp_path: Path):
     assert "lookup(''pipe'',''touch /tmp/PWNED_BY_ENROLL_ANSIBLE'')" in text
     loaded = yaml_helpers.yaml_load_mapping(text)
     assert loaded["users_users"][0]["gecos"] == payload
-
-
-def test_ansible_fqdn_marks_harvested_jinja_values_unsafe(tmp_path: Path):
-    bundle = tmp_path / "bundle"
-    out = tmp_path / "out"
-    payload = "{{ lookup('pipe','touch /tmp/PWNED_BY_ENROLL_ANSIBLE') }}"
-    write_schema_state(bundle, _ansible_jinja_payload_state(payload))
-
-    manifest.manifest(str(bundle), str(out), fqdn="host.example.test")
-
-    hostvars = out / "inventory" / "host_vars" / "host.example.test" / "users.yml"
-    text = hostvars.read_text(encoding="utf-8")
-    assert "gecos: !unsafe" in text
-    assert "lookup(''pipe'',''touch /tmp/PWNED_BY_ENROLL_ANSIBLE'')" in text
-    loaded = yaml_helpers.yaml_load_mapping(text)
-    assert loaded["users_users"][0]["gecos"] == payload

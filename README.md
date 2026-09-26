@@ -36,27 +36,15 @@ Additionally, some other functionalities exist:
 
 ---
 
-## Output modes: single-site vs multi-site (`--fqdn`)
+## Manifest layout
 
-### Single-site mode (default: *no* `--fqdn`)
-Use when enrolling **one server** (or generating a “golden” role set you intend to reuse).
+Each harvest produces a self-contained Ansible project in a new output directory.
+Raw files live in `roles/<role>/files/`, templates in `templates/`, and variables in
+`defaults/main.yml`. Supply your target inventory when running the playbook.
 
-**Characteristics**
-- Roles are more self-contained.
-- Raw config files live in the role's `files/`.
-- Template variables live in the role's `defaults/main.yml`.
-
-### Multi-site mode (`--fqdn`)
-Use when enrolling **several existing servers** quickly, especially if they differ.
-
-**Characteristics**
-- Roles are shared, host-specific state lives in inventory.
-- Host inventory drives what gets managed (files/packages/services).
-- Non-templated raw files live per-host under `inventory/host_vars/<fqdn>/<role>/.files/...`.
-
-**Rule of thumb**
-- “Make this one server reproducible/provisionable” → start with **single-site**
-- “Get multiple already-running servers under management quickly” → use **multi-site**
+Version 0.9.0 removes `--fqdn` and shared multi-host output. Generate each host into
+its own directory. Existing shared output should be archived and regenerated;
+do not merge independently generated role directories by name.
 
 ---
 
@@ -116,7 +104,7 @@ enroll harvest --remote-host myhost.example.com --remote-user myuser --ask-key-p
 
 # Non-interactive / CI
 export ENROLL_SSH_KEY_PASSPHRASE='correct horse battery staple'
-enroll single-shot --remote-host myhost.example.com --remote-user myuser --ssh-key-passphrase-env ENROLL_SSH_KEY_PASSPHRASE --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn myhost.example.com
+enroll single-shot --remote-host myhost.example.com --remote-user myuser --ssh-key-passphrase-env ENROLL_SSH_KEY_PASSPHRASE --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
 ---
@@ -129,12 +117,11 @@ Generate Ansible output from an existing harvest bundle.
   or `--harvest /path/to/harvest.tar.gz.sops` (if using `--sops`)
 
 **Output**
-- In plaintext Ansible mode: an Ansible repo-like directory structure (roles/playbooks, and inventory in multi-site mode).
+- In plaintext Ansible mode: an Ansible repo-like directory structure (roles and playbook).
 - In `--sops` mode: a single encrypted file `manifest.tar.gz.sops` containing the generated output.
 
 **Common flags**
-- `--fqdn <host>`: enables **multi-site** output style for Ansible (host-specific state lives in inventory `host_vars`).
-- `--no-common-roles`: disables the default grouping of package and systemd-unit roles into Debian Section/RPM Group roles, preserving one generated role per package/unit. `--fqdn` implies this behaviour.
+- `--no-common-roles`: disables the default grouping of package and systemd-unit roles into Debian Section/RPM Group roles, preserving one generated role per package/unit.
 
 **Role tags**
 Generated playbooks tag each role so you can target just the parts you need:
@@ -158,7 +145,7 @@ Convenience wrapper that runs **harvest → manifest** in one command.
 
 Use this when you want “get me something workable ASAP”.
 
-Supports the same general flags as harvest/manifest, including `--fqdn`, `--no-common-roles`, remote harvest flags, and `--sops`.
+Supports the same general flags as harvest/manifest, including `--no-common-roles`, remote harvest flags, and `--sops`.
 
 ---
 
@@ -295,17 +282,9 @@ If [JinjaTurtle](https://git.mig5.net/mig5/jinjaturtle) is installed, `enroll` c
 
 For Ansible:
 - Templates live in `roles/<role>/templates/...`
-- Variables live in:
-  - single-site: `roles/<role>/defaults/main.yml`
-  - multi-site: `inventory/host_vars/<fqdn>/<role>.yml`
+- Variables live in `roles/<role>/defaults/main.yml`.
 
 You can force template generation on with `--jinjaturtle` or disable it with `--no-jinjaturtle`.
-
----
-
-## How multi-site avoids “shared role breaks a host”
-
-In multi-site mode, roles are **data-driven**. The role tasks are generic (“deploy the files listed for this host”, “install the packages listed for this host”, “apply systemd enable/start state listed for this host”). Host inventory decides what applies per-host, avoiding the classic “host2 adds config, host1 breaks” failure mode.
 
 ---
 
@@ -432,40 +411,17 @@ enroll harvest --out /tmp/enroll-harvest --dangerous --sops <FINGERPRINT(s)>
 enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
-### Multi-site (--fqdn)
-```bash
-enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn "$(hostname -f)"
-```
-
-
-### Container image caches
-
-If Docker or Podman is available during harvest, Enroll records local image-cache metadata from `image ls` and `image inspect`. Images that expose registry `RepoDigest` values are reproducible by digest, for example `registry.example.net/app@sha256:...`; those are the references rendered into manifests. Local image IDs and tag-only images are preserved as evidence and notes, but are not treated as exact registry pull references.
-
-For Ansible, digest-pinned Docker images are pulled with `community.docker.docker_image_pull` and digest-pinned Podman images are pulled with `containers.podman.podman_image`; harvested tag aliases are re-applied where possible. The generated `requirements.yml` includes `community.docker` and `containers.podman` alongside any other required collections. In `--fqdn` mode the image list is host-specific inventory data.
-
-### Manifest with `--sops`
-```bash
-# Generate encrypted manifest bundle (writes /tmp/enroll-ansible/manifest.tar.gz.sops)
-enroll manifest --harvest /tmp/enroll-harvest/harvest.tar.gz.sops --out /tmp/enroll-ansible --sops <FINGERPRINT(s)>
-
-# Decrypt/extract the manifest bundle, then run Ansible from inside ./manifest/
-cd /tmp/enroll-ansible
-sops -d manifest.tar.gz.sops | tar -xzvf -
-cd manifest
-```
-
 ---
 
 ## Single-shot
 
 ```bash
-enroll single-shot --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn "$(hostname -f)"
+enroll single-shot --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
 Remote single-shot (run harvest over SSH, then manifest locally):
 ```bash
-enroll single-shot --remote-host myhost.example.com --remote-user myuser   --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible --fqdn "myhost.example.com"
+enroll single-shot --remote-host myhost.example.com --remote-user myuser   --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
 
 ---
@@ -563,11 +519,6 @@ Why files were included (managed_files.reason)
 ### Single-site
 ```bash
 ansible-playbook -i "localhost," -c local /tmp/enroll-ansible/playbook.yml
-```
-
-### Multi-site (--fqdn)
-```bash
-ansible-playbook /tmp/enroll-ansible/playbooks/"$(hostname -f)".yml
 ```
 
 ### Run only specific roles (tags)
