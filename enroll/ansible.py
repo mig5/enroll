@@ -1046,7 +1046,7 @@ def _render_role_tasks(
 
 def _single_service_restart_handler_body(var_prefix: str) -> str:
     var_prefix = scaffold_token(var_prefix, field="role var_prefix")
-    return f"""- name: Restart service
+    return f"""- name: Restart service for {var_prefix}
   ansible.builtin.service:
     name: "{{{{ {var_prefix}_unit_name }}}}"
     state: restarted
@@ -1876,7 +1876,7 @@ def _render_service_roles(
         _write_resource_ansible_role(
             ctx,
             role,
-            notify_by_kind={"service": "Restart service"},
+            notify_by_kind={"service": f"Restart service for {role.var_prefix}"},
             overwrite_templates=True,
             extra_vars=_single_service_extra_vars(role),
             single_service=True,

@@ -144,3 +144,16 @@ def test_ansible_static_marks_harvested_jinja_values_unsafe(tmp_path: Path):
     assert "lookup(''pipe'',''touch /tmp/PWNED_BY_ENROLL_ANSIBLE'')" in text
     loaded = yaml_helpers.yaml_load_mapping(text)
     assert loaded["users_users"][0]["gecos"] == payload
+
+
+def test_individual_service_handlers_are_unique():
+    from enroll.ansible import _single_service_restart_handler_body
+    import yaml
+
+    handlers = [
+        yaml.safe_load(_single_service_restart_handler_body(r))[0]
+        for r in ("alpha", "beta")
+    ]
+    assert handlers[0]["name"] != handlers[1]["name"]
+    assert "alpha_unit_name" in handlers[0]["ansible.builtin.service"]["name"]
+    assert "beta_unit_name" in handlers[1]["ansible.builtin.service"]["name"]
