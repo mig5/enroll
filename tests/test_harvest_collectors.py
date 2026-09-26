@@ -466,3 +466,42 @@ def test_extra_paths_collector_skips_directory_through_symlinked_parent(tmp_path
     assert result.managed_dirs == []
     assert result.managed_files == []
     assert result.managed_links == []
+
+
+def test_users_collector_filters_flatpak_credentials(monkeypatch, tmp_path):
+    from enroll import accounts, harvest
+    from enroll.harvest_collectors.users import UsersCollector
+    from types import SimpleNamespace
+
+    remote = accounts.FlatpakRemote(
+        name="private",
+        method="system",
+        url="https://user:FAKE_SECRET@repo.example/repo",
+    )
+    user = SimpleNamespace(
+        name="alice",
+        uid=1000,
+        gid=1000,
+        gecos="",
+        home="/home/alice",
+        shell="/bin/bash",
+        primary_group="alice",
+        supplementary_groups=[],
+        ssh_files=[],
+        flatpaks=[],
+    )
+    monkeypatch.setattr(harvest, "collect_non_system_users", lambda: [user])
+    monkeypatch.setattr(accounts, "find_system_flatpaks", lambda: [])
+    monkeypatch.setattr(accounts, "find_system_snaps", lambda: [])
+    monkeypatch.setattr(accounts, "find_system_flatpak_remotes", lambda: [remote])
+    monkeypatch.setattr(
+        accounts, "find_user_flatpak_remotes", lambda *a, **kw: [remote]
+    )
+    for dangerous in (False, True):
+        result = UsersCollector(
+            _context(tmp_path, policy=IgnorePolicy(dangerous=dangerous)), {}
+        ).collect()
+        assert bool(result.flatpak_snapshot.remotes) == dangerous
+        assert bool(result.users_snapshot.user_flatpak_remotes) == dangerous
+        assert "FAKE_SECRET" not in str(result.flatpak_snapshot.notes)
+        assert "FAKE_SECRET" not in str(result.users_snapshot.notes)

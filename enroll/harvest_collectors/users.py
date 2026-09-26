@@ -53,9 +53,23 @@ class UsersCollector(HarvestCollector):
 
         system_flatpaks = [asdict(f) for f in find_system_flatpaks()]
         system_snaps = [asdict(s) for s in find_system_snaps()]
-        system_flatpak_remotes = [asdict(r) for r in find_system_flatpak_remotes()]
         flatpak_notes: List[str] = []
         snap_notes: List[str] = []
+
+        def safe_remotes(remotes, notes):
+            accepted = []
+            for remote in remotes:
+                record = asdict(remote)
+                reason = self.context.policy.metadata_deny_reason(record)
+                if reason:
+                    notes.append(f"Flatpak remote omitted: {reason} (metadata policy).")
+                else:
+                    accepted.append(record)
+            return accepted
+
+        system_flatpak_remotes = safe_remotes(
+            find_system_flatpak_remotes(), flatpak_notes
+        )
         if system_flatpaks:
             flatpak_notes.append(
                 "System-wide flatpaks detected: "
@@ -141,7 +155,9 @@ class UsersCollector(HarvestCollector):
                 if user.flatpaks:
                     user_flatpaks_map[user.name] = [asdict(fp) for fp in user.flatpaks]
                 user_flatpak_remotes.extend(
-                    asdict(r) for r in find_user_flatpak_remotes(home, user=user.name)
+                    safe_remotes(
+                        find_user_flatpak_remotes(home, user=user.name), users_notes
+                    )
                 )
 
         return UsersCollection(

@@ -10,7 +10,6 @@ from typing import Optional
 
 from .fsutil import inspect_dir_no_follow, open_no_follow_path
 
-
 DEFAULT_DENY_GLOBS = [
     # Common backup copies created by passwd tools (can contain sensitive data)
     "/etc/passwd-",
@@ -432,6 +431,17 @@ class IgnorePolicy:
                         return "sensitive_content"
 
         return None
+
+    def metadata_deny_reason(self, values: dict) -> Optional[str]:
+        """Apply the content policy to discovered metadata before serialization.
+
+        Callers must not put rejected values in diagnostic messages.
+        """
+        import json
+
+        return self._content_deny_reason(
+            "metadata.json", json.dumps(values, ensure_ascii=False).encode("utf-8")
+        )
 
     def inspect_file(self, path: str) -> tuple[Optional[str], Optional[FileInspection]]:
         """Safely inspect a regular file and return the exact bytes to copy.
