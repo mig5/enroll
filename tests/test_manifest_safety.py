@@ -307,3 +307,26 @@ def test_manifest_output_refuses_all_existing_paths(tmp_path, kind):
         out.symlink_to(tmp_path)
     with pytest.raises(ManifestOutputError, match="already exists"):
         prepare_manifest_output_dir(out)
+
+
+def test_freeze_rejects_fifo_without_blocking(tmp_path):
+    import subprocess
+    import sys
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    os.mkfifo(bundle / "fifo")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from enroll.manifest_safety import freeze_directory_bundle; "
+            "import sys; freeze_directory_bundle(sys.argv[1])",
+            str(bundle),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert "not a regular file" in result.stderr

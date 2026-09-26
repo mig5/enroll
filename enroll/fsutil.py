@@ -60,7 +60,8 @@ def open_no_follow_path(
         # some kernels/filesystems.
         final_flags = o_path | cloexec | nofollow
     else:
-        final_flags = os.O_RDONLY | cloexec | nofollow
+        # Opening a FIFO must not block before callers can fstat and reject it.
+        final_flags = os.O_RDONLY | cloexec | nofollow | os.O_NONBLOCK
         if directory:
             final_flags |= o_directory
 
