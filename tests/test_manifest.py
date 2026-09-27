@@ -280,7 +280,7 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     manifest.manifest(str(bundle), str(out), no_common_roles=True)
 
     # Service role: systemd management should be gated on foo_manage_unit and a probe.
-    tasks = (out / "roles" / "foo" / "tasks" / "main.yml").read_text(encoding="utf-8")
+    tasks = (out / "roles" / "foo" / "tasks" / "full.yml").read_text(encoding="utf-8")
     assert "- name: Probe whether systemd unit exists and is manageable" in tasks
     assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
     assert "enroll_manage_systemd_runtime | default(true) | bool" in tasks
@@ -651,7 +651,7 @@ def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
     assert "name: NetworkManager.service" in defaults
     assert "name: NetworkManager-dispatcher.service" in defaults
     assert "dest: /etc/NetworkManager/NetworkManager.conf" in defaults
-    tasks = (out / "roles" / "net" / "tasks" / "main.yml").read_text(encoding="utf-8")
+    tasks = (out / "roles" / "net" / "tasks" / "full.yml").read_text(encoding="utf-8")
     assert "Ensure grouped unit enablement matches harvest" in tasks
     assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
     assert "enroll_manage_systemd_runtime | default(true) | bool" in tasks
@@ -1716,7 +1716,7 @@ def test_manifest_renders_flatpak_and_snap_details(tmp_path: Path):
     users_defaults = (out / "roles" / "users" / "defaults" / "main.yml").read_text(
         encoding="utf-8"
     )
-    users_tasks = (out / "roles" / "users" / "tasks" / "main.yml").read_text(
+    users_tasks = (out / "roles" / "users" / "tasks" / "full.yml").read_text(
         encoding="utf-8"
     )
     assert not (out / "roles" / "users" / "README.md").exists()
@@ -1786,7 +1786,7 @@ def test_users_role_without_portable_apps_omits_community_general_tasks(tmp_path
 
     manifest.manifest(str(bundle), str(out))
 
-    users_tasks = (out / "roles" / "users" / "tasks" / "main.yml").read_text(
+    users_tasks = (out / "roles" / "users" / "tasks" / "full.yml").read_text(
         encoding="utf-8"
     )
     users_meta = (out / "roles" / "users" / "meta" / "main.yml").read_text(
@@ -1868,7 +1868,7 @@ def test_users_role_only_creates_ssh_dir_when_managed_ssh_files_exist(tmp_path):
         encoding="utf-8"
     )
     users_defaults = yaml_helpers.yaml_load_mapping(users_defaults_text)
-    users_tasks = (out / "roles" / "users" / "tasks" / "main.yml").read_text(
+    users_tasks = (out / "roles" / "users" / "tasks" / "full.yml").read_text(
         encoding="utf-8"
     )
 

@@ -230,7 +230,14 @@ def test_role_phases_defer_activation_and_keep_failed_probes(tmp_path):
     activate = yaml.safe_load((tmp_path / "tasks" / "activate.yml").read_text())
     assert "failed_when" not in activate[0]
     assert "enroll_defer_activation" not in str(activate)
-    for task in yaml.safe_load(main):
+    assert [task["ansible.builtin.include_tasks"] for task in yaml.safe_load(main)] == [
+        "config.yml",
+        "full.yml",
+    ]
+    assert yaml.safe_load((tmp_path / "tasks" / "config.yml").read_text()) == []
+    full = yaml.safe_load((tmp_path / "tasks" / "full.yml").read_text())
+    assert any("ansible.builtin.package" in task for task in full)
+    for task in full:
         if "ansible.builtin.systemd" in task:
             assert "enroll_defer_activation" in str(task["when"])
 
@@ -266,6 +273,43 @@ def test_group_conflict_checks_run_in_account_prerequisites(tmp_path):
     tasks = yaml.safe_load((role / "tasks" / "accounts.yml").read_text())
     assert "ansible.builtin.getent" in tasks[0]
     assert "ansible.builtin.assert" in tasks[1]
+    assert yaml.safe_load((role / "tasks" / "config.yml").read_text()) == []
+
+
+def test_generated_configuration_phase_skips_prerequisites_and_activation(tmp_path):
+    import yaml
+
+    from enroll.ansible import (
+        _render_generic_files_tasks,
+        _render_grouped_systemd_tasks,
+        _render_install_packages_tasks,
+        _write_role_phases,
+    )
+
+    role = tmp_path / "app"
+    (role / "tasks").mkdir(parents=True)
+    main = _write_role_phases(
+        str(role),
+        _render_install_packages_tasks("app", "app")
+        + _render_generic_files_tasks("app")
+        + _render_grouped_systemd_tasks("app"),
+    )
+    configuration = yaml.safe_load((role / "tasks/config.yml").read_text())
+    complete = yaml.safe_load((role / "tasks/full.yml").read_text())
+    assert any("ansible.builtin.copy" in task for task in configuration)
+    assert all(
+        not any(
+            module in task
+            for module in ("ansible.builtin.package", "ansible.builtin.systemd")
+        )
+        for task in configuration
+    )
+    assert any("ansible.builtin.package" in task for task in complete)
+    assert any("ansible.builtin.systemd" in task for task in complete)
+    assert [task["ansible.builtin.include_tasks"] for task in yaml.safe_load(main)] == [
+        "config.yml",
+        "full.yml",
+    ]
 
 
 def test_role_writer_refuses_collision(tmp_path):

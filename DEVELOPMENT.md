@@ -949,10 +949,11 @@ handwritten projects is provided.
 
 The generated play has explicit prerequisite and activation phases. `pre_tasks`
 first restore package-manager configuration, then import each role's `packages.yml`
-and the users role's `accounts.yml`. The ordinary role list deploys configuration;
-service tasks there are gated by `enroll_defer_activation`. `post_tasks` import
-`activate.yml` after all roles. Roles remain independently reusable with activation
-on by default. Group names/GIDs are checked before account creation. Runtime
+and the users role's `accounts.yml`. The ordinary role list includes each role's
+`config.yml` through `main.yml`, leaving prerequisite and activation tasks to
+their dedicated phases. `post_tasks` import `activate.yml` after all roles. A
+direct role import uses `full.yml` through `main.yml`, so roles remain reusable
+with activation on by default. Group names/GIDs are checked before account creation. Runtime
 probes fail visibly when a unit cannot be managed.
 
 Ansible playbook configuration roles are ordered intentionally:

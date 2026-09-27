@@ -884,13 +884,17 @@ def _phase_import(role: str, phase: str) -> List[str]:
 
 def _write_role_phases(role_dir: str, tasks: str) -> str:
     """Expose prerequisite/activation entry points while keeping roles reusable."""
-    chunks = re.split(r"(?m)(?=^- name:)", _task_body(tasks))
+    chunks = [
+        chunk
+        for chunk in re.split(r"(?m)(?=^- name:)", _task_body(tasks))
+        if chunk.strip()
+    ]
     phases = {"packages": [], "accounts": [], "activate": []}
     main = []
+    config = []
     for chunk in chunks:
-        if "  ansible.builtin.package:" in chunk:
-            phases["packages"].append(chunk)
-        if any(
+        package_task = "  ansible.builtin.package:" in chunk
+        account_task = any(
             f"  ansible.builtin.{module}:" in chunk for module in ("group", "user")
         ) or (
             Path(role_dir).name == "users"
@@ -898,9 +902,13 @@ def _write_role_phases(role_dir: str, tasks: str) -> str:
                 f"  ansible.builtin.{module}:" in chunk
                 for module in ("getent", "assert")
             )
-        ):
+        )
+        activation_task = "  ansible.builtin.systemd:" in chunk
+        if package_task:
+            phases["packages"].append(chunk)
+        if account_task:
             phases["accounts"].append(chunk)
-        if "  ansible.builtin.systemd:" in chunk:
+        if activation_task:
             # A failed probe must remain a failure, rather than being rewritten
             # as success and accidentally enabling a missing/unmanageable unit.
             chunk = chunk.replace("  failed_when: false\n", "")
@@ -909,6 +917,8 @@ def _write_role_phases(role_dir: str, tasks: str) -> str:
                 "  when:\n",
                 "  when:\n    - not (enroll_defer_activation | default(false) | bool)\n",
             )
+        if not (package_task or account_task or activation_task):
+            config.append(chunk)
         main.append(chunk)
     for phase, parts in phases.items():
         if parts:
@@ -917,7 +927,27 @@ def _write_role_phases(role_dir: str, tasks: str) -> str:
                 "---\n" + "".join(parts),
                 label=f"{phase} tasks",
             )
-    return "---\n" + "".join(main)
+    full = "---\n" + "".join(main)
+    if not any(phases.values()):
+        return full
+    tasks_dir = Path(role_dir, "tasks")
+    _write_generated_task_yaml(
+        str(tasks_dir / "full.yml"), full, label="complete role tasks"
+    )
+    _write_generated_task_yaml(
+        str(tasks_dir / "config.yml"),
+        "---\n" + ("".join(config) if config else "[]\n"),
+        label="configuration tasks",
+    )
+    return """---
+- name: Apply configuration after prerequisites
+  ansible.builtin.include_tasks: config.yml
+  when: enroll_defer_activation | default(false) | bool
+
+- name: Apply complete role outside generated playbooks
+  ansible.builtin.include_tasks: full.yml
+  when: not (enroll_defer_activation | default(false) | bool)
+"""
 
 
 # --- Ansible task snippets ---

@@ -730,5 +730,6 @@ ordinary configuration; use targeted review rather than assuming the bundle is c
 Generated playbooks install package prerequisites and create users/groups before
 configuration, and activate services after deployment. Numeric group IDs are retained;
 conflicting target names/IDs fail for explicit resolution. Supplementary memberships
-remain additive. Service handlers notify only units associated with changed resources.
+remain additive. Grouped service handlers restart the host's active units for the
+notified role.
 Every output is a new standalone tree; generation is staged and published on success.
