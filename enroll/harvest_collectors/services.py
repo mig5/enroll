@@ -405,6 +405,12 @@ class ServicePackageCollector(HarvestCollector):
                 continue
 
             role = role_name_from_pkg(pkg)
+            # Package ownership inference can miss a same-named unit or attribute
+            # it to another package (e.g. console-setup-linux). Both snapshots
+            # are still valid: keep their artifact namespaces separate rather
+            # than merging by name or dropping the manual package.
+            while self.role_origins.get(role, "").startswith("unit "):
+                role = f"package_{role}"
             self._claim_role(role, f"package {pkg}")
             notes: List[str] = []
             excluded: List[ExcludedFile] = []

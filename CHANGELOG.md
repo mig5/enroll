@@ -14,6 +14,8 @@
 
 ## Security and correctness
 
+- Keep independently harvested same-named services and packages in separate artifact namespaces (for example `console_setup` and `package_console_setup`), instead of aborting when package ownership inference does not associate them. Retain rejection of ambiguous normalized names within each resource type.
+
 - Screen Flatpak remote metadata and opted-in runtime output for secrets; prevent FIFO reads from blocking before validation.
 - Scope service handlers per role/unit, filter changed loop results, and activate symlink and systemd unit/drop-in changes.
 - Install package/account prerequisites before configuration and defer service activation until all configuration is deployed. Capture unpackaged unit fragments and report executable prerequisites.
