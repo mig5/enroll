@@ -9,6 +9,7 @@
 
 - Share roles when their task and handler implementations match. Keep identical artifacts in the role; promote a differing artifact into per-host inventory for all affected hosts, including later extensions. Preserve complete per-host settings and independent play order. Distinct task or handler implementations retain separate roles named after the host.
 - Generate one inventory-driven restart handler per grouped service role, so hosts with different active service lists can share the role. A notified handler restarts all active services listed for that role on that host.
+- Run APT and DNF repository configuration once, before package prerequisites, while keeping their roles selected for multi-host sharing and artifact validation.
 - Add hosts without retaining earlier harvests. Preserve edited host variables; refuse duplicate hosts, edited roles needed for sharing, namespace collisions and conflicting collection requirements.
 - Lock and stage extensions, detect concurrent changes, then publish with an atomic Linux directory exchange. Reject unsafe filesystem entries and unsupported atomic publication without changing existing projects.
 - Keep versioned project metadata and per-host capture notes. Support `--host`/`--extend` on `manifest` and `single-shot`; encrypted projects must be unpacked before extension.

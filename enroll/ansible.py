@@ -603,6 +603,8 @@ def _write_playbook_all(path: str, roles: List[str]) -> None:
         safe = scaffold_token(r, field="role name")
         pb_lines.append(f"    - role: {safe}")
         pb_lines.append(f"      tags: [{_role_tag(safe)}]")
+    if not roles:
+        pb_lines[-1] = "  roles: []"
     text = "\n".join(pb_lines) + "\n"
     _write_generated_task_yaml(path, text, label="playbook.yml")
 
@@ -840,7 +842,9 @@ def _write_scaffold(ctx: AnsibleManifestContext) -> None:
 
 def _write_manifest_playbook(ctx: AnsibleManifestContext, roles: List[str]) -> None:
     path = Path(ctx.out_dir, "playbook.yml")
-    _write_playbook_all(str(path), roles)
+    repository_roles = {"apt_config", "dnf_config"}
+    main_roles = [r for r in roles if r not in repository_roles]
+    _write_playbook_all(str(path), main_roles)
     text = path.read_text()
     pre = ["  vars:", "    enroll_defer_activation: true", "  pre_tasks:"]
     # Repository configuration must precede package installation.
@@ -856,7 +860,8 @@ def _write_manifest_playbook(ctx: AnsibleManifestContext, roles: List[str]) -> N
     # Keep an empty list valid when there are no prerequisite tasks.
     if pre[-1] == "  pre_tasks:":
         pre[-1] = "  pre_tasks: []"
-    text = text.replace("  roles:\n", "\n".join(pre) + "\n  roles:\n")
+    role_marker = "  roles:\n" if main_roles else "  roles: []\n"
+    text = text.replace(role_marker, "\n".join(pre) + "\n" + role_marker)
     post = []
     for role in roles:
         if Path(ctx.roles_root, role, "tasks", "activate.yml").exists():

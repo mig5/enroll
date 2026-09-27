@@ -294,9 +294,24 @@ def prepare_host(root: Path, host: str, options: dict) -> dict:
         "options": options,
         "hosts": {
             host: {
-                "roles": [
-                    role["role"] for entry in play for role in entry.get("roles", [])
-                ],
+                "roles": list(
+                    dict.fromkeys(
+                        [
+                            task["ansible.builtin.import_role"]["name"]
+                            for entry in play
+                            for task in entry.get("pre_tasks", [])
+                            if task.get("ansible.builtin.import_role", {}).get(
+                                "tasks_from"
+                            )
+                            == "main"
+                        ]
+                        + [
+                            role["role"]
+                            for entry in play
+                            for role in entry.get("roles", [])
+                        ]
+                    )
+                ),
                 "variables": list(values),
             }
         },

@@ -218,6 +218,12 @@ def test_different_apt_role_updates_early_phase_import(tmp_path):
         task.get("ansible.builtin.import_role", {}).get("name") == role
         for task in play["pre_tasks"]
     )
+    assert [
+        task["ansible.builtin.import_role"]["name"]
+        for task in play["pre_tasks"]
+        if task.get("ansible.builtin.import_role", {}).get("tasks_from") == "main"
+    ].count(role) == 1
+    assert role not in [item["role"] for item in play["roles"]]
     assert not (out / "roles/apt_config/files/etc/apt/sources.list").exists()
     assert (
         out / "inventory/host_files/web1/apt_config/files/etc/apt/sources.list"
@@ -225,6 +231,53 @@ def test_different_apt_role_updates_early_phase_import(tmp_path):
     assert (
         out / "inventory/host_files/web2/apt_config/files/etc/apt/sources.list"
     ).read_text() == "deb second\n"
+
+
+@pytest.mark.parametrize(
+    "role, destination",
+    [
+        ("apt_config", "/etc/apt/sources.list"),
+        ("dnf_config", "/etc/yum.repos.d/example.repo"),
+    ],
+)
+def test_repository_configuration_runs_once_and_stays_selected(
+    tmp_path, role, destination
+):
+    bundle_root = tmp_path / "bundle"
+    artifact = bundle_root / "artifacts" / role / destination.lstrip("/")
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("configuration\n")
+    write_schema_state(
+        bundle_root,
+        {
+            "roles": {
+                role: {
+                    "role_name": role,
+                    "managed_files": [
+                        {
+                            "path": destination,
+                            "src_rel": destination.lstrip("/"),
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                            "reason": role,
+                        }
+                    ],
+                }
+            }
+        },
+    )
+    out = tmp_path / "project"
+    generate(bundle_root, out, "web1")
+    play = yaml.safe_load((out / "playbooks/web1.yml").read_text())[0]
+    imports = [
+        task["ansible.builtin.import_role"]
+        for task in play["pre_tasks"]
+        if task.get("ansible.builtin.import_role", {}).get("name") == role
+    ]
+    assert [item["tasks_from"] for item in imports] == ["main"]
+    assert role not in [item["role"] for item in play["roles"]]
+    assert role in read_metadata(out)["hosts"]["web1"]["roles"]
 
 
 def test_only_differing_artifact_is_promoted_for_all_later_hosts(tmp_path):
