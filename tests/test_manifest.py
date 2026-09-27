@@ -1416,7 +1416,7 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
     assert "firewall_runtime_ipset_sets:" in defaults
     assert "- blocklist" in defaults
     assert "firewall_runtime_restore_iptables: true" in defaults
-    assert "firewall_runtime_persist: true" in defaults
+    assert "firewall_runtime_persist: false" in defaults
     role_dir = out / "roles" / "firewall_runtime"
     unit = (role_dir / "files" / "enroll-firewall.service").read_text()
     assert "Before=network-pre.target shutdown.target" in unit

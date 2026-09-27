@@ -910,6 +910,8 @@ def _remote_harvest(
     no_sudo: bool = False,
     sudo_password: Optional[str] = None,
     ssh_key_passphrase: Optional[str] = None,
+    harvest_firewall: bool = False,
+    harvest_sysctl: bool = False,
     include_paths: Optional[list[str]] = None,
     exclude_paths: Optional[list[str]] = None,
     allow_existing_output: bool = False,
@@ -1135,6 +1137,10 @@ def _remote_harvest(
             ]
             if dangerous:
                 argv.append("--dangerous")
+            if harvest_firewall:
+                argv.append("--harvest-firewall")
+            if harvest_sysctl:
+                argv.append("--harvest-sysctl")
             for p in include_paths or []:
                 argv.extend(["--include-path", str(p)])
             for p in exclude_paths or []:

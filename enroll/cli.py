@@ -534,6 +534,19 @@ def _add_path_safety_args(
     )
 
 
+def _add_runtime_harvest_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--harvest-firewall",
+        action="store_true",
+        help="Opt in to live ipset/iptables snapshots; review existing persistence before replay.",
+    )
+    parser.add_argument(
+        "--harvest-sysctl",
+        action="store_true",
+        help="Opt in to live sysctl values; these may override existing persistent configuration.",
+    )
+
+
 def _add_remote_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--remote-host",
@@ -614,6 +627,7 @@ def main() -> None:
     _add_config_args(h)
     _add_path_safety_args(h, default=argparse.SUPPRESS)
     _add_remote_args(h)
+    _add_runtime_harvest_args(h)
     h.add_argument(
         "--out",
         help=(
@@ -702,6 +716,7 @@ def main() -> None:
     _add_config_args(s)
     _add_path_safety_args(s, default=argparse.SUPPRESS)
     _add_remote_args(s)
+    _add_runtime_harvest_args(s)
     s.add_argument(
         "--harvest",
         help=(
@@ -1003,6 +1018,8 @@ def main() -> None:
                             remote_user=args.remote_user,
                             remote_ssh_config=args.remote_ssh_config,
                             dangerous=bool(args.dangerous),
+                            harvest_firewall=bool(args.harvest_firewall),
+                            harvest_sysctl=bool(args.harvest_sysctl),
                             no_sudo=bool(args.no_sudo),
                             include_paths=list(getattr(args, "include_path", []) or []),
                             exclude_paths=list(getattr(args, "exclude_path", []) or []),
@@ -1030,6 +1047,8 @@ def main() -> None:
                         remote_user=args.remote_user,
                         remote_ssh_config=args.remote_ssh_config,
                         dangerous=bool(args.dangerous),
+                        harvest_firewall=bool(args.harvest_firewall),
+                        harvest_sysctl=bool(args.harvest_sysctl),
                         no_sudo=bool(args.no_sudo),
                         include_paths=list(getattr(args, "include_path", []) or []),
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
@@ -1049,6 +1068,8 @@ def main() -> None:
                         harvest(
                             str(tmp_bundle),
                             dangerous=bool(args.dangerous),
+                            harvest_firewall=bool(args.harvest_firewall),
+                            harvest_sysctl=bool(args.harvest_sysctl),
                             include_paths=list(getattr(args, "include_path", []) or []),
                             exclude_paths=list(getattr(args, "exclude_path", []) or []),
                             allow_existing_output=True,
@@ -1069,6 +1090,8 @@ def main() -> None:
                     path = harvest(
                         out_dir,
                         dangerous=bool(args.dangerous),
+                        harvest_firewall=bool(args.harvest_firewall),
+                        harvest_sysctl=bool(args.harvest_sysctl),
                         include_paths=list(getattr(args, "include_path", []) or []),
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
                         allow_existing_output=not bool(args.out),
@@ -1202,6 +1225,8 @@ def main() -> None:
                             remote_user=args.remote_user,
                             remote_ssh_config=args.remote_ssh_config,
                             dangerous=bool(args.dangerous),
+                            harvest_firewall=bool(args.harvest_firewall),
+                            harvest_sysctl=bool(args.harvest_sysctl),
                             no_sudo=bool(args.no_sudo),
                             include_paths=list(getattr(args, "include_path", []) or []),
                             exclude_paths=list(getattr(args, "exclude_path", []) or []),
@@ -1238,6 +1263,8 @@ def main() -> None:
                         remote_user=args.remote_user,
                         remote_ssh_config=args.remote_ssh_config,
                         dangerous=bool(args.dangerous),
+                        harvest_firewall=bool(args.harvest_firewall),
+                        harvest_sysctl=bool(args.harvest_sysctl),
                         no_sudo=bool(args.no_sudo),
                         include_paths=list(getattr(args, "include_path", []) or []),
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
@@ -1265,6 +1292,8 @@ def main() -> None:
                         harvest(
                             str(tmp_bundle),
                             dangerous=bool(args.dangerous),
+                            harvest_firewall=bool(args.harvest_firewall),
+                            harvest_sysctl=bool(args.harvest_sysctl),
                             include_paths=list(getattr(args, "include_path", []) or []),
                             exclude_paths=list(getattr(args, "exclude_path", []) or []),
                             allow_existing_output=True,
@@ -1290,6 +1319,8 @@ def main() -> None:
                     harvest(
                         args.harvest,
                         dangerous=bool(args.dangerous),
+                        harvest_firewall=bool(args.harvest_firewall),
+                        harvest_sysctl=bool(args.harvest_sysctl),
                         include_paths=list(getattr(args, "include_path", []) or []),
                         exclude_paths=list(getattr(args, "exclude_path", []) or []),
                     )

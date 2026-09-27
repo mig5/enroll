@@ -325,7 +325,7 @@ class AnsibleRole(CMModule):
     group: root
     mode: "0700"
   register: _enroll_firewall_script
-  when: {var_prefix}_persist | default(true) | bool
+  when: {var_prefix}_persist | default(false) | bool
 
 - name: Install firewall boot restoration unit
   ansible.builtin.copy:
@@ -335,7 +335,7 @@ class AnsibleRole(CMModule):
     group: root
     mode: "0644"
   register: _enroll_firewall_unit
-  when: {var_prefix}_persist | default(true) | bool
+  when: {var_prefix}_persist | default(false) | bool
 
 - name: Enable and reconcile persistent firewall state
   ansible.builtin.systemd_service:
@@ -345,7 +345,7 @@ class AnsibleRole(CMModule):
     state: restarted
   when:
     - enroll_manage_systemd_runtime | default(true) | bool
-    - {var_prefix}_persist | default(true) | bool
+    - {var_prefix}_persist | default(false) | bool
 
 """
 
@@ -360,21 +360,21 @@ class AnsibleRole(CMModule):
   register: _enroll_ipset_flush
   failed_when: false
   changed_when: false
-  when: (not ({var_prefix}_persist | default(true) | bool)) and ({var_prefix}_sync_ipsets_exact | default(true) | bool) and (enroll_manage_systemd_runtime | default(true) | bool)
+  when: (not ({var_prefix}_persist | default(false) | bool)) and ({var_prefix}_sync_ipsets_exact | default(true) | bool) and (enroll_manage_systemd_runtime | default(true) | bool)
 
 - name: Restore captured ipsets
   ansible.builtin.shell: "ipset restore -exist < {self.firewall_runtime_dest_path('ipset.save')}"
   args:
     executable: /bin/sh
   listen: Restore captured ipsets
-  when: (not ({var_prefix}_persist | default(true) | bool)) and (({var_prefix}_ipset_save | default('') | length) > 0) and (enroll_manage_systemd_runtime | default(true) | bool)
+  when: (not ({var_prefix}_persist | default(false) | bool)) and (({var_prefix}_ipset_save | default('') | length) > 0) and (enroll_manage_systemd_runtime | default(true) | bool)
 
 - name: Restore captured IPv4 iptables rules
   ansible.builtin.command:
     cmd: iptables-restore {self.firewall_runtime_dest_path('iptables.v4')}
   listen: Restore captured IPv4 iptables rules
   when:
-    - not ({var_prefix}_persist | default(true) | bool)
+    - not ({var_prefix}_persist | default(false) | bool)
     - enroll_manage_systemd_runtime | default(true) | bool
     - ({var_prefix}_iptables_v4_save | default('') | length) > 0
     - {var_prefix}_restore_iptables | default(true) | bool
@@ -384,7 +384,7 @@ class AnsibleRole(CMModule):
     cmd: ip6tables-restore {self.firewall_runtime_dest_path('iptables.v6')}
   listen: Restore captured IPv6 iptables rules
   when:
-    - not ({var_prefix}_persist | default(true) | bool)
+    - not ({var_prefix}_persist | default(false) | bool)
     - enroll_manage_systemd_runtime | default(true) | bool
     - ({var_prefix}_iptables_v6_save | default('') | length) > 0
     - {var_prefix}_restore_iptables | default(true) | bool
@@ -2151,7 +2151,7 @@ def _render_firewall_runtime_role(
         f"{var_prefix}_sync_ipsets_exact": True,
         f"{var_prefix}_restore_iptables": True,
     }
-    vars_map[f"{var_prefix}_persist"] = True
+    vars_map[f"{var_prefix}_persist"] = False
     role_dir = Path(ctx.roles_root, role)
     (role_dir / "files" / "enroll-firewall.service").write_text(
         "[Unit]\nDescription=Restore Enroll firewall snapshot\n"

@@ -533,7 +533,7 @@ Collectors live under `enroll/harvest_collectors/`.
 
 File: `harvest_collectors/runtime.py`
 
-This wrapper collects root-only live runtime state:
+This wrapper collects root-only live runtime state only with explicit `harvest_firewall` / `harvest_sysctl` opt-ins (both default false):
 
 - writable sysctl state,
 - live ipset state,
@@ -568,7 +568,7 @@ The filter skips volatile/action/identity keys and inactive mutually-exclusive z
 
 #### Firewall runtime capture
 
-Runtime firewall capture is a fallback. Enroll first checks for persistent firewall config such as:
+Opt-in runtime firewall capture is a fallback. Custom scripts and boot hooks cannot be ruled out; generated boot persistence remains separately opt-in via `firewall_runtime_persist`. Enroll first checks for persistent firewall config such as:
 
 ```text
 /etc/iptables/rules.v4

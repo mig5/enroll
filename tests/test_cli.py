@@ -786,3 +786,25 @@ def test_cli_rejects_removed_site_mode(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["harvest", "single-shot"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_runtime_capture_flags_forwarded(monkeypatch, tmp_path, command, enabled):
+    called = {}
+
+    def fake_harvest(*args, **kwargs):
+        called.update(kwargs)
+        return str(tmp_path / "state.json")
+
+    monkeypatch.setattr(cli, "harvest", fake_harvest)
+    monkeypatch.setattr(cli, "manifest", lambda *args, **kwargs: None)
+    args = ["enroll", command, "--out", str(tmp_path / "out")]
+    if command == "single-shot":
+        args += ["--harvest", str(tmp_path / "harvest")]
+    if enabled:
+        args += ["--harvest-firewall", "--harvest-sysctl"]
+    monkeypatch.setattr(sys, "argv", args)
+    cli.main()
+    assert called["harvest_firewall"] is enabled
+    assert called["harvest_sysctl"] is enabled

@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Sudo harvests promote and verify the upload into a root-private directory;
 # no-sudo harvests retain the direct remote digest check. Tests mock the local
 # builder with these fixed bytes and digest so both paths can be exercised.
@@ -268,6 +267,8 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
         remote_host="example.com",
         remote_port=2222,
         remote_user=None,
+        harvest_firewall=True,
+        harvest_sysctl=True,
         include_paths=["/etc/nginx/nginx.conf"],
         exclude_paths=["/etc/shadow"],
         dangerous=True,
@@ -282,6 +283,8 @@ def test_remote_harvest_happy_path(tmp_path: Path, monkeypatch):
     joined = "\n".join([c for c, _pty in calls])
     assert "sudo" in joined
     assert "--dangerous" in joined
+    assert "--harvest-firewall" in joined
+    assert "--harvest-sysctl" in joined
     assert "--include-path" in joined
     assert "--exclude-path" in joined
     assert "sudo -n -p '' -- mktemp -d" in joined

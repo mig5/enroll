@@ -542,6 +542,8 @@ def harvest(
     policy: Optional[IgnorePolicy] = None,
     *,
     dangerous: bool = False,
+    harvest_firewall: bool = False,
+    harvest_sysctl: bool = False,
     include_paths: Optional[List[str]] = None,
     exclude_paths: Optional[List[str]] = None,
     allow_existing_output: bool = False,
@@ -631,6 +633,8 @@ def harvest(
 
     runtime_collection = RuntimeStateCollector(
         context,
+        harvest_firewall=harvest_firewall,
+        harvest_sysctl=harvest_sysctl,
         persistent_ipset_files=persistent_ipset_files,
         persistent_iptables_v4_files=persistent_iptables_v4_files,
         persistent_iptables_v6_files=persistent_iptables_v6_files,

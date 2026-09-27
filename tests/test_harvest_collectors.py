@@ -523,7 +523,9 @@ def test_runtime_exclusions_apply_before_capture(monkeypatch, tmp_path):
                 "/etc/sysctl.d/99-enroll.conf",
                 "/etc/enroll/firewall/*",
             ),
-        )
+        ),
+        harvest_firewall=True,
+        harvest_sysctl=True,
     ).collect()
     assert result.sysctl_snapshot.managed_files == []
     assert result.sysctl_snapshot.parameters == {}
@@ -540,3 +542,18 @@ def test_service_collector_rejects_normalized_role_collisions(tmp_path):
     collector._claim_role(role_name_from_unit("foo-bar.service"), "foo-bar.service")
     with pytest.raises(ValueError, match="collision"):
         collector._claim_role(role_name_from_unit("foo_bar.service"), "foo_bar.service")
+
+
+def test_runtime_collection_is_opt_in(monkeypatch, tmp_path):
+    from enroll import harvest
+
+    monkeypatch.setattr(harvest.os, "geteuid", lambda: 0)
+
+    def unexpected(*a, **kw):
+        raise AssertionError("runtime capture must be opt-in")
+
+    monkeypatch.setattr(harvest, "_run_capture_command", unexpected)
+    result = RuntimeStateCollector(_context(tmp_path)).collect()
+    assert result.sysctl_snapshot.managed_files == []
+    assert result.firewall_runtime_snapshot.ipset_save is None
+    assert "--harvest-sysctl" in result.sysctl_snapshot.notes[0]

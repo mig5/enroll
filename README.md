@@ -13,8 +13,8 @@
 - Defensively excludes likely secrets (path denylist + content sniff + size caps).
 - Captures non-system users and their SSH public keys. In `--dangerous` mode, it also auto-harvests common shell dotfiles such as `.bashrc`, `.profile`, `.bash_logout`, and `.bash_aliases` when appropriate.
 - Captures miscellaneous `/etc` files it can't attribute to a package and installs them in an `etc_custom` role.
-- When running as root/sudo, captures live writable sysctl state into a `sysctl` role that manages `/etc/sysctl.d/99-enroll.conf`.
-- Captures live ipset and iptables runtime state, when active ipsets/iptables rules are present *and* no corresponding persistent ipset/iptables *files* were found.
+- With `--harvest-sysctl` and root/sudo, captures live writable sysctl state into a `sysctl` role that manages `/etc/sysctl.d/99-enroll.conf`.
+- With `--harvest-firewall`, captures live ipset and iptables runtime state, when active ipsets/iptables rules are present *and* no corresponding persistent ipset/iptables *files* were found.
 - Captures symlinks in common applications that rely on them, e.g apache2/nginx 'sites-enabled'
 - Tries to capture Flatpak, Snap, Docker image presence
 - Captures snowflake-y things found in /usr/local/bin (for non-binary files) and /usr/local/etc
@@ -61,8 +61,8 @@ Harvest state about a host and write a harvest bundle.
 - In `--dangerous` mode: common per-user shell dotfiles that are likely to represent deliberate account customisation
 - Misc `/etc` that can't be attributed to a package (`etc_custom` role)
 - Static firewall config files such as nftables, UFW, firewalld, `/etc/iptables/rules.v4`, `/etc/iptables/rules.v6`, and `/etc/ipset*`
-- Live writable sysctl state via `sysctl -a`, emitted as `/etc/sysctl.d/99-enroll.conf` at manifest time when running as root/sudo (`sysctl` role)
-- Live kernel ipset/iptables state via `ipset save`, `iptables-save`, and `ip6tables-save` as a fallback, but only when the corresponding persistent config was not found (`firewall_runtime` role at manifest time)
+- Optional (`--harvest-sysctl`) live writable sysctl state via `sysctl -a`, emitted as `/etc/sysctl.d/99-enroll.conf` at manifest time when running as root/sudo (`sysctl` role)
+- Optional (`--harvest-firewall`) live kernel ipset/iptables state via `ipset save`, `iptables-save`, and `ip6tables-save` as a fallback, but only when the corresponding persistent config was not found (`firewall_runtime` role at manifest time)
 - Optional user-specified extra files/dirs via `--include-path` (emitted as an `extra_paths` role at manifest time)
 
 **Common flags**
@@ -404,9 +404,39 @@ enroll harvest --out /tmp/enroll-harvest --dangerous --sops <FINGERPRINT(s)>
 
 ---
 
+## Runtime snapshots are opt-in
+
+Normal harvesting keeps persistent configuration files, including `/etc/sysctl.conf`,
+`/etc/sysctl.d`, and supported firewall configuration. It does not snapshot live
+sysctl or ipset/iptables state unless you request it:
+
+```bash
+enroll harvest --out ./harvest --harvest-firewall --harvest-sysctl
+```
+
+Both flags also work with `single-shot`, remote harvesting and INI configuration
+(`harvest_firewall = true`, `harvest_sysctl = true`). They are independent of
+`--dangerous` and still honor path exclusions.
+
+Firewall capture skips families with known persistent files, but cannot discover
+every `rc.local` hook, custom script or competing firewall manager. Generated
+`firewall_runtime_persist` defaults to **false**: the role restores a captured
+snapshot when its files change, without installing a boot service. Set it to
+`true` only after choosing Enroll as the persistence owner and disabling any
+competing restore mechanism. That opt-in installs `enroll-firewall.service`,
+restores ipsets before iptables, and reconciles the snapshot on every playbook
+run (so those runs intentionally report a change). Setting the variable back to
+false does not remove an already installed service; disable/remove it explicitly
+when migrating to another persistence owner.
+
+`--harvest-sysctl` records writable live values into `99-enroll.conf`. Live values
+may be temporary or duplicate settings in other sysctl files. Review that file
+alongside `/etc/sysctl.conf` and `sysctl.d` ordering before applying it; the flag
+is not a claim that these values are the source host's intended persistent policy.
+
 ## Manifest
 
-### Single-site (default: no --fqdn)
+### Standalone output
 ```bash
 enroll manifest --harvest /tmp/enroll-harvest --out /tmp/enroll-ansible
 ```
