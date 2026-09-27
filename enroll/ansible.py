@@ -2442,10 +2442,29 @@ def manifest_from_bundle_dir(
     *,
     jinjaturtle: Optional[bool] = None,
     no_common_roles: bool = False,
+    host: Optional[str] = None,
+    extend: bool = False,
 ) -> None:
-    AnsibleManifestRenderer(
+    renderer = AnsibleManifestRenderer(
         bundle_dir,
         out_dir,
         jinjaturtle=jinjaturtle,
         no_common_roles=no_common_roles,
-    ).render()
+    )
+    if extend and not host:
+        raise ValueError("--extend requires --host")
+    if host:
+        from .multihost import render_project
+
+        render_project(
+            renderer._render_into,
+            out_dir,
+            host,
+            extend,
+            {
+                "no_common_roles": no_common_roles,
+                "jinjaturtle": jinjaturtle,
+            },
+        )
+    else:
+        renderer.render()

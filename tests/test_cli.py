@@ -808,3 +808,30 @@ def test_runtime_capture_flags_forwarded(monkeypatch, tmp_path, command, enabled
     cli.main()
     assert called["harvest_firewall"] is enabled
     assert called["harvest_sysctl"] is enabled
+
+
+def test_cli_manifest_host_extension_forwarding(monkeypatch, tmp_path):
+    called = {}
+
+    def fake_manifest(*args, **kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr(cli, "manifest", fake_manifest)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "enroll",
+            "manifest",
+            "--harvest",
+            str(tmp_path / "bundle"),
+            "--out",
+            str(tmp_path / "project"),
+            "--host",
+            "web2",
+            "--extend",
+        ],
+    )
+    cli.main()
+    assert called["host"] == "web2"
+    assert called["extend"] is True

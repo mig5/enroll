@@ -475,6 +475,14 @@ def _encrypt_harvest_dir_to_sops(
 
 def _add_common_manifest_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
+        "--host", help="Inventory identity for an extendable multi-host project"
+    )
+    p.add_argument(
+        "--extend",
+        action="store_true",
+        help="Add --host to an existing Enroll project after strict compatibility checks",
+    )
+    p.add_argument(
         "--no-common-roles",
         action="store_true",
         help=(
@@ -1139,6 +1147,11 @@ def main() -> None:
                 jinjaturtle=_jt_mode(args),
                 sops_fingerprints=getattr(args, "sops", None),
                 no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                **(
+                    {"host": args.host, "extend": args.extend}
+                    if getattr(args, "host", None) or getattr(args, "extend", False)
+                    else {}
+                ),
             )
             if getattr(args, "sops", None) and out_enc:
                 print(str(out_enc))
@@ -1242,6 +1255,12 @@ def main() -> None:
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                        **(
+                            {"host": args.host, "extend": args.extend}
+                            if getattr(args, "host", None)
+                            or getattr(args, "extend", False)
+                            else {}
+                        ),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1275,6 +1294,12 @@ def main() -> None:
                         args.out,
                         jinjaturtle=_jt_mode(args),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                        **(
+                            {"host": args.host, "extend": args.extend}
+                            if getattr(args, "host", None)
+                            or getattr(args, "extend", False)
+                            else {}
+                        ),
                     )
                     # For usability (when --harvest wasn't provided), print the harvest path.
                     if not args.harvest:
@@ -1308,6 +1333,12 @@ def main() -> None:
                         jinjaturtle=_jt_mode(args),
                         sops_fingerprints=list(sops_fps),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                        **(
+                            {"host": args.host, "extend": args.extend}
+                            if getattr(args, "host", None)
+                            or getattr(args, "extend", False)
+                            else {}
+                        ),
                     )
                     if not args.harvest:
                         print(str(out_file))
@@ -1329,6 +1360,12 @@ def main() -> None:
                         args.out,
                         jinjaturtle=_jt_mode(args),
                         no_common_roles=bool(getattr(args, "no_common_roles", False)),
+                        **(
+                            {"host": args.host, "extend": args.extend}
+                            if getattr(args, "host", None)
+                            or getattr(args, "extend", False)
+                            else {}
+                        ),
                     )
     except RemoteSudoPasswordRequired:
         raise SystemExit(

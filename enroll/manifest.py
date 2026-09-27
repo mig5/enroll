@@ -190,6 +190,8 @@ def manifest(
     jinjaturtle: Optional[bool] = None,
     sops_fingerprints: Optional[List[str]] = None,
     no_common_roles: bool = False,
+    host: Optional[str] = None,
+    extend: bool = False,
 ) -> Optional[str]:
     """Render a configuration-management manifest from a harvest.
 
@@ -209,6 +211,10 @@ def manifest(
     """
 
     sops_mode = bool(sops_fingerprints)
+    if extend and (not host or sops_mode):
+        raise ValueError(
+            "--extend requires --host and an unpacked plaintext project (no --sops)"
+        )
 
     # Decrypt/extract the harvest bundle if needed.
     resolved_bundle_dir, td_bundle = _prepare_bundle_dir(
@@ -233,6 +239,8 @@ def manifest(
                 out,
                 jinjaturtle=jinjaturtle,
                 no_common_roles=no_common_roles,
+                host=host,
+                extend=extend,
             )
             return None
 
@@ -247,6 +255,7 @@ def manifest(
             str(tmp_out),
             jinjaturtle=jinjaturtle,
             no_common_roles=no_common_roles,
+            host=host,
         )
 
         enc = _encrypt_manifest_out_dir_to_sops(
