@@ -911,7 +911,15 @@ Existing output directories are refused. Shared site mode was removed in 0.9.0.
 
 ### 13.3 Role ordering
 
-Ansible playbook roles are ordered intentionally:
+The generated play has explicit prerequisite and activation phases. `pre_tasks`
+first restore package-manager configuration, then import each role's `packages.yml`
+and the users role's `accounts.yml`. The ordinary role list deploys configuration;
+service tasks there are gated by `enroll_defer_activation`. `post_tasks` import
+`activate.yml` after all roles. Roles remain independently reusable with activation
+on by default. Group names/GIDs are checked before account creation. Runtime
+probes fail visibly when a unit cannot be managed.
+
+Ansible playbook configuration roles are ordered intentionally:
 
 1. package-manager config roles (`apt_config`, `dnf_config`),
 2. common grouped roles,
@@ -943,7 +951,7 @@ If JinjaTurtle is unavailable in `auto` mode, fails, emits missing variables, or
 
 Harvested values (file paths, owners, groups, usernames, GECOS fields, link targets, package names, unit names, ...) are attacker-influenceable on a host an unprivileged user partly controls. The renderer keeps them strictly in Ansible *data*, never in playbook *structure*, through three layers in `render_safety.py` and `yamlutil.py`:
 
-1. **Variable files are serialized, not templated.** `_write_role_defaults()` / `_write_hostvars()` dump mappings with a PyYAML `SafeDumper` (`yamlutil.yaml_dump_mapping`), so metacharacters and newlines in a harvested value fold into a quoted scalar and cannot introduce new keys or list items.
+1. **Variable files are serialized, not templated.** `_write_role_defaults()` dump mappings with a PyYAML `SafeDumper` (`yamlutil.yaml_dump_mapping`), so metacharacters and newlines in a harvested value fold into a quoted scalar and cannot introduce new keys or list items.
 2. **Template-looking strings are tagged `!unsafe`.** `ansible_unsafe_data()` recursively wraps any harvested string containing a Jinja start (`{{`, `{%`, `{#`) as `AnsibleUnsafeText`, dumped as a YAML `!unsafe` scalar. Ansible then treats it as literal data instead of re-evaluating it at apply time.
 3. **Raw task/handler YAML uses only allowlisted tokens.** The renderer hand-writes task/handler text with f-strings, but the *only* dynamic value ever spliced in is an already-sanitized role/var-prefix identifier, and every such splice goes through `scaffold_token()`, whose allowlist (`^[A-Za-z0-9_][A-Za-z0-9_ .-]*$`) excludes quotes, colons, braces, and newlines. A harvested free-text value can never reach scaffolding — it must travel as a variable referenced through `{{ ... }}` indirection. As a structural backstop, `_write_generated_task_yaml()` runs `assert_generated_yaml_safe()`, which parses every generated task/handler document and confirms it is still a list of string-keyed mappings.
 
@@ -1036,11 +1044,16 @@ Both diff inputs are then re-validated with `_validate_diff_bundle()` (artifact 
 - package add/remove/version changes,
 - enabled systemd unit add/remove/state/package changes,
 - user add/remove/field changes,
-- managed file add/remove/content/metadata changes.
+- managed file add/remove/content/metadata changes, including DNF and generated firewall artifacts,
+- directory metadata and symlink target changes,
+- container image, Flatpak, Snap and group inventory changes.
+
+`state.iter_managed_resources()` shares resource enumeration with validation;
+`CMModule` uses the same generated firewall artifact constants.
 
 File content changes are detected by hashing artifacts.
 
-`--exclude-path` filtering applies only to file drift reporting, not package/service/user diffs.
+`--exclude-path` filters files, directories and links; it does not suppress package/service/user/application inventory diffs.
 
 `--ignore-package-versions` suppresses package version-only drift from both the report and `has_changes`, but package additions/removals are still reported.
 
@@ -1236,6 +1249,13 @@ The translation is argparse-driven, so new flags often gain config-file support 
 ---
 
 ## 20. CLI flags that affect multiple layers
+
+### 20.1 Runtime opt-ins
+
+`--harvest-firewall` and `--harvest-sysctl` are independent false-by-default
+options on `harvest` and `single-shot`, forwarded through remote harvesting.
+Persistent config capture is unchanged. Runtime output obeys path exclusions and
+secret policy. Firewall boot persistence is separately false by default.
 
 ### 20.2 `--no-common-roles`
 

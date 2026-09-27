@@ -617,3 +617,18 @@ ignore_package_versions = true
 # may wish to repeat them here.
 include_path = re:^/home/[^/]+/\.config/myapp/.*$
 ```
+
+## Reconstruction limits
+
+Enroll records observed state; it cannot infer every intended absence or application
+dependency. Review notes and exclusions before adopting a generated manifest.
+Non-service systemd unit lifecycle state (timers, sockets, paths, mounts), deliberately
+removed package defaults, application data, databases, volumes and virtualenvs still
+need explicit review. Safe-mode secret heuristics are conservative and may exclude
+ordinary configuration; use targeted review rather than assuming the bundle is complete.
+
+Generated playbooks install package prerequisites and create users/groups before
+configuration, and activate services after deployment. Numeric group IDs are retained;
+conflicting target names/IDs fail for explicit resolution. Supplementary memberships
+remain additive. Service handlers notify only units associated with changed resources.
+Every output is a new standalone tree; generation is staged and published on success.

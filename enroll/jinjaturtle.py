@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from .manifest_safety import ArtifactSafetyError, safe_artifact_file
 from .yamlutil import yaml_dump_mapping, yaml_load_mapping
 
-
 # Bound the external JinjaTurtle subprocess. These are defence-in-depth limits
 # for running a separate binary over harvested (possibly attacker-influenced)
 # config: a hang or a runaway-size output must not stall or exhaust the manifest

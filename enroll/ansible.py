@@ -492,8 +492,7 @@ def _merge_mappings_overwrite(
 ) -> Dict[str, Any]:
     """Merge incoming into existing with overwrite.
 
-    NOTE: Unlike role defaults merging, host_vars should reflect the current
-    harvest for a host. Therefore lists are replaced rather than unioned.
+    A harvest describes one host. Lists are replaced rather than unioned.
     """
     merged = dict(existing)
     merged.update(incoming)
@@ -920,8 +919,7 @@ def _write_role_phases(role_dir: str, tasks: str) -> str:
 # --- Ansible task snippets ---
 def _render_generic_files_tasks(var_prefix: str) -> str:
     """Render generic tasks to deploy <var_prefix>_managed_files safely."""
-    # Using first_found makes roles work in both modes:
-    # - non-site: roles/<role>/files/...
+    # Resolve harvested files relative to their self-contained role.
     tasks = f"""- name: Ensure managed directories exist (preserve owner/group/mode)
   ansible.builtin.file:
     path: "{{{{ item.dest }}}}"
