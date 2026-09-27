@@ -493,7 +493,7 @@ run_ansible_noop_tests() {
   run ansible-playbook playbook.yml -i "localhost," -c local --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
 
   cd "${PROJECT_ROOT}"
-  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_FQDN_DIR}" --fqdn "${TEST_FQDN}"
+  run poetry run enroll manifest --harvest "${BUNDLE_DIR}" --out "${ANSIBLE_FQDN_DIR}" --host "${TEST_FQDN}"
   ansible-galaxy install -r "${ANSIBLE_FQDN_DIR}/requirements.yml"
   cd "${ANSIBLE_FQDN_DIR}"
   run ansible-playbook "playbooks/${TEST_FQDN}.yml" -i inventory/hosts.ini -c local --limit "${TEST_FQDN}" --check --diff "${ANSIBLE_PLAYBOOK_EXTRA_ARGS[@]}"
