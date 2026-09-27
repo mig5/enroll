@@ -98,7 +98,7 @@ def test_manifest_emits_symlink_tasks_and_vars(tmp_path: Path):
     manifest.manifest(str(bundle), str(out))
 
     role_dir = out / "roles" / "httpd"
-    tasks = (role_dir / "tasks" / "main.yml").read_text(encoding="utf-8")
+    tasks = (role_dir / "tasks" / "config.yml").read_text(encoding="utf-8")
     assert "- name: Ensure managed symlinks exist" in tasks
     assert 'loop: "{{ httpd_managed_links | default([]) }}"' in tasks
 

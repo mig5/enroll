@@ -1024,7 +1024,16 @@ def test_manifest_includes_dnf_config_role_when_present(tmp_path: Path):
     manifest.manifest(str(bundle), str(out))
 
     pb = (out / "playbook.yml").read_text(encoding="utf-8")
-    assert "role: dnf_config" in pb
+    import yaml
+
+    play = yaml.safe_load(pb)[0]
+    dnf_imports = [
+        task["ansible.builtin.import_role"]
+        for task in play.get("pre_tasks", [])
+        if task.get("ansible.builtin.import_role", {}).get("name") == "dnf_config"
+    ]
+    assert dnf_imports == [{"name": "dnf_config", "tasks_from": "main"}]
+    assert all(role["role"] != "dnf_config" for role in play.get("roles", []))
 
     tasks = (out / "roles" / "dnf_config" / "tasks" / "main.yml").read_text(
         encoding="utf-8"
@@ -1399,7 +1408,7 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
 
     manifest.manifest(str(bundle), str(out))
 
-    tasks = (out / "roles" / "firewall_runtime" / "tasks" / "main.yml").read_text(
+    tasks = (out / "roles" / "firewall_runtime" / "tasks" / "full.yml").read_text(
         encoding="utf-8"
     )
     handlers = (out / "roles" / "firewall_runtime" / "handlers" / "main.yml").read_text(
