@@ -148,3 +148,39 @@ def inventory_packages_from_state(state: Mapping[str, Any]) -> Dict[str, Any]:
         return {}
     packages = inventory.get("packages")
     return dict(packages) if isinstance(packages, dict) else {}
+
+
+FIREWALL_RUNTIME_DIR = "/etc/enroll/firewall"
+FIREWALL_RUNTIME_ARTIFACTS = (
+    ("ipset_save", "ipset.save", "0600"),
+    ("iptables_v4_save", "iptables.v4", "0600"),
+    ("iptables_v6_save", "iptables.v6", "0600"),
+)
+
+
+def iter_role_snapshots(state):
+    """Yield every singleton or array role without maintaining parallel lists."""
+    for key, value in roles_from_state(state).items():
+        for snapshot in value if isinstance(value, list) else [value]:
+            if isinstance(snapshot, dict):
+                yield str(snapshot.get("role_name") or key), snapshot
+
+
+def iter_managed_resources(state, kind="managed_files", *, generated=True):
+    """Yield resource records shared by validation and drift comparison."""
+    for role, snapshot in iter_role_snapshots(state):
+        for resource in snapshot.get(kind) or []:
+            if isinstance(resource, dict):
+                yield role, resource
+    if generated and kind == "managed_files":
+        snapshot = roles_from_state(state).get("firewall_runtime") or {}
+        for key, filename, mode in FIREWALL_RUNTIME_ARTIFACTS:
+            if snapshot.get(key):
+                yield str(snapshot.get("role_name") or "firewall_runtime"), {
+                    "path": f"{FIREWALL_RUNTIME_DIR}/{filename}",
+                    "src_rel": snapshot[key],
+                    "owner": "root",
+                    "group": "root",
+                    "mode": mode,
+                    "reason": "firewall_runtime",
+                }

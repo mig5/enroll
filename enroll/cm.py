@@ -16,7 +16,13 @@ from typing import (
     Set,
 )
 
-from .state import load_state, state_path, write_state
+from .state import (
+    load_state,
+    state_path,
+    write_state,
+    FIREWALL_RUNTIME_DIR,
+    FIREWALL_RUNTIME_ARTIFACTS,
+)
 
 
 @dataclass
@@ -41,11 +47,9 @@ class CMModule:
     notes: List[str] = field(default_factory=list)
 
     managed_owner_attr: ClassVar[str] = "owner"
-    firewall_runtime_dir: ClassVar[str] = "/etc/enroll/firewall"
+    firewall_runtime_dir: ClassVar[str] = FIREWALL_RUNTIME_DIR
     firewall_runtime_artifacts: ClassVar[tuple[tuple[str, str, str], ...]] = (
-        ("ipset_save", "ipset.save", "0600"),
-        ("iptables_v4_save", "iptables.v4", "0600"),
-        ("iptables_v6_save", "iptables.v6", "0600"),
+        FIREWALL_RUNTIME_ARTIFACTS
     )
 
     def has_core_resources(self) -> bool:

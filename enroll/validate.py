@@ -110,44 +110,9 @@ def _json_pointer(err: jsonschema.ValidationError) -> str:
 
 
 def _iter_managed_files(state: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
-    """Return (role_name, managed_file_dict) tuples across all roles."""
+    from .state import iter_managed_resources
 
-    roles = state.get("roles") or {}
-    out: List[Tuple[str, Dict[str, Any]]] = []
-
-    # Singleton roles
-    for rn in [
-        "users",
-        "apt_config",
-        "dnf_config",
-        "sysctl",
-        "etc_custom",
-        "usr_local_custom",
-        "extra_paths",
-    ]:
-        snap = roles.get(rn) or {}
-        for mf in snap.get("managed_files") or []:
-            if isinstance(mf, dict):
-                out.append((rn, mf))
-
-    # Array roles
-    for s in roles.get("services") or []:
-        if not isinstance(s, dict):
-            continue
-        role_name = str(s.get("role_name") or "unknown")
-        for mf in s.get("managed_files") or []:
-            if isinstance(mf, dict):
-                out.append((role_name, mf))
-
-    for p in roles.get("packages") or []:
-        if not isinstance(p, dict):
-            continue
-        role_name = str(p.get("role_name") or "unknown")
-        for mf in p.get("managed_files") or []:
-            if isinstance(mf, dict):
-                out.append((role_name, mf))
-
-    return out
+    return list(iter_managed_resources(state, generated=False))
 
 
 def validate_harvest(

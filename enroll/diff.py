@@ -25,6 +25,7 @@ from .state import (
     load_state as _load_state,
     roles_from_state as _roles,
     state_path,
+    iter_managed_resources,
 )
 from .pathfilter import PathFilter
 from .sopsutil import decrypt_file_binary_to, require_sops_cmd
@@ -306,53 +307,39 @@ class FileRec:
 
 
 def _iter_managed_files(state: Dict[str, Any]) -> Iterable[Tuple[str, Dict[str, Any]]]:
-    # Services
-    for s in _roles(state).get("services") or []:
-        role = s.get("role_name") or "unknown"
-        for mf in s.get("managed_files", []) or []:
-            yield str(role), mf
+    return iter_managed_resources(state)
 
-    # Package roles
-    for p in _roles(state).get("packages") or []:
-        role = p.get("role_name") or "unknown"
-        for mf in p.get("managed_files", []) or []:
-            yield str(role), mf
 
-    # Users
-    u = _roles(state).get("users") or {}
-    u_role = u.get("role_name") or "users"
-    for mf in u.get("managed_files", []) or []:
-        yield str(u_role), mf
+def _other_resource_index(state, path_filter):
+    result = {}
+    for kind in ("managed_dirs", "managed_links"):
+        for role, resource in iter_managed_resources(state, kind):
+            path = resource.get("path")
+            if path and not path_filter.is_excluded(path):
+                result[f"{kind}:{path}"] = {"role": role, **resource}
+    roles = _roles(state)
+    for role, fields in {
+        "container_images": ("images",),
+        "flatpak": ("system_flatpaks", "remotes"),
+        "snap": ("system_snaps",),
+        "users": ("user_flatpaks", "user_flatpak_remotes", "groups"),
+    }.items():
+        for field in fields:
+            value = (roles.get(role) or {}).get(field)
+            if value:
+                # Inventory ordering is not drift; preserve all record attributes.
+                if isinstance(value, list):
+                    value = sorted(value, key=lambda x: json.dumps(x, sort_keys=True))
+                result[f"{role}:{field}"] = value
+    return result
 
-    # apt_config
-    ac = _roles(state).get("apt_config") or {}
-    ac_role = ac.get("role_name") or "apt_config"
-    for mf in ac.get("managed_files", []) or []:
-        yield str(ac_role), mf
 
-    # sysctl
-    sc = _roles(state).get("sysctl") or {}
-    sc_role = sc.get("role_name") or "sysctl"
-    for mf in sc.get("managed_files", []) or []:
-        yield str(sc_role), mf
-
-    # etc_custom
-    ec = _roles(state).get("etc_custom") or {}
-    ec_role = ec.get("role_name") or "etc_custom"
-    for mf in ec.get("managed_files", []) or []:
-        yield str(ec_role), mf
-
-    # usr_local_custom
-    ul = _roles(state).get("usr_local_custom") or {}
-    ul_role = ul.get("role_name") or "usr_local_custom"
-    for mf in ul.get("managed_files", []) or []:
-        yield str(ul_role), mf
-
-    # extra_paths
-    xp = _roles(state).get("extra_paths") or {}
-    xp_role = xp.get("role_name") or "extra_paths"
-    for mf in xp.get("managed_files", []) or []:
-        yield str(xp_role), mf
+def _other_resource_changes(old, new):
+    return [
+        {"resource": key, "old": old.get(key), "new": new.get(key)}
+        for key in sorted(old.keys() | new.keys())
+        if old.get(key) != new.get(key)
+    ]
 
 
 def _file_index(bundle_dir: Path, state: Dict[str, Any]) -> Dict[str, FileRec]:
@@ -558,6 +545,10 @@ def compare_harvests(
             if ch:
                 files_changed.append({"path": p, "changes": ch})
 
+        resources_changed = _other_resource_changes(
+            _other_resource_index(old_state, diff_filter),
+            _other_resource_index(new_state, diff_filter),
+        )
         has_changes = any(
             [
                 pkgs_added,
@@ -572,6 +563,7 @@ def compare_harvests(
                 files_added,
                 files_removed,
                 files_changed,
+                resources_changed,
             ]
         )
 
@@ -618,6 +610,7 @@ def compare_harvests(
                 "removed": users_removed,
                 "changed": users_changed,
             },
+            "resources": {"changed": resources_changed},
             "files": {
                 "added": [
                     {
@@ -763,6 +756,11 @@ def _report_text(report: Dict[str, Any]) -> str:
             else:
                 lines.append(f"      {s(k)}: {s(v.get('old'))} -> {s(v.get('new'))}")
 
+    for change in (report.get("resources") or {}).get("changed", []):
+        lines.append(
+            f"\nResource {s(change['resource'])}: {s(change.get('old'))} -> {s(change.get('new'))}"
+        )
+
     if not any(
         [
             (pk.get("added") or []),
@@ -777,6 +775,7 @@ def _report_text(report: Dict[str, Any]) -> str:
             (fl.get("added") or []),
             (fl.get("removed") or []),
             (fl.get("changed") or []),
+            ((report.get("resources") or {}).get("changed") or []),
         ]
     ):
         lines.append("\nNo differences detected.")
@@ -936,6 +935,11 @@ def _report_markdown(report: Dict[str, Any]) -> str:
                         f"    - {m(k)}: `{m(v.get('old'))}` → `{m(v.get('new'))}`\n"
                     )
 
+    for change in (report.get("resources") or {}).get("changed", []):
+        out.append(
+            f"\n- Resource `{m(change['resource'])}`: `{m(change.get('old'))}` → `{m(change.get('new'))}`\n"
+        )
+
     if not any(
         [
             (pk.get("added") or []),
@@ -950,6 +954,7 @@ def _report_markdown(report: Dict[str, Any]) -> str:
             (fl.get("added") or []),
             (fl.get("removed") or []),
             (fl.get("changed") or []),
+            ((report.get("resources") or {}).get("changed") or []),
         ]
     ):
         out.append("\n_No differences detected._\n")
