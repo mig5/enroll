@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
 
@@ -48,6 +49,37 @@ def prepare_manifest_output_dir(out_dir: str | Path) -> Path:
         return prepare_new_private_dir(out, label="manifest output")
     except OutputSafetyError as e:
         raise ManifestOutputError(str(e)) from e
+
+
+@contextmanager
+def staged_manifest_output(out_dir: str | Path):
+    """Reserve a new destination and publish a completed tree by atomic rename.
+
+    The empty private reservation serializes competing Enroll writers. On
+    failure it is removed, while pre-existing destinations are never touched.
+    """
+    out = prepare_manifest_output_dir(out_dir)
+    reserved = out.lstat()
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".enroll-render-", dir=out.parent
+        ) as tmp:
+            staged = Path(tmp) / "output"
+            yield staged
+            current = out.lstat()
+            if (current.st_dev, current.st_ino) != (reserved.st_dev, reserved.st_ino):
+                raise ManifestOutputError(
+                    "Manifest output reservation changed during rendering"
+                )
+            # rename replaces only our empty directory, never a nonempty tree.
+            os.rename(staged, out)
+    finally:
+        try:
+            current = out.lstat()
+            if (current.st_dev, current.st_ino) == (reserved.st_dev, reserved.st_ino):
+                out.rmdir()
+        except FileNotFoundError:
+            pass
 
 
 def _assert_no_symlink_components(path: Path, *, root: Path) -> None:

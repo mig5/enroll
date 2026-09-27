@@ -330,3 +330,30 @@ def test_freeze_rejects_fifo_without_blocking(tmp_path):
     )
     assert result.returncode != 0
     assert "not a regular file" in result.stderr
+
+
+def test_manifest_staging_publishes_only_complete_output(tmp_path):
+    from enroll.manifest_safety import staged_manifest_output
+
+    out = tmp_path / "output"
+    with staged_manifest_output(out) as stage:
+        stage.mkdir()
+        (stage / "complete").write_text("yes")
+        assert list(out.iterdir()) == []
+        with pytest.raises(ManifestOutputError, match="already exists"):
+            with staged_manifest_output(out):
+                pass
+    assert (out / "complete").read_text() == "yes"
+
+
+def test_manifest_staging_cleans_failed_generation(tmp_path):
+    from enroll.manifest_safety import staged_manifest_output
+
+    out = tmp_path / "output"
+    with pytest.raises(ValueError):
+        with staged_manifest_output(out) as stage:
+            stage.mkdir()
+            (stage / "partial").write_text("unfinished")
+            raise ValueError("failed")
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == []

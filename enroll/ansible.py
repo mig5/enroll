@@ -24,6 +24,7 @@ from .manifest_safety import (
     copy_safe_artifact_file,
     iter_safe_artifact_files,
     prepare_manifest_output_dir,
+    staged_manifest_output,
 )
 from .render_safety import (
     ansible_unsafe_data,
@@ -2266,13 +2267,17 @@ class AnsibleManifestRenderer:
         self.no_common_roles = no_common_roles
 
     def render(self) -> None:
+        with staged_manifest_output(self.out_dir) as staged:
+            self._render_into(str(staged))
+
+    def _render_into(self, output_dir: str) -> None:
         state = AnsibleRole.load_state(self.bundle_dir)
         roles = roles_from_state(state)
         inventory_packages = inventory_packages_from_state(state)
 
         ctx = _prepare_ansible_context(
             self.bundle_dir,
-            self.out_dir,
+            output_dir,
             jinjaturtle=self.jinjaturtle,
         )
         _write_scaffold(ctx)
