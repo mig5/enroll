@@ -155,5 +155,50 @@ def test_individual_service_handlers_are_unique():
         for r in ("alpha", "beta")
     ]
     assert handlers[0]["name"] != handlers[1]["name"]
-    assert "alpha_unit_name" in handlers[0]["ansible.builtin.service"]["name"]
-    assert "beta_unit_name" in handlers[1]["ansible.builtin.service"]["name"]
+    assert "alpha_unit_name" in handlers[0]["ansible.builtin.systemd_service"]["name"]
+    assert "beta_unit_name" in handlers[1]["ansible.builtin.systemd_service"]["name"]
+
+
+def test_grouped_notifications_select_only_associated_service():
+    from enroll.ansible import (
+        AnsibleRole,
+        _grouped_service_restart_handlers_body,
+        _service_restart_listen_topic,
+        _build_managed_links_var,
+        _build_managed_files_var,
+    )
+    import yaml
+
+    role = AnsibleRole("apps")
+    role.services = {
+        name: {"name": name, "state": "started"}
+        for name in ("alpha.service", "beta.service")
+    }
+    handlers = yaml.safe_load(_grouped_service_restart_handlers_body(role))
+    assert len({h["listen"] for h in handlers}) == 2
+    topic = _service_restart_listen_topic("apps", "alpha.service")
+    assert [h["name"] for h in handlers if h["listen"] == topic] == [
+        "Restart managed service apps 0"
+    ]
+    links = _build_managed_links_var(
+        [
+            {
+                "path": "/etc/nginx/sites-enabled/site",
+                "target": "../sites-available/site",
+            }
+        ],
+        notify_other=[topic],
+    )
+    assert links[0]["notify"] == [topic]
+    files = _build_managed_files_var(
+        [
+            {
+                "path": "/etc/systemd/system/alpha.service.d/override.conf",
+                "src_rel": "override",
+            }
+        ],
+        set(),
+        notify_other=[topic],
+        notify_systemd="Run systemd daemon-reload",
+    )
+    assert files[0]["notify"] == ["Run systemd daemon-reload", topic]
