@@ -1455,37 +1455,6 @@ def _render_snap_role(
     - item.name is defined
     - item.name | length > 0
   become: true
-  register: _enroll_snap_full_results
-  ignore_errors: true
-
-- name: Install system-wide snaps with compatibility options
-  community.general.snap:
-    name:
-      - "{{ item.item.name }}"
-    state: present
-    channel: "{{ item.item.channel | default(omit) if not (item.item.install_revision | default(false)) else omit }}"
-    classic: "{{ item.item.classic | default(false) }}"
-  loop: "{{ (_enroll_snap_full_results | default({})).results | default([]) }}"
-  when:
-    - item.failed | default(false)
-    - item.item.name is defined
-    - item.item.name | length > 0
-  become: true
-  register: _enroll_snap_compat_results
-  ignore_errors: true
-
-- name: Install system-wide snaps with minimal options
-  community.general.snap:
-    name:
-      - "{{ item.item.item.name }}"
-    state: present
-  loop: "{{ (_enroll_snap_compat_results | default({})).results | default([]) }}"
-  when:
-    - item.failed | default(false)
-    - item.item.item.name is defined
-    - item.item.item.name | length > 0
-  become: true
-  ignore_errors: true
 """
     return _write_ansible_role(
         ctx,

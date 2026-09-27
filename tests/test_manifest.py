@@ -1734,9 +1734,6 @@ def test_manifest_renders_flatpak_and_snap_details(tmp_path: Path):
     assert "classic: true" in snap_defaults
     assert "community.general.snap" in snap_tasks
     assert "Install system-wide snaps with full detected attributes" in snap_tasks
-    assert "Install system-wide snaps with compatibility options" in snap_tasks
-    assert "Install system-wide snaps with minimal options" in snap_tasks
-    assert "ignore_errors: true" in snap_tasks
 
     assert "flatpak_system_flatpaks:" in flatpak_defaults
     assert "remote: acme" in flatpak_defaults
