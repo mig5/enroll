@@ -44,8 +44,10 @@ Enroll a server's running state retrospectively into Ansible.
 
 %changelog
 * Sun Sep 27 2026 Miguel Jacq <mig@mig5.net> - 0.9.0-1
-- Remove shared-site mode and make live firewall/sysctl capture opt-in
-- Fix credential screening, input safety, resource drift
+- Replace --fqdn with strict --host/--extend multi-host projects and atomic Linux extension
+- Make live firewall/sysctl capture opt-in; optionally persist firewall state at boot
+- Improve RPM/DNF service/package attribution, prerequisites, handlers and drift reporting
+- Harden credential screening, input safety and staged output; preserve identity mappings
 * Mon Aug 03 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Make remote harvest zipapp stdlib-only
 - Security: fix a TOCTOU in remote harvest.

@@ -1,8 +1,13 @@
 enroll (0.9.0) unstable; urgency=medium
 
-  * Remove shared-site manifests and make live firewall/sysctl capture opt-in.
-  * Fix credential screening, input safety, resource drift.
-  * Preserve identity mappings and stage complete manifest output.
+  * Replace --fqdn with explicit --host/--extend for strictly checked multi-host
+    projects; preserve host variables and publish extensions atomically on Linux.
+  * Make live firewall and sysctl capture opt-in; optionally persist captured
+    firewall state across reboot.
+  * Improve Debian and RPM service/package attribution, prerequisite ordering,
+    selective service activation, and drift reporting.
+  * Harden credential screening, unsafe inputs, role names, and staged output;
+    preserve account identity mappings and observe automatic dependencies.
 
  -- Miguel Jacq <mig@mig5.net>  Sun, 27 Sep 2026 11:11:00 +1000
 
