@@ -225,3 +225,48 @@ def test_role_phases_defer_activation_and_keep_failed_probes(tmp_path):
     for task in yaml.safe_load(main):
         if "ansible.builtin.systemd" in task:
             assert "enroll_defer_activation" in str(task["when"])
+
+
+def test_group_ids_preserved_with_old_and_new_snapshots():
+    from enroll.ansible import AnsibleRole
+    import pytest
+
+    role = AnsibleRole("users")
+    role.add_users_snapshot(
+        {"users": [{"name": "alice", "primary_group": "staff", "gid": 1234}]}
+    )
+    assert role.users_groups == [{"name": "staff", "gid": 1234}]
+    with pytest.raises(ValueError, match="Conflicting"):
+        role.add_users_snapshot(
+            {
+                "users": [{"name": "alice", "primary_group": "staff", "gid": 1234}],
+                "groups": [{"name": "staff", "gid": 5678}],
+            }
+        )
+
+
+def test_group_conflict_checks_run_in_account_prerequisites(tmp_path):
+    from enroll.ansible import _write_role_phases
+    import yaml
+
+    role = tmp_path / "users"
+    (role / "tasks").mkdir(parents=True)
+    _write_role_phases(
+        str(role),
+        "- name: Existing groups\n  ansible.builtin.getent:\n    database: group\n- name: Check groups\n  ansible.builtin.assert:\n    that: true\n",
+    )
+    tasks = yaml.safe_load((role / "tasks" / "accounts.yml").read_text())
+    assert "ansible.builtin.getent" in tasks[0]
+    assert "ansible.builtin.assert" in tasks[1]
+
+
+def test_role_writer_refuses_collision(tmp_path):
+    from enroll.ansible import _write_role_scaffold
+    import pytest
+
+    _write_role_scaffold(str(tmp_path))
+    main = tmp_path / "tasks" / "main.yml"
+    main.write_text("original")
+    with pytest.raises(ValueError, match="collision"):
+        _write_role_scaffold(str(tmp_path))
+    assert main.read_text() == "original"

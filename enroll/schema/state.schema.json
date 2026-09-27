@@ -786,6 +786,27 @@
               "items": {
                 "$ref": "#/$defs/FlatpakRemote"
               }
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "gid"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "gid": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
             }
           },
           "required": [

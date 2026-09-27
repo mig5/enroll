@@ -2,6 +2,7 @@ from __future__ import annotations
 
 RESERVED_SINGLETON_ROLE_NAMES = {
     "users",
+    "enroll_runtime",
     "flatpak",
     "snap",
     "container_images",

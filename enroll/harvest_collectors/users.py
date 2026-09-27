@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import grp
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Set
 
@@ -160,10 +161,22 @@ class UsersCollector(HarvestCollector):
                     )
                 )
 
+        group_ids = {u.primary_group: u.gid for u in user_records}
+        for user in user_records:
+            for name in user.supplementary_groups:
+                try:
+                    group_ids[name] = grp.getgrnam(name).gr_gid
+                except KeyError:
+                    users_notes.append(
+                        f"No numeric GID found for supplementary group {name}."
+                    )
+        groups = [{"name": name, "gid": gid} for name, gid in sorted(group_ids.items())]
+
         return UsersCollection(
             users_snapshot=UsersSnapshot(
                 role_name="users",
                 users=users_list,
+                groups=groups,
                 managed_files=users_managed,
                 excluded=users_excluded,
                 notes=users_notes,

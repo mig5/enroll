@@ -75,6 +75,7 @@ class PackageSnapshot:
 class UsersSnapshot:
     role_name: str
     users: List[dict]
+    groups: List[dict] = field(default_factory=list)
     managed_dirs: List[ManagedDir] = field(default_factory=list)
     managed_files: List[ManagedFile] = field(default_factory=list)
     excluded: List[ExcludedFile] = field(default_factory=list)

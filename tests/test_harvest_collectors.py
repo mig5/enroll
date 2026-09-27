@@ -529,3 +529,14 @@ def test_runtime_exclusions_apply_before_capture(monkeypatch, tmp_path):
     assert result.sysctl_snapshot.parameters == {}
     assert result.firewall_runtime_snapshot.ipset_save is None
     assert not (tmp_path / "bundle" / "artifacts").exists()
+
+
+def test_service_collector_rejects_normalized_role_collisions(tmp_path):
+    import pytest
+    from enroll.harvest_collectors.services import ServicePackageCollector
+    from enroll.package_hints import role_name_from_unit
+
+    collector = ServicePackageCollector(_context(tmp_path))
+    collector._claim_role(role_name_from_unit("foo-bar.service"), "foo-bar.service")
+    with pytest.raises(ValueError, match="collision"):
+        collector._claim_role(role_name_from_unit("foo_bar.service"), "foo_bar.service")

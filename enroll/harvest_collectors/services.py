@@ -56,10 +56,16 @@ class ServicePackageCollector(HarvestCollector):
         self.logrotate_snapshot = logrotate_snapshot
         self.cron_pkg = cron_pkg
         self.logrotate_pkg = logrotate_pkg
+        self.role_origins: Dict[str, str] = {}
         self.service_role_aliases: Dict[str, Set[str]] = {}
         self.seen_by_role: Dict[str, Set[str]] = {}
         self.managed_by_role: Dict[str, List[ManagedFile]] = {}
         self.excluded_by_role: Dict[str, List[ExcludedFile]] = {}
+
+    def _claim_role(self, role: str, origin: str) -> None:
+        previous = self.role_origins.setdefault(role, origin)
+        if previous != origin:
+            raise ValueError(f"Role name collision for {role}: {previous} and {origin}")
 
     def collect(self) -> ServicePackageCollection:
         service_snaps, timer_extra_by_pkg = self._collect_service_snapshots()
@@ -123,6 +129,7 @@ class ServicePackageCollector(HarvestCollector):
 
         for unit in sorted(enabled_services, key=service_sort_key):
             role = role_name_from_unit(unit)
+            self._claim_role(role, f"unit {unit}")
             parent_unit = parent_unit_for.get(unit)
             parent_role = role_name_from_unit(parent_unit) if parent_unit else None
 
@@ -398,6 +405,7 @@ class ServicePackageCollector(HarvestCollector):
                 continue
 
             role = role_name_from_pkg(pkg)
+            self._claim_role(role, f"package {pkg}")
             notes: List[str] = []
             excluded: List[ExcludedFile] = []
             managed: List[ManagedFile] = []

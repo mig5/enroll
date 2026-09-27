@@ -66,7 +66,7 @@ class AnsibleRole(CMModule):
         self.flatpak_remotes: List[Dict[str, Any]] = []
         self.flatpaks: List[Dict[str, Any]] = []
         self.snaps: List[Dict[str, Any]] = []
-        self.users_groups: List[str] = []
+        self.users_groups: List[Dict[str, Any]] = []
         self.users_data: List[Dict[str, Any]] = []
         self.users_ssh_dirs: List[Dict[str, Any]] = []
         self.users_ssh_files: List[Dict[str, Any]] = []
@@ -234,7 +234,27 @@ class AnsibleRole(CMModule):
                 )
                 break
 
-        self.users_groups = sorted(self.user_group_names_from_records(users_data))
+        groups = {
+            name: {"name": name}
+            for name in self.user_group_names_from_records(users_data)
+        }
+        by_gid = {}
+        for record in list(snap.get("groups") or []) + [
+            {"name": u["primary_group"], "gid": u.get("gid")} for u in users_data
+        ]:
+            name, gid = record["name"], record.get("gid")
+            if gid is None:
+                continue
+            if (
+                groups.get(name, {}).get("gid", gid) != gid
+                or by_gid.get(gid, name) != name
+            ):
+                raise ValueError(
+                    "Conflicting harvested group names/GIDs; resolve before manifesting"
+                )
+            groups[name] = {"name": name, "gid": gid}
+            by_gid[gid] = name
+        self.users_groups = [groups[name] for name in sorted(groups)]
         self.users_data = users_data
         self.users_ssh_files = ssh_files
         self.users_ssh_dirs = sorted(
@@ -501,6 +521,10 @@ def _copy_artifacts(
 
 
 def _write_role_scaffold(role_dir: str) -> None:
+    if Path(role_dir, "tasks", "main.yml").exists():
+        raise ValueError(
+            f"Generated role name collision: {Path(role_dir).name}; refusing to overwrite a role"
+        )
     os.makedirs(os.path.join(role_dir, "tasks"), exist_ok=True)
     os.makedirs(os.path.join(role_dir, "handlers"), exist_ok=True)
     os.makedirs(os.path.join(role_dir, "defaults"), exist_ok=True)
@@ -827,7 +851,15 @@ def _write_role_phases(role_dir: str, tasks: str) -> str:
     for chunk in chunks:
         if "  ansible.builtin.package:" in chunk:
             phases["packages"].append(chunk)
-        if any(f"  ansible.builtin.{module}:" in chunk for module in ("group", "user")):
+        if any(
+            f"  ansible.builtin.{module}:" in chunk for module in ("group", "user")
+        ) or (
+            Path(role_dir).name == "users"
+            and any(
+                f"  ansible.builtin.{module}:" in chunk
+                for module in ("getent", "assert")
+            )
+        ):
             phases["accounts"].append(chunk)
         if "  ansible.builtin.systemd:" in chunk:
             # A failed probe must remain a failure, rather than being rewritten
@@ -2098,9 +2130,26 @@ def _render_users_role(
 
     users_tasks = """---
 
+- name: Read existing groups before allocating numeric IDs
+  ansible.builtin.getent:
+    database: group
+
+- name: Refuse conflicting group names or numeric IDs
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.name in ansible_facts.getent_group and
+         (ansible_facts.getent_group[item.name][1] | int) == (item.gid | int)) or
+        (item.name not in ansible_facts.getent_group and
+         (item.gid | string) not in (ansible_facts.getent_group.values() | map(attribute=1) | list))
+    fail_msg: "A harvested group name or GID conflicts with the target; resolve it explicitly."
+  loop: "{{ users_groups | default([]) }}"
+  when: item.gid is defined
+
 - name: Ensure groups exist
   ansible.builtin.group:
-    name: "{{ item }}"
+    name: "{{ item.name }}"
+    gid: "{{ item.gid | default(omit) }}"
     state: present
   loop: "{{ users_groups | default([]) }}"
 
