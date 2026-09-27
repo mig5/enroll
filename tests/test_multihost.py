@@ -5,7 +5,7 @@ import yaml
 
 from enroll.manifest import manifest
 from enroll.manifest_safety import ManifestOutputError
-from enroll.multihost import read_metadata, tree_index
+from enroll.multihost import host_role_alias, read_metadata, role_index, tree_index
 from state_helpers import write_schema_state
 
 
@@ -41,10 +41,47 @@ def bundle(
     return root
 
 
+def apt_bundle(root, content):
+    artifact = root / "artifacts/apt_config/etc/apt/sources.list"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(content)
+    write_schema_state(
+        root,
+        {
+            "roles": {
+                "apt_config": {
+                    "role_name": "apt_config",
+                    "managed_files": [
+                        {
+                            "path": "/etc/apt/sources.list",
+                            "src_rel": "etc/apt/sources.list",
+                            "owner": "root",
+                            "group": "root",
+                            "mode": "0644",
+                            "reason": "apt_config",
+                        }
+                    ],
+                }
+            }
+        },
+    )
+    return root
+
+
 def generate(src, out, host, **kwargs):
     manifest(
         str(src), str(out), host=host, no_common_roles=True, jinjaturtle=False, **kwargs
     )
+
+
+def test_host_role_alias_is_readable_and_distinct():
+    assert host_role_alias("httpd", "ashpool.mig5.net") == (
+        "httpd__host_ashpool_mig5_net_34f62c26a93d"
+    )
+    assert host_role_alias("httpd", "ashpool-mig5-net") != host_role_alias(
+        "httpd", "ashpool.mig5.net"
+    )
+    assert len(host_role_alias("a" * 200, "host" * 60)) <= 255
 
 
 def test_extend_without_original_harvest_preserves_host_edits(tmp_path):
@@ -77,8 +114,8 @@ def test_extend_without_original_harvest_preserves_host_edits(tmp_path):
 @pytest.mark.parametrize(
     "change",
     [
-        "file",
         "role_edit",
+        "artifact_edit",
         "duplicate",
         "control",
         "symlink",
@@ -95,6 +132,8 @@ def test_refused_extension_leaves_project_unchanged(tmp_path, change):
     generate(first, out, "web1")
     if change == "role_edit":
         (out / "roles/app/tasks/main.yml").write_text("---\n[]\n")
+    elif change == "artifact_edit":
+        (out / "roles/app/files/config").write_text("operator edit\n")
     elif change == "control":
         (out / "playbook.yml").write_text("---\n[]\n")
     elif change == "deleted_role":
@@ -123,6 +162,133 @@ def test_new_role_added_existing_role_edit_preserved(tmp_path):
     generate(bundle(tmp_path / "second", role="other"), out, "web2", extend=True)
     assert edited.read_text() == "---\n[]\n"
     assert (out / "roles/other/tasks/main.yml").exists()
+
+
+def test_different_role_artifacts_remain_host_specific(tmp_path):
+    out = tmp_path / "project"
+    generate(bundle(tmp_path / "first", content="first\n"), out, "web1")
+    generate(bundle(tmp_path / "second", content="second\n"), out, "web2", extend=True)
+    metadata = read_metadata(out)
+    roles = {host: metadata["hosts"][host]["roles"][0] for host in ("web1", "web2")}
+    assert roles["web1"] == "app"
+    assert roles["web2"] == "app"
+    assert (out / "inventory/host_files/web1/app/files/config").read_text() == "first\n"
+    assert (
+        out / "inventory/host_files/web2/app/files/config"
+    ).read_text() == "second\n"
+    assert not (out / "roles/app/files/config").exists()
+    for host, role in roles.items():
+        play = yaml.safe_load((out / "playbooks" / f"{host}.yml").read_text())
+        assert play[0]["roles"][0]["role"] == role
+    assert metadata["roles"][roles["web2"]] == role_index(out / "roles" / roles["web2"])
+    generate(bundle(tmp_path / "third", content="first\n"), out, "web3", extend=True)
+    assert "app" in read_metadata(out)["hosts"]["web3"]["roles"]
+    assert (out / "inventory/host_files/web3/app/files/config").read_text() == "first\n"
+
+
+def test_identical_artifacts_stay_in_shared_role(tmp_path):
+    out = tmp_path / "project"
+    for host in ("web1", "web2", "web3"):
+        generate(
+            bundle(tmp_path / host, content="shared\n"),
+            out,
+            host,
+            extend=host != "web1",
+        )
+    assert (out / "roles/app/files/config").read_text() == "shared\n"
+    assert not (out / "inventory/host_files").exists()
+    assert {
+        read_metadata(out)["hosts"][host]["roles"][0]
+        for host in ("web1", "web2", "web3")
+    } == {"app"}
+
+
+def test_different_apt_role_updates_early_phase_import(tmp_path):
+    out = tmp_path / "project"
+    generate(apt_bundle(tmp_path / "first", "deb first\n"), out, "web1")
+    generate(apt_bundle(tmp_path / "second", "deb second\n"), out, "web2", extend=True)
+    role = next(
+        r
+        for r in read_metadata(out)["hosts"]["web2"]["roles"]
+        if r.startswith("apt_config")
+    )
+    assert role == "apt_config"
+    play = yaml.safe_load((out / "playbooks/web2.yml").read_text())[0]
+    assert any(
+        task.get("ansible.builtin.import_role", {}).get("name") == role
+        for task in play["pre_tasks"]
+    )
+    assert not (out / "roles/apt_config/files/etc/apt/sources.list").exists()
+    assert (
+        out / "inventory/host_files/web1/apt_config/files/etc/apt/sources.list"
+    ).read_text() == "deb first\n"
+    assert (
+        out / "inventory/host_files/web2/apt_config/files/etc/apt/sources.list"
+    ).read_text() == "deb second\n"
+
+
+def test_only_differing_artifact_is_promoted_for_all_later_hosts(tmp_path):
+    def source(root, content):
+        role = root / "artifacts/apt_config/etc/apt"
+        role.mkdir(parents=True)
+        (role / "sources.list").write_text(content)
+        (role / "common.conf").write_text("shared\n")
+        write_schema_state(
+            root,
+            {
+                "roles": {
+                    "apt_config": {
+                        "role_name": "apt_config",
+                        "managed_files": [
+                            {
+                                "path": "/etc/apt/" + name,
+                                "src_rel": "etc/apt/" + name,
+                                "owner": "root",
+                                "group": "root",
+                                "mode": "0644",
+                                "reason": "apt_config",
+                            }
+                            for name in ("sources.list", "common.conf")
+                        ],
+                    }
+                }
+            },
+        )
+        return root
+
+    out = tmp_path / "project"
+    for host, content in (
+        ("web1", "first\n"),
+        ("web2", "second\n"),
+        ("web3", "first\n"),
+    ):
+        generate(source(tmp_path / host, content), out, host, extend=host != "web1")
+        assert "apt_config" in read_metadata(out)["hosts"][host]["roles"]
+    assert (
+        out / "roles/apt_config/files/etc/apt/common.conf"
+    ).read_text() == "shared\n"
+    assert not (out / "roles/apt_config/files/etc/apt/sources.list").exists()
+    for host, content in (
+        ("web1", "first\n"),
+        ("web2", "second\n"),
+        ("web3", "first\n"),
+    ):
+        assert (
+            out / f"inventory/host_files/{host}/apt_config/files/etc/apt/sources.list"
+        ).read_text() == content
+
+
+def test_extension_rejects_missing_artifact_in_existing_host_role(tmp_path):
+    out = tmp_path / "project"
+    generate(bundle(tmp_path / "first"), out, "web1")
+    variables = out / "inventory/host_vars/web1/main.yml"
+    values = yaml.safe_load(variables.read_text())
+    values["app_managed_files"][0]["src_rel"] = "missing-file"
+    variables.write_text(yaml.safe_dump(values))
+    before = tree_index(out)
+    with pytest.raises(ManifestOutputError, match="Missing generated role artifact"):
+        generate(bundle(tmp_path / "second", role="other"), out, "web2", extend=True)
+    assert tree_index(out) == before
 
 
 @pytest.mark.parametrize(

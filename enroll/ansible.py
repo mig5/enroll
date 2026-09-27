@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import hashlib
 import re
 import stat
 import tempfile
@@ -1209,29 +1208,23 @@ def _single_service_restart_handler_body(var_prefix: str) -> str:
 """
 
 
-def _service_restart_listen_topic(var_prefix: str, unit: str = "") -> str:
-    """Use only scaffold-safe tokens, including for attacker-controlled units."""
+def _service_restart_listen_topic(var_prefix: str) -> str:
+    """Return a stable topic for a role's inventory-driven restart handler."""
     var_prefix = scaffold_token(var_prefix, field="role var_prefix")
-    suffix = "_" + hashlib.sha256(unit.encode()).hexdigest()[:16] if unit else ""
-    return f"enroll_restart_grouped_services_{var_prefix}{suffix}"
+    return f"enroll_restart_grouped_services_{var_prefix}"
 
 
 def _grouped_service_restart_handlers_body(role: AnsibleRole) -> str:
-    parts = []
     prefix = scaffold_token(role.var_prefix, field="role var_prefix")
-    for index, unit in enumerate(restart_units_for_role(role)):
-        topic = _service_restart_listen_topic(prefix, unit)
-        parts.append(
-            f"""- name: Restart managed service {prefix} {index}
+    return f"""- name: Restart managed services for {prefix}
   ansible.builtin.systemd_service:
-    name: "{{{{ {prefix}_restart_units[{index}] }}}}"
+    name: "{{{{ item }}}}"
     state: restarted
     daemon_reload: true
-  listen: {topic}
+  loop: "{{{{ {prefix}_restart_units | default([]) }}}}"
+  listen: {_service_restart_listen_topic(prefix)}
   when: enroll_manage_systemd_runtime | default(true) | bool
 """
-        )
-    return "\n".join(parts)
 
 
 def restart_units_for_role(role: AnsibleRole) -> List[str]:
@@ -1838,19 +1831,16 @@ def _role_managed_content_vars(
         if notify_service_handlers and kind == "service":
             unit = str(snap.get("unit") or "").strip()
             if unit and str(snap.get("active_state") or "") == "active":
-                # Notify the role's fixed restart topic (scaffold-safe). The
-                # specific unit travels as data in <var_prefix>_restart_units;
-                # it is never spliced into the handler/notify YAML text.
-                notify_other = [_service_restart_listen_topic(role, unit)]
+                # The fixed topic restarts active units listed in host variables;
+                # harvested unit names never enter handler/notify YAML scaffolding.
+                notify_other = [_service_restart_listen_topic(role)]
             else:
                 notify_other = None
         elif notify_service_handlers and kind == "package":
             units = CMModule.active_service_units_for_package_snapshot(
                 snap, service_units_by_package
             )
-            notify_other = [
-                _service_restart_listen_topic(role, unit) for unit in sorted(units)
-            ]
+            notify_other = [_service_restart_listen_topic(role)] if units else []
 
         for item in _build_managed_files_var(
             managed_files,

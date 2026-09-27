@@ -159,7 +159,7 @@ def test_individual_service_handlers_are_unique():
     assert "beta_unit_name" in handlers[1]["ansible.builtin.systemd_service"]["name"]
 
 
-def test_grouped_notifications_select_only_associated_service():
+def test_grouped_notifications_restart_inventory_services_with_shared_handler():
     from enroll.ansible import (
         AnsibleRole,
         _grouped_service_restart_handlers_body,
@@ -175,11 +175,19 @@ def test_grouped_notifications_select_only_associated_service():
         for name in ("alpha.service", "beta.service")
     }
     handlers = yaml.safe_load(_grouped_service_restart_handlers_body(role))
-    assert len({h["listen"] for h in handlers}) == 2
-    topic = _service_restart_listen_topic("apps", "alpha.service")
-    assert [h["name"] for h in handlers if h["listen"] == topic] == [
-        "Restart managed service apps 0"
-    ]
+    assert len(handlers) == 1
+    topic = _service_restart_listen_topic("apps")
+    assert handlers[0]["listen"] == topic
+    assert handlers[0]["loop"] == "{{ apps_restart_units | default([]) }}"
+    assert handlers[0]["ansible.builtin.systemd_service"]["name"] == "{{ item }}"
+    one_service = AnsibleRole("apps")
+    one_service.services = {"alpha.service": role.services["alpha.service"]}
+    assert _grouped_service_restart_handlers_body(
+        one_service
+    ) == _grouped_service_restart_handlers_body(role)
+    assert _grouped_service_restart_handlers_body(
+        AnsibleRole("apps")
+    ) == _grouped_service_restart_handlers_body(role)
     links = _build_managed_links_var(
         [
             {

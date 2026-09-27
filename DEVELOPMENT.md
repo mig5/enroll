@@ -927,11 +927,14 @@ Every manifest uses a new self-contained output directory, with `ansible.cfg`,
 `tasks`, `handlers`, `defaults`, `meta`, `files`, and `templates` directories.
 Existing output directories are refused unless explicit `--host` and `--extend`
 select the strict multi-host path in `multihost.py`. The renderer first writes a
-standalone staging tree. `prepare_host()` extracts all generated defaults into
-complete host variables and fingerprints the remaining role implementation.
+standalone staging tree. `prepare_host()` extracts generated defaults into
+complete host variables, adds host-first artifact lookups, and fingerprints role
+implementation and artifacts separately. `merge_project()` leaves identical
+artifacts in shared roles and promotes any differing artifact into per-host
+inventory for all existing users of that role before adding the new host.
 Each host retains its own play (including prerequisite and activation phases).
 `merge_project()` checks shared roles and tracked controls before adding data;
-existing host variables are never parsed or rewritten during extension.
+existing host variables are validated but never rewritten during extension.
 A no-follow directory descriptor and `flock` serialize Enroll extensions. The
 existing tree is frozen, modes restored, and fingerprints compared before and
 after staging. Linux `renameat2(RENAME_EXCHANGE)` publishes the entire result in
@@ -939,7 +942,8 @@ one operation; there is no non-atomic fallback. A waiter whose locked directory
 inode was exchanged must retry. This lock does not coordinate arbitrary editors
 or Ansible execution; do not edit/apply the project during extension.
 The metadata format is versioned independently of the generator release. No
-migration from old site-mode output or arbitrary handwritten projects is provided.
+migration from version 1 multi-host output, old site-mode output or arbitrary
+handwritten projects is provided.
 
 ### 13.3 Role ordering
 

@@ -682,7 +682,8 @@ def test_manifest_groups_systemd_units_into_common_role(tmp_path: Path):
     # The restart handler is a single listen-based loop over a variable; the unit
     # name is NEVER spliced into the handler YAML text.
     assert "listen: enroll_restart_grouped_services_net" in handlers
-    assert 'name: "{{ net_restart_units[0] }}"' in handlers
+    assert 'loop: "{{ net_restart_units | default([]) }}"' in handlers
+    assert 'name: "{{ item }}"' in handlers
     assert "daemon_reload: true" in handlers
     assert "state: restarted" in handlers
     # No harvested unit name appears as raw scaffolding text in the handler.
@@ -819,7 +820,7 @@ def test_manifest_common_package_file_notifies_matching_active_service(tmp_path:
     )
     # Single listen-based restart loop; the unit name never appears as raw text.
     assert "listen: enroll_restart_grouped_services_admin" in handlers
-    assert 'name: "{{ admin_restart_units[0] }}"' in handlers
+    assert 'loop: "{{ admin_restart_units | default([]) }}"' in handlers
     assert "daemon_reload: true" in handlers
     assert "docker.service" not in handlers
 

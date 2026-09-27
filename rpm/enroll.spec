@@ -44,7 +44,7 @@ Enroll a server's running state retrospectively into Ansible.
 
 %changelog
 * Sun Sep 27 2026 Miguel Jacq <mig@mig5.net> - 0.9.0-1
-- Replace --fqdn with strict --host/--extend multi-host projects and atomic Linux extension
+- Replace --fqdn with --host/--extend projects, shared role logic, per-host differing artifacts and atomic Linux extension
 - Make live firewall/sysctl capture opt-in; optionally persist firewall state at boot
 - Improve RPM/DNF service/package attribution, prerequisites, handlers and drift reporting
 - Harden credential screening, input safety and staged output; preserve identity mappings

@@ -53,7 +53,7 @@ ansible-galaxy collection install -r requirements.yml
 ansible-playbook -i inventory/hosts.yml playbook.yml --limit web1
 ```
 
-The project contains shared `roles/`, complete host settings in
+The project contains reusable `roles/`, complete host settings in
 `inventory/host_vars/<host>/main.yml`, inventory membership in `inventory/hosts.yml`,
 and one ordered play in `playbooks/<host>.yml` for each host. The root playbook
 imports those plays. `host_notes/<host>.md` retains capture notes and exclusions.
@@ -61,22 +61,33 @@ imports those plays. `host_notes/<host>.md` retains capture notes and exclusions
 variable ownership, hosts and SHA256 fingerprints. Keep that metadata with the project;
 it contains no duplicate harvest or captured file contents.
 
-`--extend` shares an existing role only if every relative path, file content and
-permission mode matches the generated role, including tasks, handlers, templates,
-raw files, defaults, role vars and metadata. Generated host settings are extracted
-into host variables first; different values and empty lists remain specific to each
-host. Role defaults in this mode are empty. No semantic/YAML normalization or
-"close enough" matching is attempted. Differing raw files or template structures
-therefore prevent sharing, even if a human could refactor them into one role.
+The first host's raw files and templates remain under each generated role.
+When an extending host has the same artifact, both use that shared file. When
+an artifact differs, Enroll moves the shared file into
+`inventory/host_files/<earlier-host>/<role>/` and stores the incoming version
+under the new host. Every later host gets its own copy of that artifact, even
+if its contents match an earlier host. Ansible selects the host copy first and
+falls back to the role copy for files that remain shared.
+
+Roles share task and handler implementations when their paths, contents and
+modes match. Different task or handler logic gets its own role implementation,
+named after the host (for example `httpd__host_ashpool_mig5_net_34f62c26a93d`)
+and selected by that host's playbook in normal, prerequisite and activation phases.
+Grouped service roles use one handler that loops over each host's restart units.
+A configuration change that notifies the handler restarts every active unit in
+that role's host-specific list; an empty list performs no restarts.
+Generated settings live in host variables; different values and empty lists
+remain specific to each host. Role defaults in this mode are empty. No semantic
+normalization or "close enough" matching is attempted.
 
 You may edit host variables (including `ansible_host`, `ansible_user` and connection
-settings); extension preserves their bytes. You may edit roles too, but an edited
+settings) and host-specific artifacts; extension preserves their bytes. You may edit roles too, but an edited
 role cannot subsequently be shared with an incoming generated role. New, uniquely
-named roles can be added. Duplicate host identifiers, incompatible shared roles,
+named roles can be added. Duplicate host identifiers, generated role name collisions,
 variable namespace conflicts, differing renderer options and collection constraint
 conflicts are errors. Use the same `--no-common-roles` and JinjaTurtle settings for
-subsequent extensions. Host replacement/removal and legacy project migration are
-not supported.
+subsequent extensions. Host replacement/removal and extension of projects made
+with the earlier multi-host format are not supported; regenerate from harvests.
 
 Generated playbooks, inventory membership, `ansible.cfg`, `requirements.yml`, the
 root README and Enroll metadata are owned by the generator. Editing the tracked

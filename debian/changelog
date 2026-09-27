@@ -1,7 +1,8 @@
 enroll (0.9.0) unstable; urgency=medium
 
   * Replace --fqdn with explicit --host/--extend for strictly checked multi-host
-    projects; preserve host variables and publish extensions atomically on Linux.
+    projects; share role logic while promoting differing artifacts into per-host
+    inventory, and publish extensions atomically on Linux.
   * Make live firewall and sysctl capture opt-in; optionally persist captured
     firewall state across reboot.
   * Improve Debian and RPM service/package attribution, prerequisite ordering,
