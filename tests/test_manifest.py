@@ -1416,6 +1416,15 @@ def test_manifest_writes_firewall_runtime_role(tmp_path: Path):
     assert "firewall_runtime_ipset_sets:" in defaults
     assert "- blocklist" in defaults
     assert "firewall_runtime_restore_iptables: true" in defaults
+    assert "firewall_runtime_persist: true" in defaults
+    role_dir = out / "roles" / "firewall_runtime"
+    unit = (role_dir / "files" / "enroll-firewall.service").read_text()
+    assert "Before=network-pre.target shutdown.target" in unit
+    assert "WantedBy=multi-user.target" in unit
+    script = (role_dir / "templates" / "restore-firewall.sh.j2").read_text()
+    assert script.index("ipset restore") < script.index("iptables-restore")
+    assert "name | quote" in script
+    assert "state: restarted" in tasks
 
     pb = (out / "playbook.yml").read_text(encoding="utf-8")
     assert "role: enroll_runtime" in pb

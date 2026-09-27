@@ -316,6 +316,37 @@ class AnsibleRole(CMModule):
     mode: "0600"
   notify: Restore captured IPv6 iptables rules
   when: ({var_prefix}_iptables_v6_save | default('') | length) > 0
+
+- name: Deploy firewall restoration script
+  ansible.builtin.template:
+    src: restore-firewall.sh.j2
+    dest: /etc/enroll/firewall/restore.sh
+    owner: root
+    group: root
+    mode: "0700"
+  register: _enroll_firewall_script
+  when: {var_prefix}_persist | default(true) | bool
+
+- name: Install firewall boot restoration unit
+  ansible.builtin.copy:
+    src: enroll-firewall.service
+    dest: /etc/systemd/system/enroll-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: _enroll_firewall_unit
+  when: {var_prefix}_persist | default(true) | bool
+
+- name: Enable and reconcile persistent firewall state
+  ansible.builtin.systemd_service:
+    name: enroll-firewall.service
+    daemon_reload: true
+    enabled: true
+    state: restarted
+  when:
+    - enroll_manage_systemd_runtime | default(true) | bool
+    - {var_prefix}_persist | default(true) | bool
+
 """
 
     def render_firewall_runtime_handlers(self) -> str:
@@ -329,20 +360,22 @@ class AnsibleRole(CMModule):
   register: _enroll_ipset_flush
   failed_when: false
   changed_when: false
-  when: {var_prefix}_sync_ipsets_exact | default(true) | bool
+  when: (not ({var_prefix}_persist | default(true) | bool)) and ({var_prefix}_sync_ipsets_exact | default(true) | bool) and (enroll_manage_systemd_runtime | default(true) | bool)
 
 - name: Restore captured ipsets
   ansible.builtin.shell: "ipset restore -exist < {self.firewall_runtime_dest_path('ipset.save')}"
   args:
     executable: /bin/sh
   listen: Restore captured ipsets
-  when: ({var_prefix}_ipset_save | default('') | length) > 0
+  when: (not ({var_prefix}_persist | default(true) | bool)) and (({var_prefix}_ipset_save | default('') | length) > 0) and (enroll_manage_systemd_runtime | default(true) | bool)
 
 - name: Restore captured IPv4 iptables rules
   ansible.builtin.command:
     cmd: iptables-restore {self.firewall_runtime_dest_path('iptables.v4')}
   listen: Restore captured IPv4 iptables rules
   when:
+    - not ({var_prefix}_persist | default(true) | bool)
+    - enroll_manage_systemd_runtime | default(true) | bool
     - ({var_prefix}_iptables_v4_save | default('') | length) > 0
     - {var_prefix}_restore_iptables | default(true) | bool
 
@@ -351,6 +384,8 @@ class AnsibleRole(CMModule):
     cmd: ip6tables-restore {self.firewall_runtime_dest_path('iptables.v6')}
   listen: Restore captured IPv6 iptables rules
   when:
+    - not ({var_prefix}_persist | default(true) | bool)
+    - enroll_manage_systemd_runtime | default(true) | bool
     - ({var_prefix}_iptables_v6_save | default('') | length) > 0
     - {var_prefix}_restore_iptables | default(true) | bool
 """
@@ -2092,6 +2127,31 @@ def _render_firewall_runtime_role(
         f"{var_prefix}_sync_ipsets_exact": True,
         f"{var_prefix}_restore_iptables": True,
     }
+    vars_map[f"{var_prefix}_persist"] = True
+    role_dir = Path(ctx.roles_root, role)
+    (role_dir / "files" / "enroll-firewall.service").write_text(
+        "[Unit]\nDescription=Restore Enroll firewall snapshot\n"
+        "DefaultDependencies=no\nAfter=local-fs.target systemd-modules-load.service\n"
+        "Before=network-pre.target shutdown.target\nWants=network-pre.target\n"
+        "Conflicts=shutdown.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+        "ExecStart=/etc/enroll/firewall/restore.sh\n\n[Install]\nWantedBy=multi-user.target\n",
+        encoding="utf-8",
+    )
+    (role_dir / "templates" / "restore-firewall.sh.j2").write_text(
+        "#!/bin/sh\nset -eu\nPATH=/usr/sbin:/usr/bin:/sbin:/bin\nexport PATH\n"
+        "{% if firewall_runtime_ipset_save | default('') | length > 0 %}\n"
+        "{% if firewall_runtime_sync_ipsets_exact | default(true) | bool %}\n"
+        "{% for name in firewall_runtime_ipset_sets | default([]) %}\n"
+        "if ipset list {{ name | quote }} >/dev/null 2>&1; then ipset flush {{ name | quote }}; fi\n"
+        "{% endfor %}\n{% endif %}\n"
+        "ipset restore -exist < /etc/enroll/firewall/ipset.save\n{% endif %}\n"
+        "{% if firewall_runtime_restore_iptables | default(true) | bool %}\n"
+        "{% if firewall_runtime_iptables_v4_save | default('') | length > 0 %}\n"
+        "iptables-restore /etc/enroll/firewall/iptables.v4\n{% endif %}\n"
+        "{% if firewall_runtime_iptables_v6_save | default('') | length > 0 %}\n"
+        "ip6tables-restore /etc/enroll/firewall/iptables.v6\n{% endif %}\n{% endif %}\n",
+        encoding="utf-8",
+    )
     return _write_ansible_role(
         ctx,
         role,
