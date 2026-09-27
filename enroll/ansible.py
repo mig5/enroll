@@ -922,7 +922,7 @@ def _render_generic_files_tasks(var_prefix: str) -> str:
     """Render generic tasks to deploy <var_prefix>_managed_files safely."""
     # Using first_found makes roles work in both modes:
     # - non-site: roles/<role>/files/...
-    return f"""- name: Ensure managed directories exist (preserve owner/group/mode)
+    tasks = f"""- name: Ensure managed directories exist (preserve owner/group/mode)
   ansible.builtin.file:
     path: "{{{{ item.dest }}}}"
     state: directory
@@ -1004,6 +1004,30 @@ def _render_generic_files_tasks(var_prefix: str) -> str:
   loop: "{{{{ {var_prefix}_managed_links | default([]) }}}}"
   notify: "{{{{ item.notify | default([]) }}}}"
 """
+
+    # Ansible treats a loop as changed when any iteration changes, and can
+    # notify handlers for unchanged iterations too. Notify only filtered results.
+    chunks = re.split(r"(?m)(?=^- name:)", tasks)
+    result = []
+    for index, chunk in enumerate(chunks):
+        if '  notify: "{{ item.notify | default([]) }}"' in chunk:
+            register = f"_enroll_{var_prefix}_deploy_{index}"
+            chunk = chunk.replace(
+                '  notify: "{{ item.notify | default([]) }}"', f"  register: {register}"
+            )
+            chunk += f"""
+- name: Notify services for changed resources
+  ansible.builtin.debug:
+    msg: Configuration changed
+  loop: "{{{{ {register}.results | default([]) | selectattr('changed', 'equalto', true) | list }}}}"
+  loop_control:
+    label: "{{{{ item.item.dest }}}}"
+  changed_when: true
+  notify: "{{{{ item.item.notify | default([]) }}}}"
+
+"""
+        result.append(chunk)
+    return "".join(result)
 
 
 def _render_install_packages_tasks(role: str, var_prefix: str) -> str:
