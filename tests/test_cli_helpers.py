@@ -250,11 +250,17 @@ def test_unsafe_root_path_reasons_flags_non_root_owned_dir(tmp_path: Path, monke
 
     non_root_owned = tmp_path / "user-bin"
     non_root_owned.mkdir()
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        try:
-            os.chown(non_root_owned, 65534, -1)
-        except OSError:
-            pass
+    real_stat = os.stat
+
+    def fake_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if str(path) == str(non_root_owned):
+            fields = list(result)
+            fields[4] = 65534
+            return os.stat_result(fields)
+        return result
+
+    monkeypatch.setattr(os, "stat", fake_stat)
 
     monkeypatch.setattr(cli, "_is_effective_root", lambda: True)
     reasons = cli._unsafe_root_path_reasons(str(non_root_owned))

@@ -326,6 +326,7 @@ def test_freeze_rejects_fifo_without_blocking(tmp_path):
         ],
         capture_output=True,
         text=True,
+        cwd=Path(__file__).resolve().parents[1],
         timeout=5,
     )
     assert result.returncode != 0

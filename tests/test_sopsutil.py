@@ -13,7 +13,8 @@ def test_find_sops_cmd():
     assert result.endswith("sops")
 
 
-def test_require_sops_cmd():
+def test_require_sops_cmd(monkeypatch):
+    monkeypatch.setattr("enroll.sopsutil.find_sops_cmd", lambda: "/usr/bin/sops")
     exe = require_sops_cmd()
     assert exe is not None
     assert "sops" in exe

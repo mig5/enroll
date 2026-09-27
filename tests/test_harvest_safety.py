@@ -172,11 +172,17 @@ def test_prepare_new_private_dir_rejects_untrusted_root_parent(
 
     untrusted = tmp_path / "untrusted"
     untrusted.mkdir()
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        try:
-            os.chown(untrusted, 65534, -1)
-        except OSError:
-            pass
+    real_stat = os.stat
+
+    def fake_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if str(path) == str(untrusted):
+            fields = list(result)
+            fields[4] = 65534
+            return os.stat_result(fields)
+        return result
+
+    monkeypatch.setattr(os, "stat", fake_stat)
 
     monkeypatch.setattr(hs, "_effective_uid", lambda: 0)
     with pytest.raises(OutputSafetyError, match="not owned by root"):
