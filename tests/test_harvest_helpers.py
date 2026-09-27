@@ -471,3 +471,26 @@ def test_capture_file_metadata_used_when_no_inspection(tmp_path):
     assert ok
     mf = managed[0]
     assert (mf.owner, mf.group, mf.mode) == ("myowner", "mygroup", "0600")
+
+
+def test_runtime_snapshot_secret_policy_applies_to_generated_artifacts(
+    monkeypatch, tmp_path
+):
+    from enroll.ignore import IgnorePolicy
+    import enroll.harvest as h
+
+    monkeypatch.setattr(
+        h,
+        "_run_capture_command",
+        lambda *a, **kw: ("create example hash:ip\n# password=FAKE_SECRET\n", None),
+    )
+    safe = h._collect_firewall_runtime_snapshot(str(tmp_path / "safe"))
+    assert safe.ipset_save is None
+    assert "FAKE_SECRET" not in str(safe.notes)
+    unsafe = h._collect_firewall_runtime_snapshot(
+        str(tmp_path / "dangerous"), policy=IgnorePolicy(dangerous=True)
+    )
+    assert unsafe.ipset_save
+    sysctl = h._collect_sysctl_snapshot(str(tmp_path / "sysctl"))
+    assert sysctl.managed_files == []
+    assert "content policy" in sysctl.notes[0]

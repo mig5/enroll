@@ -340,7 +340,10 @@ def _render_sysctl_conf(parameters: Dict[str, str], notes: List[str]) -> str:
 
 
 def _collect_sysctl_snapshot(
-    bundle_dir: str, *, path_filter: Optional[PathFilter] = None
+    bundle_dir: str,
+    *,
+    path_filter: Optional[PathFilter] = None,
+    policy: Optional[IgnorePolicy] = None,
 ) -> SysctlSnapshot:
     role_name = "sysctl"
     if path_filter and path_filter.is_excluded(_SYSCTL_GENERATED_DEST):
@@ -355,6 +358,13 @@ def _collect_sysctl_snapshot(
     if err:
         notes.append(err)
         return SysctlSnapshot(role_name=role_name, notes=notes)
+
+    if (policy or IgnorePolicy())._content_deny_reason(
+        _SYSCTL_GENERATED_DEST, (out or "").encode()
+    ):
+        return SysctlSnapshot(
+            role_name=role_name, notes=["Live sysctl output omitted by content policy."]
+        )
 
     parameters, skipped = _parse_sysctl_a_output(out or "")
     if not parameters:
@@ -453,6 +463,7 @@ def _collect_firewall_runtime_snapshot(
     persistent_iptables_v4_files: Optional[List[str]] = None,
     persistent_iptables_v6_files: Optional[List[str]] = None,
     path_filter: Optional[PathFilter] = None,
+    policy: Optional[IgnorePolicy] = None,
 ) -> FirewallRuntimeSnapshot:
     """Capture live kernel firewall state only when no persistent config exists.
 
@@ -470,6 +481,16 @@ def _collect_firewall_runtime_snapshot(
     iptables_v4_rel: Optional[str] = None
     iptables_v6_rel: Optional[str] = None
 
+    def safe_runtime_text(text, filename):
+        if text is None:
+            return None
+        if (policy or IgnorePolicy())._content_deny_reason(
+            f"/etc/enroll/firewall/{filename}", text.encode()
+        ):
+            notes.append(f"Live {filename} output omitted by content policy.")
+            return None
+        return text
+
     persistent_ipset_files = persistent_ipset_files or []
     persistent_iptables_v4_files = persistent_iptables_v4_files or []
     persistent_iptables_v6_files = persistent_iptables_v6_files or []
@@ -483,6 +504,7 @@ def _collect_firewall_runtime_snapshot(
         )
     else:
         ipset_out, ipset_err = _run_capture_command("ipset_save")
+        ipset_out = safe_runtime_text(ipset_out, "ipset.save")
         if ipset_err:
             notes.append(ipset_err)
         elif ipset_out is not None and _ipset_save_has_state(ipset_out):
@@ -500,6 +522,7 @@ def _collect_firewall_runtime_snapshot(
         )
     else:
         ipt4_out, ipt4_err = _run_capture_command("iptables_v4_save")
+        ipt4_out = safe_runtime_text(ipt4_out, "iptables.v4")
         if ipt4_err:
             notes.append(ipt4_err)
         elif ipt4_out is not None and _iptables_save_has_state(ipt4_out):
@@ -516,6 +539,7 @@ def _collect_firewall_runtime_snapshot(
         )
     else:
         ipt6_out, ipt6_err = _run_capture_command("iptables_v6_save")
+        ipt6_out = safe_runtime_text(ipt6_out, "iptables.v6")
         if ipt6_err:
             notes.append(ipt6_err)
         elif ipt6_out is not None and _iptables_save_has_state(ipt6_out):

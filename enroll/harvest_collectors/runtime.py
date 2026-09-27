@@ -65,6 +65,7 @@ class RuntimeStateCollector(HarvestCollector):
             firewall_runtime_snapshot = h._collect_firewall_runtime_snapshot(
                 self.context.bundle_dir,
                 path_filter=self.context.path_filter,
+                policy=self.context.policy,
                 persistent_ipset_files=self.persistent_ipset_files,
                 persistent_iptables_v4_files=self.persistent_iptables_v4_files,
                 persistent_iptables_v6_files=self.persistent_iptables_v6_files,
@@ -83,6 +84,7 @@ class RuntimeStateCollector(HarvestCollector):
             sysctl_snapshot = h._collect_sysctl_snapshot(
                 self.context.bundle_dir,
                 path_filter=self.context.path_filter,
+                policy=self.context.policy,
             )
             sysctl_snapshot.notes.append(
                 "Live values may be temporary and may overlap /etc/sysctl.conf or sysctl.d files. "
