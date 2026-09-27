@@ -202,3 +202,26 @@ def test_grouped_notifications_select_only_associated_service():
         notify_systemd="Run systemd daemon-reload",
     )
     assert files[0]["notify"] == ["Run systemd daemon-reload", topic]
+
+
+def test_role_phases_defer_activation_and_keep_failed_probes(tmp_path):
+    from enroll.ansible import (
+        _write_role_phases,
+        _render_single_systemd_tasks,
+        _render_install_packages_tasks,
+    )
+    import yaml
+
+    (tmp_path / "tasks").mkdir()
+    main = _write_role_phases(
+        str(tmp_path),
+        _render_install_packages_tasks("app", "app")
+        + _render_single_systemd_tasks("app"),
+    )
+    assert (tmp_path / "tasks" / "packages.yml").exists()
+    activate = yaml.safe_load((tmp_path / "tasks" / "activate.yml").read_text())
+    assert "failed_when" not in activate[0]
+    assert "enroll_defer_activation" not in str(activate)
+    for task in yaml.safe_load(main):
+        if "ansible.builtin.systemd" in task:
+            assert "enroll_defer_activation" in str(task["when"])

@@ -285,11 +285,11 @@ def test_manifest_writes_roles_and_playbook_with_clean_when(tmp_path: Path):
     assert 'no_log: "{{ enroll_hide_systemd_status | default(true) | bool }}"' in tasks
     assert "enroll_manage_systemd_runtime | default(true) | bool" in tasks
     assert (
-        "when:\n    - enroll_manage_systemd_runtime | default(true) | bool\n"
+        "when:\n    - not (enroll_defer_activation | default(false) | bool)\n    - enroll_manage_systemd_runtime | default(true) | bool\n"
         "    - foo_manage_unit | default(false)\n" in tasks
     )
     assert (
-        "when:\n    - enroll_manage_systemd_runtime | default(true) | bool\n"
+        "when:\n    - not (enroll_defer_activation | default(false) | bool)\n    - enroll_manage_systemd_runtime | default(true) | bool\n"
         "    - foo_manage_unit | default(false)\n"
         "    - _unit_probe is succeeded\n" in tasks
     )
@@ -1162,7 +1162,9 @@ def test_manifest_orders_cron_and_logrotate_at_playbook_tail(tmp_path: Path):
     pb = (out / "playbook.yml").read_text(encoding="utf-8").splitlines()
     # Roles are emitted as indented list items under the `roles:` key.
     roles = [
-        ln.strip().removeprefix("- ").strip() for ln in pb if ln.startswith("    - ")
+        ln.strip().removeprefix("- ").strip()
+        for ln in pb
+        if ln.startswith("    - role:")
     ]
 
     # Ensure the grouped role containing cron/logrotate is still ordered after users.

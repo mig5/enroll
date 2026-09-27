@@ -161,11 +161,18 @@ class ServicePackageCollector(HarvestCollector):
                 p = backend.owner_of_path(ui.fragment_path)
                 if p:
                     pkgs.add(p)
+                else:
+                    candidates[ui.fragment_path] = "systemd_custom_unit"
 
             for exe in ui.exec_paths:
                 p = backend.owner_of_path(exe)
                 if p:
                     pkgs.add(p)
+                else:
+                    notes.append(
+                        f"Unpackaged executable prerequisite: {exe}; verify its binary, "
+                        "libraries and application data are deployed before activation."
+                    )
 
             for pth in ui.dropin_paths:
                 if pth.startswith("/etc/"):

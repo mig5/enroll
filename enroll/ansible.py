@@ -684,6 +684,8 @@ def _write_ansible_role(
         vars_map or {},
     )
 
+    tasks = _write_role_phases(role_dir, tasks)
+
     # Backstop guardrail: never write a tasks/handlers document whose *structure*
     # was altered by a harvested value. Enroll authors this YAML as scaffolding
     # and keeps all harvested data in variable files; if any harvested value ever
@@ -779,7 +781,72 @@ def _write_scaffold(ctx: AnsibleManifestContext) -> None:
 
 
 def _write_manifest_playbook(ctx: AnsibleManifestContext, roles: List[str]) -> None:
-    _write_playbook_all(os.path.join(ctx.out_dir, "playbook.yml"), roles)
+    path = Path(ctx.out_dir, "playbook.yml")
+    _write_playbook_all(str(path), roles)
+    text = path.read_text()
+    pre = ["  vars:", "    enroll_defer_activation: true", "  pre_tasks:"]
+    # Repository configuration must precede package installation.
+    for role in roles:
+        if role in {"apt_config", "dnf_config"}:
+            pre.extend(_phase_import(role, "main"))
+    for role in roles:
+        if Path(ctx.roles_root, role, "tasks", "packages.yml").exists():
+            pre.extend(_phase_import(role, "packages"))
+    for role in roles:
+        if Path(ctx.roles_root, role, "tasks", "accounts.yml").exists():
+            pre.extend(_phase_import(role, "accounts"))
+    # Keep an empty list valid when there are no prerequisite tasks.
+    if pre[-1] == "  pre_tasks:":
+        pre[-1] = "  pre_tasks: []"
+    text = text.replace("  roles:\n", "\n".join(pre) + "\n  roles:\n")
+    post = []
+    for role in roles:
+        if Path(ctx.roles_root, role, "tasks", "activate.yml").exists():
+            post.extend(_phase_import(role, "activate"))
+    if post:
+        text += "  post_tasks:\n" + "\n".join(post) + "\n"
+    _write_generated_task_yaml(str(path), text, label="playbook.yml")
+
+
+def _phase_import(role: str, phase: str) -> List[str]:
+    role = scaffold_token(role, field="role name")
+    return [
+        f"    - name: Apply {role} {phase}",
+        "      ansible.builtin.import_role:",
+        f"        name: {role}",
+        f"        tasks_from: {phase}",
+        f"      tags: [{_role_tag(role)}]",
+    ]
+
+
+def _write_role_phases(role_dir: str, tasks: str) -> str:
+    """Expose prerequisite/activation entry points while keeping roles reusable."""
+    chunks = re.split(r"(?m)(?=^- name:)", _task_body(tasks))
+    phases = {"packages": [], "accounts": [], "activate": []}
+    main = []
+    for chunk in chunks:
+        if "  ansible.builtin.package:" in chunk:
+            phases["packages"].append(chunk)
+        if any(f"  ansible.builtin.{module}:" in chunk for module in ("group", "user")):
+            phases["accounts"].append(chunk)
+        if "  ansible.builtin.systemd:" in chunk:
+            # A failed probe must remain a failure, rather than being rewritten
+            # as success and accidentally enabling a missing/unmanageable unit.
+            chunk = chunk.replace("  failed_when: false\n", "")
+            phases["activate"].append(chunk)
+            chunk = chunk.replace(
+                "  when:\n",
+                "  when:\n    - not (enroll_defer_activation | default(false) | bool)\n",
+            )
+        main.append(chunk)
+    for phase, parts in phases.items():
+        if parts:
+            _write_generated_task_yaml(
+                str(Path(role_dir, "tasks", f"{phase}.yml")),
+                "---\n" + "".join(parts),
+                label=f"{phase} tasks",
+            )
+    return "---\n" + "".join(main)
 
 
 # --- Ansible task snippets ---

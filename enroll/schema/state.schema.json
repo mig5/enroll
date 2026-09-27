@@ -395,6 +395,7 @@
             "system_security",
             "system_sysctl",
             "systemd_dropin",
+            "systemd_custom_unit",
             "systemd_envfile",
             "user_include",
             "user_profile",
