@@ -505,3 +505,27 @@ def test_users_collector_filters_flatpak_credentials(monkeypatch, tmp_path):
         assert bool(result.users_snapshot.user_flatpak_remotes) == dangerous
         assert "FAKE_SECRET" not in str(result.flatpak_snapshot.notes)
         assert "FAKE_SECRET" not in str(result.users_snapshot.notes)
+
+
+def test_runtime_exclusions_apply_before_capture(monkeypatch, tmp_path):
+    from enroll import harvest
+
+    monkeypatch.setattr(harvest.os, "geteuid", lambda: 0)
+
+    def unexpected_capture(*args, **kwargs):
+        raise AssertionError("excluded runtime resource was read")
+
+    monkeypatch.setattr(harvest, "_run_capture_command", unexpected_capture)
+    result = RuntimeStateCollector(
+        _context(
+            tmp_path,
+            exclude=(
+                "/etc/sysctl.d/99-enroll.conf",
+                "/etc/enroll/firewall/*",
+            ),
+        )
+    ).collect()
+    assert result.sysctl_snapshot.managed_files == []
+    assert result.sysctl_snapshot.parameters == {}
+    assert result.firewall_runtime_snapshot.ipset_save is None
+    assert not (tmp_path / "bundle" / "artifacts").exists()

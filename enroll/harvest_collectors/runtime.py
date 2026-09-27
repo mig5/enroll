@@ -53,11 +53,14 @@ class RuntimeStateCollector(HarvestCollector):
 
         firewall_runtime_snapshot = h._collect_firewall_runtime_snapshot(
             self.context.bundle_dir,
+            path_filter=self.context.path_filter,
             persistent_ipset_files=self.persistent_ipset_files,
             persistent_iptables_v4_files=self.persistent_iptables_v4_files,
             persistent_iptables_v6_files=self.persistent_iptables_v6_files,
         )
-        sysctl_snapshot = h._collect_sysctl_snapshot(self.context.bundle_dir)
+        sysctl_snapshot = h._collect_sysctl_snapshot(
+            self.context.bundle_dir, path_filter=self.context.path_filter
+        )
         return RuntimeStateCollection(
             firewall_runtime_snapshot=firewall_runtime_snapshot,
             sysctl_snapshot=sysctl_snapshot,

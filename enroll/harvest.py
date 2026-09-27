@@ -339,8 +339,15 @@ def _render_sysctl_conf(parameters: Dict[str, str], notes: List[str]) -> str:
     return "\n".join(lines)
 
 
-def _collect_sysctl_snapshot(bundle_dir: str) -> SysctlSnapshot:
+def _collect_sysctl_snapshot(
+    bundle_dir: str, *, path_filter: Optional[PathFilter] = None
+) -> SysctlSnapshot:
     role_name = "sysctl"
+    if path_filter and path_filter.is_excluded(_SYSCTL_GENERATED_DEST):
+        return SysctlSnapshot(
+            role_name=role_name,
+            notes=["Generated sysctl configuration excluded by path filter."],
+        )
     notes: List[str] = []
     managed_files: List[ManagedFile] = []
 
@@ -445,6 +452,7 @@ def _collect_firewall_runtime_snapshot(
     persistent_ipset_files: Optional[List[str]] = None,
     persistent_iptables_v4_files: Optional[List[str]] = None,
     persistent_iptables_v6_files: Optional[List[str]] = None,
+    path_filter: Optional[PathFilter] = None,
 ) -> FirewallRuntimeSnapshot:
     """Capture live kernel firewall state only when no persistent config exists.
 
@@ -466,7 +474,9 @@ def _collect_firewall_runtime_snapshot(
     persistent_iptables_v4_files = persistent_iptables_v4_files or []
     persistent_iptables_v6_files = persistent_iptables_v6_files or []
 
-    if persistent_ipset_files:
+    if path_filter and path_filter.is_excluded("/etc/enroll/firewall/ipset.save"):
+        notes.append("Generated ipset.save excluded by path filter.")
+    elif persistent_ipset_files:
         notes.append(
             "Live ipset runtime capture skipped because persistent ipset "
             f"configuration was found: {', '.join(persistent_ipset_files)}"
@@ -481,7 +491,9 @@ def _collect_firewall_runtime_snapshot(
             ipset_sets = _parse_ipset_set_names(ipset_out)
             packages.add("ipset")
 
-    if persistent_iptables_v4_files:
+    if path_filter and path_filter.is_excluded("/etc/enroll/firewall/iptables.v4"):
+        notes.append("Generated iptables.v4 excluded by path filter.")
+    elif persistent_iptables_v4_files:
         notes.append(
             "Live IPv4 iptables runtime capture skipped because persistent "
             f"IPv4 iptables configuration was found: {', '.join(persistent_iptables_v4_files)}"
@@ -495,7 +507,9 @@ def _collect_firewall_runtime_snapshot(
             _write_generated_artifact(bundle_dir, role_name, iptables_v4_rel, ipt4_out)
             packages.add("iptables")
 
-    if persistent_iptables_v6_files:
+    if path_filter and path_filter.is_excluded("/etc/enroll/firewall/iptables.v6"):
+        notes.append("Generated iptables.v6 excluded by path filter.")
+    elif persistent_iptables_v6_files:
         notes.append(
             "Live IPv6 iptables runtime capture skipped because persistent "
             f"IPv6 iptables configuration was found: {', '.join(persistent_iptables_v6_files)}"
