@@ -459,7 +459,7 @@ Several safety helpers protect privileged runs from following attacker-controlle
 - `harvest_safety.ensure_private_dir()` is used for persistent internal directories such as Enroll's cache root. Existing directories are allowed, but symlink components and unsafe root-run parents are refused.
 - `cache.new_harvest_cache_dir()` creates unpredictable per-harvest cache directories beneath the hardened cache root with `mkdtemp()` and private permissions.
 - `manifest_safety.safe_artifact_file()` validates referenced harvested artifacts before renderers copy them. It rejects absolute or `..` paths, symlinks, non-regular files, hardlinks, and paths that resolve outside the artifact root.
-- `manifest_safety.prepare_manifest_output_dir()` refuses unsafe manifest output paths. Existing output paths are always refused; generated trees are never merged.
+- `manifest_safety.prepare_manifest_output_dir()` refuses unsafe manifest output paths. Standalone output paths are refused if they exist. Multi-host extension uses the separately locked, staged and atomic path in `multihost.py`; it never writes roles into the live tree in place.
 - `manifest_safety.freeze_directory_bundle()` copies a *directory* harvest bundle into a fresh private `0700` temp tree before it is validated and consumed. Validation is point-in-time, but `manifest`/`diff` later re-open artifacts by path (to copy, hash, or feed to JinjaTurtle), so a still-writable source directory could be raced by its unprivileged owner — a validated regular file swapped for a symlink or different file after the check. Freezing uses no-follow traversal and takes each file's bytes from a validated descriptor (regular files only, no symlinks, no hardlinks), so a later mutation of the original directory cannot affect the consumed copy. Tar and SOPS inputs are already extracted into a private temp directory and are inherently frozen; this helper gives plain directory inputs the same guarantee. See sections 11 and 15.1 for where it is wired in.
 - `render_safety.scaffold_token()` / `render_safety.ansible_unsafe_data()` keep harvested data out of generated playbook *structure*: the former is a strict allowlist for the only values ever spliced into raw task/handler YAML (already-sanitized role/var-prefix identifiers), and the latter recursively tags template-looking harvested strings as Ansible `!unsafe` data so they cannot be re-evaluated as Jinja at apply time. See section 13.6.
 
@@ -907,7 +907,21 @@ flowchart TD
 Every manifest uses a new self-contained output directory, with `ansible.cfg`,
 `requirements.yml`, `playbook.yml`, `README.md`, and `roles/`. Each role owns its
 `tasks`, `handlers`, `defaults`, `meta`, `files`, and `templates` directories.
-Existing output directories are refused. Shared site mode was removed in 0.9.0.
+Existing output directories are refused unless explicit `--host` and `--extend`
+select the strict multi-host path in `multihost.py`. The renderer first writes a
+standalone staging tree. `prepare_host()` extracts all generated defaults into
+complete host variables and fingerprints the remaining role implementation.
+Each host retains its own play (including prerequisite and activation phases).
+`merge_project()` checks shared roles and tracked controls before adding data;
+existing host variables are never parsed or rewritten during extension.
+A no-follow directory descriptor and `flock` serialize Enroll extensions. The
+existing tree is frozen, modes restored, and fingerprints compared before and
+after staging. Linux `renameat2(RENAME_EXCHANGE)` publishes the entire result in
+one operation; there is no non-atomic fallback. A waiter whose locked directory
+inode was exchanged must retry. This lock does not coordinate arbitrary editors
+or Ansible execution; do not edit/apply the project during extension.
+The metadata format is versioned independently of the generator release. No
+migration from old site-mode output or arbitrary handwritten projects is provided.
 
 ### 13.3 Role ordering
 

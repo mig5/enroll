@@ -38,13 +38,63 @@ Additionally, some other functionalities exist:
 
 ## Manifest layout
 
-Each harvest produces a self-contained Ansible project in a new output directory.
-Raw files live in `roles/<role>/files/`, templates in `templates/`, and variables in
-`defaults/main.yml`. Supply your target inventory when running the playbook.
+Without `--host`, each harvest produces a standalone Ansible project in a new
+output directory. Supply your inventory when running its playbook.
 
-Version 0.9.0 removes `--fqdn` and shared multi-host output. Generate each host into
-its own directory. Existing shared output should be archived and regenerated;
-do not merge independently generated role directories by name.
+To create an extendable multi-host project, give the first host an explicit
+inventory identity. Run these commands from outside the output directory:
+
+```bash
+enroll manifest --harvest ./harvest-web1 --host web1 --out ./ansible
+# The web1 harvest can now be archived or removed.
+enroll manifest --harvest ./harvest-web2 --host web2 --out ./ansible --extend
+cd ansible
+ansible-galaxy collection install -r requirements.yml
+ansible-playbook -i inventory/hosts.yml playbook.yml --limit web1
+```
+
+The project contains shared `roles/`, complete host settings in
+`inventory/host_vars/<host>/main.yml`, inventory membership in `inventory/hosts.yml`,
+and one ordered play in `playbooks/<host>.yml` for each host. The root playbook
+imports those plays. `host_notes/<host>.md` retains capture notes and exclusions.
+`.enroll/project.json` records the format/generator version, renderer options,
+variable ownership, hosts and SHA256 fingerprints. Keep that metadata with the project;
+it contains no duplicate harvest or captured file contents.
+
+`--extend` shares an existing role only if every relative path, file content and
+permission mode matches the generated role, including tasks, handlers, templates,
+raw files, defaults, role vars and metadata. Generated host settings are extracted
+into host variables first; different values and empty lists remain specific to each
+host. Role defaults in this mode are empty. No semantic/YAML normalization or
+"close enough" matching is attempted. Differing raw files or template structures
+therefore prevent sharing, even if a human could refactor them into one role.
+
+You may edit host variables (including `ansible_host`, `ansible_user` and connection
+settings); extension preserves their bytes. You may edit roles too, but an edited
+role cannot subsequently be shared with an incoming generated role. New, uniquely
+named roles can be added. Duplicate host identifiers, incompatible shared roles,
+variable namespace conflicts, differing renderer options and collection constraint
+conflicts are errors. Use the same `--no-common-roles` and JinjaTurtle settings for
+subsequent extensions. Host replacement/removal and legacy project migration are
+not supported.
+
+Generated playbooks, inventory membership, `ansible.cfg`, `requirements.yml`, the
+root README and Enroll metadata are owned by the generator. Editing the tracked
+control files prevents extension; put connection customizations in host variables.
+Existing unshared roles and other ordinary files are preserved. Projects containing
+symlinks, hardlinks or special files are refused rather than followed.
+
+Extension locks the project, builds and checks a private staging copy, checks for
+concurrent changes, and atomically swaps directories using Linux `renameat2`.
+Unsupported filesystems fail without changing the project. Run from outside the
+project and do not edit or apply it during extension. Existing directories still
+require explicit `--extend`; failures before publication preserve the project.
+
+`--host` and `--extend` also work with `single-shot`. A named project can be generated
+with `--sops`, but extension requires an unpacked plaintext project; `--extend --sops`
+is rejected. There is no merger for arbitrary Ansible repositories. The old `--fqdn`
+flag remains removed; `--host` plus explicit `--extend` replaces its unsafe implicit
+merging behavior.
 
 ---
 
