@@ -50,7 +50,6 @@ REMOTE="ashpool.mig5.net:/opt/repo_rpm"
 
 DISTS=(
   fedora:43
-  fedora:42
 )
 
 for dist in ${DISTS[@]}; do
