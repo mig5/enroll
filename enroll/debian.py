@@ -235,3 +235,19 @@ def read_pkg_md5sums(pkg: str) -> Dict[str, str]:
             md5, rel = parts
             m[rel.strip()] = md5.strip()
     return m
+
+
+def package_family_relations() -> Dict[str, Set[str]]:
+    from .package_relations import debian_relations
+
+    try:
+        output = _run(
+            [
+                "dpkg-query",
+                "-W",
+                "-f=${Package}\t${db:Status-Status}\t${source:Package}\t${Depends}\t${Pre-Depends}\t${Provides}\n",
+            ]
+        )
+    except (OSError, RuntimeError):
+        return {}
+    return debian_relations(output)

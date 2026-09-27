@@ -506,6 +506,45 @@ enroll single-shot --remote-host myhost.example.com --remote-user myuser   --har
 
 ---
 
+## Service and package family association
+
+Enroll first identifies the installed package owning each enabled service's unit
+file. It can then include related installed packages in that service's snapshot
+and capture their modified configuration before generating the Ansible role:
+
+- Debian/Ubuntu: use `dpkg-query` source-package identity and direct `Depends` or
+  `Pre-Depends` relationships, including uniquely resolved installed alternatives
+  and `Provides` capabilities.
+- RPM systems (including DNF/Yum): use the local RPM database's `SOURCERPM`,
+  `REQUIRENAME` and `PROVIDENAME`. Both packages must have the same source RPM
+  filename, including its version/release. This needs no repoquery plugin or
+  network access.
+
+A dependency in either direction is evidence only when both packages share that
+source identity. Enroll follows one edge from the unit owner, without recursively
+absorbing dependencies. A package owning another captured service keeps its
+existing attribution. If several services qualify for an additional package,
+its exact `PACKAGE.service` name breaks the tie; otherwise no additional
+attribution is made and service notes explain the ambiguity. Names alone never
+establish a relationship. Successful associations also appear in service notes.
+
+For example, `console-setup.service` belongs to `console-setup-linux`, while the
+related `console-setup` package depends on it and shares its source package.
+Enroll can include both packages and their configuration in `console_setup`
+instead of producing an additional `package_console_setup` role. Default
+Section/Group role grouping still applies unless `--no-common-roles` is used.
+
+This is conservative attribution, not dependency solving: version constraints
+are not evaluated, multiple installed instances of a package are excluded from
+new associations, and ambiguous providers, RPM rich dependencies and file-path
+requirements without an explicit matching `Provides` are not inferred. Missing
+metadata or failed queries leave the existing ownership/configuration inference
+in place. Unresolved service/package name clashes retain separate artifact
+namespaces. No changes to installed packages or their manual/automatic status are
+made during harvest.
+
+---
+
 ## Diff
 
 ### Compare two harvest directories, output in json

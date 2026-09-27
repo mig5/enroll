@@ -23,6 +23,7 @@ from ..system_paths import (
     scan_unowned_under_roots,
     topdirs_for_package,
 )
+from ..package_relations import associate_services
 from ..systemd import UnitQueryError
 from .context import HarvestCollector, HarvestContext
 from .cron_logrotate import CronLogrotateCollector, _is_cron_path, _is_logrotate_path
@@ -127,6 +128,24 @@ class ServicePackageCollector(HarvestCollector):
             u: pu for u in enabled_services if (pu := parent_service_unit(u))
         }
 
+        # Resolve all unit owners first so attribution cannot depend on iteration order.
+        unit_infos = {}
+        unit_errors = {}
+        owners = {}
+        for unit in enabled_services:
+            try:
+                ui = h.get_unit_info(unit)
+                unit_infos[unit] = ui
+                if ui.fragment_path:
+                    owner = backend.owner_of_path(ui.fragment_path)
+                    if owner:
+                        owners[unit] = owner
+            except UnitQueryError as error:
+                unit_errors[unit] = error
+        relation_reader = getattr(backend, "related_packages", None)
+        links = relation_reader() if relation_reader and owners else {}
+        additions, association_notes = associate_services(owners, links)
+
         for unit in sorted(enabled_services, key=service_sort_key):
             role = role_name_from_unit(unit)
             self._claim_role(role, f"unit {unit}")
@@ -134,7 +153,9 @@ class ServicePackageCollector(HarvestCollector):
             parent_role = role_name_from_unit(parent_unit) if parent_unit else None
 
             try:
-                ui = h.get_unit_info(unit)
+                if unit in unit_errors:
+                    raise unit_errors[unit]
+                ui = unit_infos[unit]
             except UnitQueryError as e:
                 self.service_role_aliases.setdefault(
                     role, hint_names(unit, set()) | {role}
@@ -158,14 +179,14 @@ class ServicePackageCollector(HarvestCollector):
                 )
                 continue
 
-            pkgs: Set[str] = set()
-            notes: List[str] = []
+            pkgs: Set[str] = set(additions.get(unit, set()))
+            notes: List[str] = list(association_notes.get(unit, []))
             excluded = self.excluded_by_role.setdefault(role, [])
             managed = self.managed_by_role.setdefault(role, [])
             candidates: Dict[str, str] = {}
 
             if ui.fragment_path:
-                p = backend.owner_of_path(ui.fragment_path)
+                p = owners.get(unit)
                 if p:
                     pkgs.add(p)
                 else:

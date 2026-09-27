@@ -92,6 +92,10 @@ class PackageBackend:
         """
         raise NotImplementedError
 
+    def related_packages(self) -> Dict[str, Set[str]]:
+        """Installed direct dependency links within a source-package family."""
+        return {}
+
     def build_etc_index(
         self,
     ) -> Tuple[
@@ -136,6 +140,11 @@ class DpkgBackend(PackageBackend):
         from .debian import list_installed_packages
 
         return list_installed_packages()
+
+    def related_packages(self) -> Dict[str, Set[str]]:
+        from .debian import package_family_relations
+
+        return package_family_relations()
 
     def build_etc_index(self):
         from .debian import build_dpkg_etc_index
@@ -199,6 +208,11 @@ class RpmBackend(PackageBackend):
     def __init__(self) -> None:
         self._modified_cache: Dict[str, Set[str]] = {}
         self._config_cache: Dict[str, Set[str]] = {}
+
+    def related_packages(self) -> Dict[str, Set[str]]:
+        from .rpm import package_family_relations
+
+        return package_family_relations()
 
     def owner_of_path(self, path: str) -> Optional[str]:
         from .rpm import rpm_owner

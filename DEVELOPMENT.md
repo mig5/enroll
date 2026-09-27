@@ -487,6 +487,7 @@ The backend interface is `PackageBackend`:
 owner_of_path(path)
 list_manual_packages()
 installed_packages()
+related_packages()
 build_etc_index()
 specific_paths_for_hints()
 is_pkg_config_path(path)
@@ -513,6 +514,23 @@ It deliberately leaves `/etc/apt`-style package-manager configuration for the `a
 It provides package ownership, manual package lists, installed package inventory, `/etc` indexes, RPM config file lists, and `rpm -V` style modified-file detection.
 
 RPM-family package-manager config paths such as `/etc/dnf`, `/etc/yum`, `/etc/yum.conf`, `/etc/yum.repos.d`, and `/etc/pki/rpm-gpg` are collected into `dnf_config`, not arbitrary package roles.
+
+Service family attribution uses `related_packages()` from both backends and the
+shared `package_relations.py` logic. The backend performs one installed-database
+query, parses source identity and dependency/provider metadata, and returns
+undirected direct links only between unambiguous installed members of the same
+source family. Query failure returns no additional links. Debian uses
+`${source:Package}` (including dpkg's binary-name fallback); RPM compares full
+`SOURCERPM` values, so mixed source builds are conservatively kept separate.
+
+The service collector resolves every enabled unit's owner before choosing new
+associations. `associate_services()` makes choices independently of iteration
+order, excludes packages already owning captured units, and records successful
+or ambiguous decisions in snapshot notes. It does not recursively follow links,
+solve version constraints, interpret RPM rich dependencies, or merge service
+lifecycles. Associated packages participate in configuration capture before the
+manual-package pass, which then sees them as already covered. The metadata query
+is stdlib-only, including when running in the remote zipapp.
 
 ### 8.3 Adding a new package backend
 

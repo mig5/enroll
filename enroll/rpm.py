@@ -325,3 +325,21 @@ def rpm_modified_files(pkg: str) -> Set[str]:
             if parts and parts[-1].startswith("/"):
                 files.add(parts[-1])
     return files
+
+
+def package_family_relations() -> Dict[str, Set[str]]:
+    from .package_relations import rpm_relations
+
+    try:
+        rc, output = _run(
+            [
+                "rpm",
+                "-qa",
+                "--qf",
+                "%{NAME}\t%{SOURCERPM}\t[%{REQUIRENAME},]\t[%{PROVIDENAME},]\n",
+            ],
+            allow_fail=True,
+        )
+    except (OSError, RuntimeError):
+        return {}
+    return rpm_relations(output) if rc == 0 else {}

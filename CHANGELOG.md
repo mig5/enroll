@@ -14,6 +14,8 @@
 
 ## Security and correctness
 
+- Associate service packages using installed direct dependencies and shared source identity on both Debian/Ubuntu and RPM/DNF/Yum systems. Capture related configuration in the service role; use deterministic ambiguity handling and record attribution evidence. Avoid recursive dependency grouping and retain the namespace fallback when attribution is unresolved.
+
 - Keep independently harvested same-named services and packages in separate artifact namespaces (for example `console_setup` and `package_console_setup`), instead of aborting when package ownership inference does not associate them. Retain rejection of ambiguous normalized names within each resource type.
 
 - Screen Flatpak remote metadata and opted-in runtime output for secrets; prevent FIFO reads from blocking before validation.
