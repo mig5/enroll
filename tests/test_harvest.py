@@ -224,6 +224,7 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
         topdir_to_pkgs=topdir_to_pkgs,
         pkg_to_etc_paths=pkg_to_etc_paths,
         manual_pkgs=["openvpn", "curl"],
+        installed={"auto-dependency": [{"version": "2.0", "arch": "amd64"}]},
         owner_fn=lambda p: "openvpn" if "openvpn" in (p or "") else None,
         modified_by_pkg={
             "openvpn": {"/etc/openvpn/server.conf": "modified_conffile"},
@@ -274,6 +275,8 @@ def test_harvest_dedup_manual_packages_and_builds_etc_custom(
     inv = st["inventory"]["packages"]
     assert "openvpn" in inv
     assert "curl" in inv
+    assert inv["auto-dependency"]["version"] == "2.0"
+    assert inv["auto-dependency"]["roles"] == []
 
     # openvpn is managed by the service role, so it should NOT appear as a package role.
     pkg_roles = st["roles"]["packages"]

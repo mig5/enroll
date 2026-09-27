@@ -934,7 +934,8 @@ def harvest(
         pkg_roles_map.setdefault(ps.package, set()).add(ps.role_name)
         pkg_role_names.setdefault(ps.package, []).append(ps.role_name)
 
-    pkg_names: Set[str] = set()
+    # Observe dependencies too; installation intent remains in role snapshots.
+    pkg_names: Set[str] = set(installed)
     pkg_names |= manual_set
     pkg_names |= set(pkg_units.keys())
     pkg_names |= {ps.package for ps in pkg_snaps}
