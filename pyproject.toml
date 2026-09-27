@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "enroll"
-version = "0.8.2"
+version = "0.9.0"
 description = "Enroll a server's running state retrospectively into Ansible"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,7 +29,7 @@ enroll = "enroll.cli:main"
 # build backends such as Debian Bookworm/Ubuntu Jammy python3-poetry-core.
 # The canonical modern metadata remains in [project] above.
 name = "enroll"
-version = "0.7.0"
+version = "0.9.0"
 description = "Enroll a server's running state retrospectively into Ansible"
 authors = ["Miguel Jacq <mig@mig5.net>"]
 readme = "README.md"

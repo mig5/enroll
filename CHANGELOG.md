@@ -1,3 +1,28 @@
+# 0.9.0
+
+## Breaking changes
+
+- Remove `manifest --fqdn` and shared multi-host generation. Every manifest requires a new standalone output directory.
+- Make live firewall and sysctl capture opt-in with `--harvest-firewall` and `--harvest-sysctl` on local/remote `harvest` and `single-shot`. Persistent configuration is still harvested normally. Existing bundles retain their recorded runtime snapshots.
+
+## Security and correctness
+
+- Screen Flatpak remote metadata and opted-in runtime output for secrets; prevent FIFO reads from blocking before validation.
+- Scope service handlers per role/unit, filter changed loop results, and activate symlink and systemd unit/drop-in changes.
+- Install package/account prerequisites before configuration and defer service activation until all configuration is deployed. Capture unpackaged unit fragments and report executable prerequisites.
+- Preserve group GIDs and refuse conflicting identity mappings; retain additive supplementary memberships.
+- Compare DNF/firewall artifacts, directories, symlinks, images and application inventories. Observe all installed packages, including automatic dependencies.
+- Honor generated-runtime destination exclusions; fail Snap replay instead of silently dropping requested attributes.
+- Add optional firewall boot restoration with ipset-before-iptables ordering and per-run reconciliation. `firewall_runtime_persist` defaults to false to avoid competing with existing persistence.
+- Reject role-name collisions, reserve `enroll_runtime`, stage manifest publication, and refuse incompatible retained templates.
+- Always emit standalone Ansible configuration and collection requirements; synchronize modern and legacy package metadata.
+
+## Validation and limits
+
+Regression tests include harmless Ansible execution for grouped/individual handler isolation and a clean second apply. Real service lifecycle and firewall reboot behavior still require VM testing. SOPS, AppImage, DEB/RPM builds and signed publication require the corresponding external tooling.
+
+This release does not add a general Ansible merger, Molecule generation, sectioned playbooks, automatic absent-resource inference, or full non-service systemd lifecycle capture. Those are separate design work, not fixes implied by a snapshot. Safe-mode content heuristics remain deliberately conservative.
+
 # 0.8.2
 
  * Bump dependencies

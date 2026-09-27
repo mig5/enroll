@@ -1,3 +1,11 @@
+enroll (0.9.0) unstable; urgency=medium
+
+  * Remove shared-site manifests and make live firewall/sysctl capture opt-in.
+  * Fix credential screening, input safety, resource drift.
+  * Preserve identity mappings and stage complete manifest output.
+
+ -- Miguel Jacq <mig@mig5.net>  Sun, 27 Sep 2026 11:11:00 +1000
+
 enroll (0.8.2) unstable; urgency=medium
 
   * Make remote harvest zipapp stdlib-only

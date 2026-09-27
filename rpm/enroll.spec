@@ -1,4 +1,4 @@
-%global upstream_version 0.8.2
+%global upstream_version 0.9.0
 
 Name:           enroll
 Version:        %{upstream_version}
@@ -43,6 +43,9 @@ Enroll a server's running state retrospectively into Ansible.
 %{_bindir}/enroll
 
 %changelog
+* Sun Sep 27 2026 Miguel Jacq <mig@mig5.net> - 0.9.0-1
+- Remove shared-site mode and make live firewall/sysctl capture opt-in
+- Fix credential screening, input safety, resource drift
 * Mon Aug 03 2026 Miguel Jacq <mig@mig5.net> - %{version}-%{release}
 - Make remote harvest zipapp stdlib-only
 - Security: fix a TOCTOU in remote harvest.
