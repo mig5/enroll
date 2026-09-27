@@ -391,3 +391,32 @@ def test_jinjify_artifact_rejects_unsafe_src_rel(monkeypatch, tmp_path: Path):
 
     assert result is None
     assert called is False
+
+
+def test_retained_template_cannot_use_incompatible_new_context(monkeypatch, tmp_path):
+    artifact = tmp_path / "bundle" / "artifacts" / "app" / "app.ini"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("port=80\n")
+    root = tmp_path / "templates"
+    root.mkdir()
+    retained = root / "app.ini.j2"
+    retained.write_text("port={{ port }}\n")
+    monkeypatch.setattr(
+        jinjaturtle_mod,
+        "run_jinjaturtle",
+        lambda *a, **kw: JinjifyResult(
+            template_text="listen={{ listen }}\n", vars_text="listen: 8080\n"
+        ),
+    )
+    result = jinjaturtle_mod.jinjify_artifact(
+        tmp_path / "bundle",
+        "app",
+        "app.ini",
+        "/etc/app.ini",
+        root,
+        jt_exe="jinjaturtle",
+        jt_enabled=True,
+        overwrite_templates=False,
+    )
+    assert result is None
+    assert retained.read_text() == "port={{ port }}\n"

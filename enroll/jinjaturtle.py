@@ -294,6 +294,12 @@ def jinjify_artifact(
             template_dst.unlink()
         return None
 
+    if not overwrite_templates and template_dst.exists():
+        # A retained template must match the context just produced. Otherwise
+        # fall back to a raw copy instead of returning incompatible variables.
+        if template_dst.read_text(encoding="utf-8") != result.template_text:
+            return None
+
     if overwrite_templates or not template_dst.exists():
         template_dst.parent.mkdir(parents=True, exist_ok=True)
         template_dst.write_text(result.template_text, encoding="utf-8")
